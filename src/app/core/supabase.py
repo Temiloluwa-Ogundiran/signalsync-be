@@ -30,7 +30,15 @@ def get_supabase() -> Client:
                 "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in the environment."
             )
         transport = httpx.HTTPTransport(local_address="0.0.0.0")
-        http_client = httpx.Client(transport=transport)
+        http_client = httpx.Client(
+            transport=transport,
+            timeout=httpx.Timeout(
+                connect=10.0,   # time to establish connection
+                read=30.0,      # time to wait for a response
+                write=60.0,     # time to upload file bytes — needs to be generous
+                pool=10.0,      # time to acquire a connection from the pool
+            ),
+        )
         options = ClientOptions(httpx_client=http_client)
         _supabase_client = create_client(
             settings.SUPABASE_URL,

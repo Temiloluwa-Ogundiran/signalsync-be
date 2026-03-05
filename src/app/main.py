@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth as auth_router
+from app.api.routes import streams as streams_router
 from app.api.routes import users as users_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -30,3 +31,4 @@ def health_check():
 # ── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth_router.router)
 app.include_router(users_router.router)
+app.include_router(streams_router.router)

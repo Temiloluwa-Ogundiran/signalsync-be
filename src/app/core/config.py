@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     EMAIL_FROM: Optional[str] = None
     EMAIL_FROM_NAME: str = "SyncTrades"
 
+    # Supabase Storage — bucket names
+    SUPABASE_STREAM_AVATARS_BUCKET: str = "stream-avatars"
+    SUPABASE_STREAM_BANNERS_BUCKET: str = "stream-banners"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

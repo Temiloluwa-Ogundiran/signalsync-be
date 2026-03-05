@@ -54,3 +54,8 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+    stream_memberships: Mapped[List["StreamMember"]] = relationship(  # noqa: F821
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
