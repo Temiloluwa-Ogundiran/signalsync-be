@@ -35,3 +35,9 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     access_token_expiry_minutes: int
     user: UserResponse
+
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    access_token_expiry_minutes: int

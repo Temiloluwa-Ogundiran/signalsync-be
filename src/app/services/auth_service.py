@@ -15,6 +15,7 @@ from app.models.token import Token, TokenType
 from app.repositories import token_repo, user_repo
 from app.schemas.auth import (
     LoginResponse,
+    RefreshResponse,
     RegisterRequest,
     RegisterResponse,
     ResendVerificationRequest,
@@ -192,3 +193,96 @@ def resend_verification(
     return ResendVerificationResponse(
         message="If that email is registered and unverified, a new link has been sent."
     )
+
+
+def refresh_access_token(
+    db: Session, raw_refresh: str | None, response: Response
+) -> RefreshResponse:
+    """
+    Validate the refresh token cookie, rotate the refresh token, and
+    return a new access token.
+    """
+    if not raw_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing.",
+        )
+
+    hashed = hash_token(raw_refresh)
+    token_record = token_repo.get_active(
+        db,
+        hashed_token=hashed,
+        token_type=TokenType.REFRESH,
+    )
+    if not token_record:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token.",
+        )
+
+    user = user_repo.get_by_id(db, token_record.user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found.",
+        )
+
+    # ── rotate: revoke old, issue new ────────────────────────────────────────
+    token_repo.revoke(db, token_record)
+
+    new_raw_refresh = str(uuid.uuid4())
+    refresh_expires_at = datetime.now(timezone.utc) + timedelta(
+        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
+    )
+    token_repo.create(
+        db,
+        user_id=user.id,
+        hashed_token=hash_token(new_raw_refresh),
+        token_type=TokenType.REFRESH,
+        expires_at=refresh_expires_at,
+    )
+
+    new_access_token = create_access_token(str(user.id))
+    db.commit()
+
+    response.set_cookie(
+        key="refresh_token",
+        value=new_raw_refresh,
+        httponly=True,
+        secure=settings.IS_PRODUCTION,
+        samesite="lax",
+        max_age=60 * 60 * 24 * settings.REFRESH_TOKEN_EXPIRE_DAYS,
+        path="/",
+    )
+
+    return RefreshResponse(
+        access_token=new_access_token,
+        access_token_expiry_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
+    )
+
+
+def logout(db: Session, raw_refresh: str | None, response: Response) -> dict:
+    """
+    Revoke the refresh token (if present) and clear the cookie.
+    Always returns 200 to avoid leaking token validity.
+    """
+    if raw_refresh:
+        hashed = hash_token(raw_refresh)
+        token_record = token_repo.get_active(
+            db,
+            hashed_token=hashed,
+            token_type=TokenType.REFRESH,
+        )
+        if token_record:
+            token_repo.revoke(db, token_record)
+            db.commit()
+
+    response.delete_cookie(
+        key="refresh_token",
+        httponly=True,
+        secure=settings.IS_PRODUCTION,
+        samesite="lax",
+        path="/",
+    )
+
+    return {"message": "Logged out successfully."}

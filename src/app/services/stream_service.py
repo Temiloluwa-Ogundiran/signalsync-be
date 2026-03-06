@@ -10,7 +10,7 @@ from app.models.stream import StreamPrivacy
 from app.models.stream_member import MemberStatus
 from app.models.user import User
 from app.repositories import stream_member_repo, stream_repo
-from app.schemas.stream import StreamResponse
+from app.schemas.stream import ForumToggleRequest, StreamResponse
 from app.schemas.stream_member import ApproveRejectRequest, MemberListResponse, StreamMemberResponse
 from app.utils.storage import upload_image
 
@@ -103,6 +103,11 @@ def follow_stream(
         )
 
     existing = stream_member_repo.get(db, user_id=current_user.id, stream_id=stream_id)
+    if existing and existing.status == MemberStatus.banned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are banned from this stream.",
+        )
     if existing and existing.status == MemberStatus.active:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -236,3 +241,66 @@ def get_stream_members(
         )
         for m in members
     ]
+
+
+def remove_member(
+    db: Session,
+    *,
+    stream_id: UUID,
+    target_user_id: UUID,
+    ban: bool,
+    current_user: User,
+) -> None:
+    stream = stream_repo.get_by_id(db, stream_id)
+    if not stream:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
+
+    if stream.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the stream owner can remove members.",
+        )
+
+    if target_user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The stream owner cannot remove themselves.",
+        )
+
+    member = stream_member_repo.get(db, user_id=target_user_id, stream_id=stream_id)
+    if not member or member.status == MemberStatus.banned:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User is not a member of this stream.",
+        )
+
+    if ban:
+        stream_member_repo.ban(db, user_id=target_user_id, stream_id=stream_id)
+    else:
+        stream_member_repo.delete(db, member)
+
+    db.commit()
+
+
+def toggle_forum(
+    db: Session,
+    *,
+    stream_id: UUID,
+    payload: ForumToggleRequest,
+    current_user: User,
+) -> StreamResponse:
+    stream = stream_repo.get_by_id(db, stream_id)
+    if not stream:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
+
+    if stream.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the stream owner can change the forum setting.",
+        )
+
+    stream_repo.set_forum_enabled(db, stream, payload.forum_enabled)
+    db.commit()
+    db.refresh(stream)
+
+    return StreamResponse.model_validate(stream)

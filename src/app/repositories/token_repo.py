@@ -49,3 +49,17 @@ def get_active(
 def revoke(db: Session, token: Token) -> None:
     token.is_revoked = True
     db.flush()
+
+
+def revoke_all_by_user_and_type(
+    db: Session,
+    *,
+    user_id: UUID,
+    token_type: TokenType,
+) -> None:
+    """Revoke every active token of a given type for a user (used on logout)."""
+    db.query(Token).filter(
+        Token.user_id == user_id,
+        Token.type == token_type,
+        Token.is_revoked == False,  # noqa: E712
+    ).update({"is_revoked": True}, synchronize_session="fetch")

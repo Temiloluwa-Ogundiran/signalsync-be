@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Cookie, Depends, Query, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.auth import (
     LoginResponse,
+    RefreshResponse,
     RegisterRequest,
     RegisterResponse,
     ResendVerificationRequest,
@@ -77,3 +79,36 @@ def login(
 ):
     # OAuth2PasswordRequestForm uses 'username' — we treat it as the email.
     return auth_service.login(db, form_data.username, form_data.password, response)
+
+
+@router.post(
+    "/refresh",
+    response_model=RefreshResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Rotate refresh token and issue a new access token",
+    description=(
+        "Reads the `refresh_token` HTTP-only cookie. "
+        "On success, revokes the old refresh token, issues a new one "
+        "(rotation), and returns a fresh access token."
+    ),
+)
+def refresh_token(
+    response: Response,
+    refresh_token: Optional[str] = Cookie(default=None),
+    db: Session = Depends(get_db),
+):
+    return auth_service.refresh_access_token(db, refresh_token, response)
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_200_OK,
+    summary="Log out and revoke the refresh token",
+    description="Revokes the refresh token cookie. Always returns 200.",
+)
+def logout(
+    response: Response,
+    refresh_token: Optional[str] = Cookie(default=None),
+    db: Session = Depends(get_db),
+):
+    return auth_service.logout(db, refresh_token, response)

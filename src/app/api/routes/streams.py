@@ -10,7 +10,7 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.stream import StreamPrivacy
 from app.models.user import User
-from app.schemas.stream import StreamResponse
+from app.schemas.stream import ForumToggleRequest, StreamResponse
 from app.schemas.stream_member import ApproveRejectRequest, JoinRequestResponse, MemberListResponse, StreamMemberResponse
 from app.services import stream_service
 
@@ -175,6 +175,58 @@ def handle_join_request(
         db,
         stream_id=stream_id,
         requesting_user_id=user_id,
+        payload=payload,
+        current_user=current_user,
+    )
+
+
+@router.delete(
+    "/{stream_id}/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove a member from a stream (owner only)",
+    description=(
+        "Removes an active or pending member from the stream. "
+        "Pass `ban=true` to permanently ban the user — they will be blocked from rejoining. "
+        "Only the stream owner can call this endpoint."
+    ),
+)
+def remove_member(
+    stream_id: UUID,
+    user_id: UUID,
+    ban: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    stream_service.remove_member(
+        db,
+        stream_id=stream_id,
+        target_user_id=user_id,
+        ban=ban,
+        current_user=current_user,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch(
+    "/{stream_id}/forum",
+    response_model=StreamResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Enable or disable the forum for a stream (owner only)",
+    description=(
+        "Sets `forum_enabled` on the stream. "
+        "Pass `{\"forum_enabled\": false}` to disable or `true` to re-enable. "
+        "Only the stream owner can call this endpoint."
+    ),
+)
+def toggle_forum(
+    stream_id: UUID,
+    payload: ForumToggleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamResponse:
+    return stream_service.toggle_forum(
+        db,
+        stream_id=stream_id,
         payload=payload,
         current_user=current_user,
     )

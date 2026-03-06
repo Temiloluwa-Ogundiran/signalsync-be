@@ -45,3 +45,9 @@ def get_by_id(db: Session, stream_id: UUID) -> Optional[Stream]:
         .filter(Stream.id == stream_id, Stream.is_deleted == False)  # noqa: E712
         .first()
     )
+
+
+def set_forum_enabled(db: Session, stream: Stream, enabled: bool) -> Stream:
+    stream.forum_enabled = enabled
+    db.flush()
+    return stream

@@ -12,6 +12,7 @@ from app.core.database import Base
 class MemberStatus(str, enum.Enum):
     active = "active"
     pending = "pending"
+    banned = "banned"
 
 
 class StreamMember(Base):

@@ -62,3 +62,16 @@ def list_active(db: Session, *, stream_id: UUID) -> list[StreamMember]:
         )
         .all()
     )
+
+
+def ban(db: Session, *, user_id: UUID, stream_id: UUID) -> StreamMember:
+    """Set a user's membership to banned, creating the row if it doesn't exist."""
+    member = get(db, user_id=user_id, stream_id=stream_id)
+    if member:
+        member.status = MemberStatus.banned
+        db.flush()
+        return member
+    member = StreamMember(user_id=user_id, stream_id=stream_id, status=MemberStatus.banned)
+    db.add(member)
+    db.flush()
+    return member
