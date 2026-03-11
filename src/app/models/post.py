@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -14,6 +14,12 @@ class PostType(str, enum.Enum):
     signal = "signal"
     text = "text"
     education = "education"
+
+
+class PostMediaType(str, enum.Enum):
+    image = "image"
+    video = "video"
+    document = "document"
 
 
 class Post(Base):
@@ -44,7 +50,8 @@ class Post(Base):
         nullable=False,
     )
 
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # nullable — media-only posts are allowed
+    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Only populated when type == signal
     trade_data: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
@@ -84,8 +91,83 @@ class Post(Base):
         remote_side="Post.id",
         backref="replies",
     )
+    media: Mapped[Optional["PostMedia"]] = relationship(
+        back_populates="post",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="joined",
+    )
+
+
+class PostMedia(Base):
+    __tablename__ = "post_media"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    post_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("posts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # enforces the one-media-per-post constraint at DB level
+        index=True,
+    )
+
+    # The path inside the Supabase bucket (used to generate signed URLs).
+    # Never expose this directly to clients — always sign first.
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    media_type: Mapped[PostMediaType] = mapped_column(
+        Enum(
+            PostMediaType,
+            values_callable=lambda x: [e.value for e in x],
+            name="postmediatypeenum",
+        ),
+        nullable=False,
+    )
+
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    original_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    # Relationships
+    post: Mapped["Post"] = relationship(back_populates="media")
 
 
 # Composite indexes for common query patterns
 Index("ix_posts_stream_created", Post.stream_id, Post.created_at)
 Index("ix_posts_parent_created", Post.parent_post_id, Post.created_at)
+
+
+class PostUpvote(Base):
+    """One row per (user, post) pair — composite PK enforces uniqueness."""
+
+    __tablename__ = "post_upvotes"
+    __table_args__ = (Index("ix_post_upvotes_post_id", "post_id"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        primary_key=True,
+    )
+    post_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("posts.id", ondelete="CASCADE"),
+        nullable=False,
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )

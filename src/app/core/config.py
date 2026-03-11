@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     IS_PRODUCTION: bool = False
     FRONTEND_URL: str = "http://localhost:3000"
     BACKEND_URL: str = "http://localhost:8000"
+    PORT: int = 8000
 
     # Mobile deep link scheme (e.g. "synctrades://")
     DEEP_LINK_SCHEME: Optional[str] = None
@@ -43,6 +44,9 @@ class Settings(BaseSettings):
     # Supabase Storage — bucket names
     SUPABASE_STREAM_AVATARS_BUCKET: str = "stream-avatars"
     SUPABASE_STREAM_BANNERS_BUCKET: str = "stream-banners"
+    SUPABASE_POST_MEDIA_BUCKET: str = "post-media"
+    # How long generated signed URLs for post media remain valid (seconds).
+    MEDIA_SIGNED_URL_TTL_SECONDS: int = 3600  # 1 hour
 
     model_config = SettingsConfigDict(
         env_file=".env",
