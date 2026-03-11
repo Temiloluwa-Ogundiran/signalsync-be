@@ -29,8 +29,8 @@ def _get_mail_config() -> ConnectionConfig:
 
 
 def _verification_link(raw_token: str) -> str:
-    """Build the backend verify-email URL embedded in the email."""
-    return f"{settings.BACKEND_URL}/auth/verify-email?token={raw_token}"
+    """Build the frontend verify-email URL embedded in the email."""
+    return f"{settings.FRONTEND_URL}/verify-email?token={raw_token}"
 
 
 def send_verification_email(to_email: str, raw_token: str) -> None:

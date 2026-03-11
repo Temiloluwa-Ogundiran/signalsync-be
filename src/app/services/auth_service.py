@@ -20,6 +20,7 @@ from app.schemas.auth import (
     RegisterResponse,
     ResendVerificationRequest,
     ResendVerificationResponse,
+    VerifyEmailResponse,
 )
 from app.schemas.user import UserResponse
 from app.utils.email import send_verification_email
@@ -44,6 +45,7 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
         username=payload.username,
         email=payload.email,
         hashed_password=get_password_hash(payload.password),
+        display_name=payload.display_name,
     )
 
     # ── issue verification token ─────────────────────────────────────────────
@@ -120,8 +122,8 @@ def login(db: Session, email: str, password: str, response: Response) -> LoginRe
     )
 
 
-def verify_email(db: Session, raw_token: str) -> str:
-    """Verify the email token and return the redirect URL."""
+def verify_email(db: Session, raw_token: str) -> VerifyEmailResponse:
+    """Verify the email token and mark the user as verified."""
     hashed = hash_token(raw_token)
 
     token = token_repo.get_active(
@@ -152,6 +154,8 @@ def verify_email(db: Session, raw_token: str) -> str:
     user.is_email_verified = True
     token_repo.revoke(db, token)
     db.commit()
+
+    return VerifyEmailResponse(message="Email verified successfully.")
 
 
 def resend_verification(

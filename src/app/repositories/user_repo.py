@@ -33,11 +33,13 @@ def create(
     username: str,
     email: str,
     hashed_password: str,
+    display_name: Optional[str] = None,
 ) -> User:
     user = User(
         username=username,
         email=email.lower(),
         hashed_password=hashed_password,
+        display_name=display_name,
     )
     db.add(user)
     db.flush()
