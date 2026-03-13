@@ -124,6 +124,48 @@ def list_replies(
     return list(db.execute(stmt).unique().scalars().all())
 
 
+def list_by_author(
+    db: Session,
+    *,
+    author_id: uuid.UUID,
+    limit: int,
+    cursor_post_id: Optional[uuid.UUID],
+) -> list[Post]:
+    """
+    Return top-level (non-deleted) posts for an author, newest first.
+    Uses keyset / cursor pagination: cursor points to the *last seen* post's id.
+    """
+    stmt = (
+        select(Post)
+        .where(
+            Post.author_id == author_id,
+            Post.parent_post_id.is_(None),
+            Post.is_deleted.is_(False),
+        )
+        .options(
+            joinedload(Post.author),
+            joinedload(Post.media),
+        )
+        .order_by(Post.created_at.desc(), Post.id.desc())
+        .limit(limit)
+    )
+
+    if cursor_post_id is not None:
+        cursor_stmt = select(Post.created_at, Post.id).where(Post.id == cursor_post_id)
+        cursor_row = db.execute(cursor_stmt).one_or_none()
+        if cursor_row is not None:
+            cursor_created_at, cursor_id = cursor_row
+            stmt = stmt.where(
+                (Post.created_at < cursor_created_at)
+                | (
+                    (Post.created_at == cursor_created_at)
+                    & (Post.id < cursor_id)
+                )
+            )
+
+    return list(db.execute(stmt).unique().scalars().all())
+
+
 def count_replies(db: Session, parent_post_id: uuid.UUID) -> int:
     stmt = select(func.count(Post.id)).where(
         Post.parent_post_id == parent_post_id,

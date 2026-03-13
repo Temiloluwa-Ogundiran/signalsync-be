@@ -149,6 +149,10 @@ def create_post(
     current_user: User,
     data: PostCreate,
     media_file: Optional[UploadFile],
+    media_storage_path: Optional[str] = None,
+    media_type: Optional[str] = None,
+    media_mime_type: Optional[str] = None,
+    media_filename: Optional[str] = None,
 ) -> PostResponse:
     # ── fetch stream ────────────────────────────────────────────────────────
     stream = stream_repo.get_by_id(db, stream_id)
@@ -163,7 +167,8 @@ def create_post(
         )
 
     # ── must have content OR media ───────────────────────────────────────────
-    if not data.content and not media_file:
+    has_media = bool(media_file) or bool(media_storage_path)
+    if not data.content and not has_media:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="A post must have content, a media attachment, or both.",
@@ -180,7 +185,18 @@ def create_post(
         parent_post_id=None,
     )
 
-    if media_file and media_file.filename:
+    # Pre-uploaded media path takes priority over inline upload
+    if media_storage_path and media_type and media_mime_type:
+        from app.models.post import PostMediaType
+        post_media_repo.create(
+            db,
+            post_id=post.id,
+            storage_path=media_storage_path,
+            media_type=PostMediaType(media_type),
+            mime_type=media_mime_type,
+            original_filename=media_filename,
+        )
+    elif media_file and media_file.filename:
         _persist_media(db, post.id, media_file, str(current_user.id))
 
     db.commit()
@@ -321,6 +337,29 @@ def list_replies(
     # so _build_response skips a redundant DB lookup for every item in the page.
     items = [_build_response(db, r, current_user=current_user, parent_is_deleted=parent.is_deleted) for r in replies]
     next_cursor = replies[-1].id if has_more else None
+    return PostListResponse(items=items, next_cursor=next_cursor)
+
+
+def list_my_posts(
+    db: Session,
+    *,
+    current_user: User,
+    cursor_post_id: Optional[uuid.UUID],
+    limit: int,
+) -> PostListResponse:
+    posts = post_repo.list_by_author(
+        db,
+        author_id=current_user.id,
+        limit=limit + 1,
+        cursor_post_id=cursor_post_id,
+    )
+
+    has_more = len(posts) > limit
+    if has_more:
+        posts = posts[:limit]
+
+    items = [_build_response(db, p, current_user=current_user) for p in posts]
+    next_cursor = posts[-1].id if has_more else None
     return PostListResponse(items=items, next_cursor=next_cursor)
 
 

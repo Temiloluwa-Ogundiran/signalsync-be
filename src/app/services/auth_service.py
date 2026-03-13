@@ -11,8 +11,9 @@ from app.core.security import (
     hash_token,
     verify_password,
 )
+from app.models.stream import StreamPrivacy
 from app.models.token import Token, TokenType
-from app.repositories import token_repo, user_repo
+from app.repositories import stream_repo, token_repo, user_repo
 from app.schemas.auth import (
     LoginResponse,
     RefreshResponse,
@@ -46,6 +47,22 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
         email=payload.email,
         hashed_password=get_password_hash(payload.password),
         display_name=payload.display_name,
+    )
+
+    # ── create default stream ────────────────────────────────────────────────
+    stream_repo.create(
+        db,
+        owner_id=user.id,
+        name=f"{user.display_name}'s Stream",
+        description=None,
+        privacy=StreamPrivacy.public,
+        forum_enabled=True,
+        tags=None,
+        price=None,
+        avatar_url=None,
+        banner_url=None,
+        require_join_approval=False,
+        is_default=True,
     )
 
     # ── issue verification token ─────────────────────────────────────────────

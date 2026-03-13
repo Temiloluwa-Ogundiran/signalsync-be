@@ -1,20 +1,53 @@
-import json
-from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.models.stream import StreamPrivacy
 from app.models.user import User
-from app.schemas.stream import ForumToggleRequest, StreamResponse
+from app.schemas.stream import ForumToggleRequest, StreamCreateRequest, StreamDiscoverResponse, StreamDetailResponse, StreamResponse
 from app.schemas.stream_member import ApproveRejectRequest, JoinRequestResponse, MemberListResponse, StreamMemberResponse
 from app.services import stream_service
 
 router = APIRouter(prefix="/streams", tags=["streams"])
+
+
+@router.get(
+    "/mine",
+    response_model=list[StreamResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Get all streams owned by the current user",
+    description="Returns every stream the authenticated user owns, ordered oldest-first. Includes the auto-created default stream.",
+)
+def get_my_streams(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[StreamResponse]:
+    return stream_service.get_my_streams(db, current_user=current_user)
+
+
+@router.get(
+    "/discover",
+    response_model=list[StreamDiscoverResponse],
+    status_code=status.HTTP_200_OK,
+    summary="Discover streams",
+    description=(
+        "Returns all streams not owned by the authenticated user, newest first. "
+        "Includes public, private, and paid streams — callers see metadata but "
+        "cannot access content without joining. "
+        "Paginate with `skip` and `limit` (max 100)."
+    ),
+)
+def discover_streams(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(20, ge=1, le=100, description="Max records to return"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[StreamDiscoverResponse]:
+    return stream_service.discover_streams(
+        db, current_user=current_user, skip=skip, limit=limit
+    )
 
 
 @router.post(
@@ -24,61 +57,29 @@ router = APIRouter(prefix="/streams", tags=["streams"])
     summary="Create a new stream",
     description=(
         "Creates a stream owned by the authenticated user. "
-        "Send as `multipart/form-data`. "
+        "Upload avatar/banner images first via POST /uploads/image and pass the "
+        "returned URLs here. "
         "For paid streams, `price` is required and must be > 0. "
         "`require_join_approval` can only be `true` when `privacy` is `private`."
     ),
 )
 def create_stream(
-    # ── required fields ──────────────────────────────────────────────────────
-    name: str = Form(..., min_length=1, max_length=120),
-    privacy: StreamPrivacy = Form(StreamPrivacy.public),
-    # ── optional fields ───────────────────────────────────────────────────────
-    description: Optional[str] = Form(None),
-    forum_enabled: bool = Form(True),
-    # Tags supplied as a JSON array string: '["forex", "signals"]'
-    tags: Optional[str] = Form(
-        None,
-        description='JSON array of tag strings, e.g. ["forex","signals"]',
-    ),
-    price: Optional[Decimal] = Form(None),
-    require_join_approval: bool = Form(False),
-    # ── image uploads ────────────────────────────────────────────────────────
-    avatar: Optional[UploadFile] = File(None, description="Stream display picture"),
-    banner: Optional[UploadFile] = File(None, description="Stream banner image"),
-    # ── dependencies ─────────────────────────────────────────────────────────
+    payload: StreamCreateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> StreamResponse:
-    # Parse tags from JSON string → list[str]
-    parsed_tags: Optional[list[str]] = None
-    if tags is not None:
-        try:
-            parsed_tags = json.loads(tags)
-            if not isinstance(parsed_tags, list) or not all(
-                isinstance(t, str) for t in parsed_tags
-            ):
-                raise ValueError
-        except (ValueError, TypeError):
-            from fastapi import HTTPException
-
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="'tags' must be a JSON array of strings, e.g. [\"forex\",\"signals\"].",
-            )
-
     return stream_service.create_stream(
         db,
         current_user=current_user,
-        name=name,
-        description=description,
-        privacy=privacy,
-        forum_enabled=forum_enabled,
-        tags=parsed_tags,
-        price=price,
-        require_join_approval=require_join_approval,
-        avatar_file=avatar if avatar and avatar.filename else None,
-        banner_file=banner if banner and banner.filename else None,
+        name=payload.name,
+        description=payload.description,
+        privacy=payload.privacy,
+        forum_enabled=payload.forum_enabled,
+        tags=payload.tags,
+        price=payload.price,
+        require_join_approval=payload.require_join_approval,
+        avatar_url=payload.avatar_url,
+        banner_url=payload.banner_url,
     )
 
 
@@ -113,6 +114,26 @@ def unfollow_stream(
 ) -> Response:
     stream_service.unfollow_stream(db, stream_id=stream_id, current_user=current_user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/{stream_id}",
+    response_model=StreamDetailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get a single stream",
+    description=(
+        "Returns a single stream with follower metadata. "
+        "Private/paid streams require owner or active membership."
+    ),
+)
+def get_stream(
+    stream_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StreamDetailResponse:
+    return stream_service.get_stream_detail(
+        db, stream_id=stream_id, current_user=current_user
+    )
 
 
 @router.get(

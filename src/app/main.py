@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth as auth_router
 from app.api.routes import streams as streams_router
+from app.api.routes import uploads as uploads_router
 from app.api.routes import users as users_router
 from app.api.routes.posts import posts_router, stream_posts_router
 from app.core.config import settings
@@ -17,7 +18,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL],
+    allow_origins=settings.get_cors_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,5 +34,6 @@ def health_check():
 app.include_router(auth_router.router)
 app.include_router(users_router.router)
 app.include_router(streams_router.router)
+app.include_router(uploads_router.router)
 app.include_router(stream_posts_router)
 app.include_router(posts_router)

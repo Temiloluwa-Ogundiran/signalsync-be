@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,7 +27,12 @@ class Settings(BaseSettings):
 
     # App
     IS_PRODUCTION: bool = False
+    # Canonical frontend URL used for email/deep links.
     FRONTEND_URL: str = "http://localhost:3000"
+    # CORS origins as raw env string; parsed via get_cors_allowed_origins().
+    # Supports CSV: "http://localhost:3000,https://app.example.com"
+    # Supports JSON array: "[\"http://localhost:3000\",\"https://app.example.com\"]"
+    CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
     BACKEND_URL: str = "http://localhost:8000"
     PORT: int = 8000
 
@@ -53,6 +59,26 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def get_cors_allowed_origins(self) -> list[str]:
+        raw = (self.CORS_ALLOWED_ORIGINS or "").strip()
+        if not raw:
+            return [self.FRONTEND_URL]
+
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("CORS_ALLOWED_ORIGINS JSON is invalid") from exc
+
+            if not isinstance(parsed, list):
+                raise ValueError("CORS_ALLOWED_ORIGINS JSON must be an array")
+
+            origins = [str(item).strip() for item in parsed if str(item).strip()]
+            return origins or [self.FRONTEND_URL]
+
+        origins = [item.strip() for item in raw.split(",") if item.strip()]
+        return origins or [self.FRONTEND_URL]
 
 
 settings = Settings()

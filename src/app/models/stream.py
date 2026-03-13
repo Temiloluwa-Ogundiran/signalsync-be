@@ -58,6 +58,8 @@ class Stream(Base):
     # Join approval (private streams)
     require_join_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     # Soft delete
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(

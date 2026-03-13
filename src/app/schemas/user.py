@@ -10,6 +10,7 @@ class UserResponse(BaseModel):
     username: str
     email: str
     display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     is_email_verified: bool
     created_at: datetime
 
