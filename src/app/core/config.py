@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
     BACKEND_URL: str = "http://localhost:8000"
     PORT: int = 8000
+    AUTO_SEED_ON_STARTUP: bool = True
 
     # Mobile deep link scheme (e.g. "synctrades://")
     DEEP_LINK_SCHEME: Optional[str] = None
@@ -51,8 +52,34 @@ class Settings(BaseSettings):
     SUPABASE_STREAM_AVATARS_BUCKET: str = "stream-avatars"
     SUPABASE_STREAM_BANNERS_BUCKET: str = "stream-banners"
     SUPABASE_POST_MEDIA_BUCKET: str = "post-media"
+    JOURNAL_VOICE_BUCKET: str = "journal-voice-notes"
+    JOURNAL_IMAGES_BUCKET: str = "journal-images"
     # How long generated signed URLs for post media remain valid (seconds).
     MEDIA_SIGNED_URL_TTL_SECONDS: int = 3600  # 1 hour
+    VOICE_SIGNED_URL_TTL_SECONDS: int = 3600
+    IMAGE_SIGNED_URL_TTL_SECONDS: int = 3600
+
+    # MetaAPI
+    METAAPI_TOKEN: str = ""
+    METAAPI_VERIFY_SSL: bool = True
+    METAAPI_PROVISIONING_BASE_URL: str = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
+    METAAPI_CLIENT_BASE_URL: str = "https://mt-client-api-v1.london.agiliumtrade.ai"
+    METAAPI_ACCOUNT_ENGINE: str = "cloud-g2"
+    METAAPI_ACCOUNT_MAGIC: int = 10001
+    METAAPI_DEALS_TIMEOUT_SECONDS: float = 45.0
+    METAAPI_DEALS_MAX_RETRIES: int = 3
+    METAAPI_DEALS_RETRY_BACKOFF_SECONDS: float = 1.5
+    INITIAL_SYNC_LOOKBACK_DAYS: int = 30
+
+    # Encryption key for broker credential fields (Fernet base64 key)
+    ENCRYPTION_KEY: str = ""
+
+    # Sync
+    SYNC_INTERVAL_MINUTES: int = 5
+
+    # Celery
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
 
     model_config = SettingsConfigDict(
         env_file=".env",

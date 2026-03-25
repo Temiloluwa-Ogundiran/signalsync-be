@@ -10,3 +10,8 @@ wheels/
 .venv
 .env
 copilot-instructions.md
+repomix-output.xml
+celerybeat-schedule
+celerybeat-schedule.dat
+celerybeat-schedule.dir
+celerybeat-schedule.bak
