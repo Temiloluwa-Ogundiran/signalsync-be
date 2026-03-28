@@ -1,10 +1,8 @@
 from fastapi import APIRouter, Cookie, Depends, Query, Response, status
-from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.auth import (
     LoginResponse,
@@ -13,6 +11,7 @@ from app.schemas.auth import (
     RegisterResponse,
     ResendVerificationRequest,
     ResendVerificationResponse,
+    VerifyEmailResponse,
 )
 from app.services import auth_service
 
@@ -31,26 +30,20 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 
 @router.get(
     "/verify-email",
-    summary="Verify a user's email address via link",
+    response_model=VerifyEmailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Verify a user's email address",
     description=(
-        "Called when the user clicks the verification link in their email. "
-        "On success, redirects to the frontend (or mobile deep link if "
-        "`platform=mobile` is passed)."
+        "The frontend reads the token from the URL query param and calls this "
+        "endpoint. On success returns a JSON confirmation; the frontend handles "
+        "any subsequent navigation."
     ),
 )
 def verify_email(
     token: str = Query(..., description="Raw verification token from the email link"),
-    platform: str = Query("web", description="'web' or 'mobile'"),
     db: Session = Depends(get_db),
 ):
-    auth_service.verify_email(db, token)
-
-    if platform == "mobile" and settings.DEEP_LINK_SCHEME:
-        redirect_url = f"{settings.DEEP_LINK_SCHEME}email-verified"
-    else:
-        redirect_url = f"{settings.FRONTEND_URL}/email-verified"
-
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_302_FOUND)
+    return auth_service.verify_email(db, token)
 
 
 @router.post(

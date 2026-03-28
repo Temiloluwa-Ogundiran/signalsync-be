@@ -2,17 +2,18 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import HTTPException, UploadFile, status
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.stream import StreamPrivacy
 from app.models.stream_member import MemberStatus
 from app.models.user import User
+from typing import cast
+
 from app.repositories import stream_member_repo, stream_repo
-from app.schemas.stream import ForumToggleRequest, StreamResponse
+from app.repositories.stream_repo import DiscoverRow
+from app.schemas.stream import ForumToggleRequest, StreamDiscoverResponse, StreamDetailResponse, StreamResponse
 from app.schemas.stream_member import ApproveRejectRequest, MemberListResponse, StreamMemberResponse
-from app.utils.storage import upload_image
 
 
 def create_stream(
@@ -26,8 +27,8 @@ def create_stream(
     tags: Optional[list[str]],
     price: Optional[Decimal],
     require_join_approval: bool,
-    avatar_file: Optional[UploadFile],
-    banner_file: Optional[UploadFile],
+    avatar_url: Optional[str] = None,
+    banner_url: Optional[str] = None,
 ) -> StreamResponse:
     # ── business rule: paid streams must have a positive price ───────────────
     if privacy == StreamPrivacy.paid:
@@ -42,25 +43,6 @@ def create_stream(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="'require_join_approval' can only be enabled for private streams.",
-        )
-
-    # ── upload images if provided ────────────────────────────────────────────
-    owner_prefix = str(current_user.id)
-
-    avatar_url: Optional[str] = None
-    if avatar_file is not None:
-        avatar_url = upload_image(
-            avatar_file,
-            bucket=settings.SUPABASE_STREAM_AVATARS_BUCKET,
-            prefix=owner_prefix,
-        )
-
-    banner_url: Optional[str] = None
-    if banner_file is not None:
-        banner_url = upload_image(
-            banner_file,
-            bucket=settings.SUPABASE_STREAM_BANNERS_BUCKET,
-            prefix=owner_prefix,
         )
 
     # ── persist ──────────────────────────────────────────────────────────────
@@ -81,6 +63,54 @@ def create_stream(
     db.refresh(stream)
 
     return StreamResponse.model_validate(stream)
+
+
+def get_stream_detail(
+    db: Session,
+    *,
+    stream_id: UUID,
+    current_user: User,
+) -> StreamDetailResponse:
+    stream = stream_repo.get_by_id_with_owner(db, stream_id)
+    if not stream:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
+
+    is_owner = stream.owner_id == current_user.id
+
+    if stream.privacy != StreamPrivacy.public and not is_owner:
+        membership = stream_member_repo.get(
+            db, user_id=current_user.id, stream_id=stream_id
+        )
+        if not membership or membership.status != MemberStatus.active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You must be an active member to view this stream.",
+            )
+
+    follower_count = stream_member_repo.count_active(db, stream_id=stream_id)
+    member = stream_member_repo.get(db, user_id=current_user.id, stream_id=stream_id)
+    is_following = bool(member and member.status in [MemberStatus.active, MemberStatus.pending])
+
+    tags = cast(Optional[list[str]], stream.tags) if isinstance(stream.tags, list) else None
+
+    return StreamDetailResponse(
+        id=stream.id,
+        owner_id=stream.owner_id,
+        name=stream.name,
+        description=stream.description,
+        privacy=stream.privacy,
+        forum_enabled=stream.forum_enabled,
+        tags=tags,
+        price=stream.price,
+        avatar_url=stream.avatar_url,
+        banner_url=stream.banner_url,
+        require_join_approval=stream.require_join_approval,
+        is_default=stream.is_default,
+        created_at=stream.created_at,
+        owner_display_name=stream.owner.display_name if stream.owner else None,
+        follower_count=follower_count,
+        is_following=is_following,
+    )
 
 
 def follow_stream(
@@ -304,3 +334,41 @@ def toggle_forum(
     db.refresh(stream)
 
     return StreamResponse.model_validate(stream)
+
+
+def get_my_streams(db: Session, *, current_user: User) -> list[StreamResponse]:
+    streams = stream_repo.get_all_by_owner(db, current_user.id)
+    return [StreamResponse.model_validate(s) for s in streams]
+
+
+def discover_streams(
+    db: Session,
+    *,
+    current_user: User,
+    skip: int = 0,
+    limit: int = 20,
+) -> list[StreamDiscoverResponse]:
+    rows: list[DiscoverRow] = stream_repo.list_discover(
+        db,
+        exclude_owner_id=current_user.id,
+        current_user_id=current_user.id,
+        skip=skip,
+        limit=limit,
+    )
+    return [
+        StreamDiscoverResponse(
+            id=r.id,
+            name=r.name,
+            description=r.description,
+            privacy=r.privacy,
+            tags=r.tags,
+            avatar_url=r.avatar_url,
+            banner_url=r.banner_url,
+            owner_display_name=r.owner_display_name,
+            follower_count=r.follower_count,
+            is_following=r.is_following,
+            membership_status=r.membership_status,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]

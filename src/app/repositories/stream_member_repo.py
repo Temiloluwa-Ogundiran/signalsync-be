@@ -3,6 +3,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 
 from app.models.stream_member import MemberStatus, StreamMember
 
@@ -61,6 +62,17 @@ def list_active(db: Session, *, stream_id: UUID) -> list[StreamMember]:
             StreamMember.status == MemberStatus.active,
         )
         .all()
+    )
+
+
+def count_active(db: Session, *, stream_id: UUID) -> int:
+    return (
+        db.query(func.count(StreamMember.user_id))
+        .filter(
+            StreamMember.stream_id == stream_id,
+            StreamMember.status == MemberStatus.active,
+        )
+        .scalar()
     )
 
 

@@ -22,6 +22,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
 
+    display_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     avatar_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
@@ -57,5 +58,19 @@ class User(Base):
 
     stream_memberships: Mapped[List["StreamMember"]] = relationship(  # noqa: F821
         back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    trading_accounts: Mapped[List["TradingAccount"]] = relationship(  # noqa: F821
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+    journal_messages: Mapped[List["JournalMessage"]] = relationship(  # noqa: F821
+        back_populates="author",
+    )
+
+    journal_templates: Mapped[List["JournalTemplate"]] = relationship(  # noqa: F821
+        back_populates="owner",
         cascade="all, delete-orphan",
     )

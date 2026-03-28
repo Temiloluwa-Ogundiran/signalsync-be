@@ -48,6 +48,10 @@ def create_post(
         description="JSON object string, e.g. {\"symbol\":\"BTCUSDT\",\"direction\":\"long\"}",
     ),
     media: Optional[UploadFile] = File(None, description="Optional media attachment (image, video, or PDF)"),
+    media_storage_path: Optional[str] = Form(None, description="Pre-uploaded media storage path from POST /uploads/media"),
+    media_type: Optional[str] = Form(None, description="Media type: image, video, or document"),
+    media_mime_type: Optional[str] = Form(None, description="MIME type of pre-uploaded media"),
+    media_filename: Optional[str] = Form(None, description="Original filename of pre-uploaded media"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PostResponse:
@@ -58,6 +62,10 @@ def create_post(
         current_user=current_user,
         data=data,
         media_file=media if media and media.filename else None,
+        media_storage_path=media_storage_path,
+        media_type=media_type,
+        media_mime_type=media_mime_type,
+        media_filename=media_filename,
     )
 
 
@@ -96,6 +104,34 @@ def list_stream_posts(
 # ---------------------------------------------------------------------------
 # Post-scoped endpoints
 # ---------------------------------------------------------------------------
+
+
+@posts_router.get(
+    "/mine",
+    response_model=PostListResponse,
+    summary="List my posts across streams",
+    description=(
+        "Returns the current user's top-level posts across all streams, newest-first. "
+        "Cursor-paginated."
+    ),
+)
+def list_my_posts(
+    cursor: Optional[uuid.UUID] = None,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PostListResponse:
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'limit' must be between 1 and 100.",
+        )
+    return post_service.list_my_posts(
+        db,
+        current_user=current_user,
+        cursor_post_id=cursor,
+        limit=limit,
+    )
 
 
 @posts_router.get(
