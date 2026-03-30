@@ -20,6 +20,7 @@ class DailyTradeChipResponse(BaseModel):
 class DailyJournalResponse(BaseModel):
     id: uuid.UUID
     trading_date: date
+    account_timezone: str
     trade_chips: list[DailyTradeChipResponse]
     messages: list[JournalMessageResponse]
 

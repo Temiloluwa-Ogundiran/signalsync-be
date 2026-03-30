@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 from app.models.trade import TradeDirection, TradeSession
 from app.models.trading_account import TradingAccount
 from app.core.config import settings
-from app.repositories import daily_stats_repo, trade_repo, trading_account_repo
+from app.repositories import daily_stats_repo, trading_account_repo
+from app.repositories.trade_repo import (
+    delete_trades_outside_valid_broker_ids_in_window,
+    update_closed_trade,
+    upsert_closed_trade,
+)
 from app.services.metaapi_service import metaapi_service
 from app.utils.timezone import classify_session, normalize_broker_datetime_to_utc, to_account_local_date
 
@@ -27,6 +32,29 @@ class SyncResult:
 
 _sync_guard = threading.Lock()
 _active_sync_accounts: set = set()
+
+_OPEN_TIMESTAMP_KEYS = (
+    "opened_at",
+    "openedAt",
+    "openedTime",
+    "openTime",
+    "open_time_msc",
+    "openTimeMsc",
+    "open_time",
+    "positionOpenTime",
+    "positionOpenDate",
+    "positionTime",
+    "entryTime",
+    "entry_time",
+    "position_open_time",
+)
+_CLOSE_TIMESTAMP_KEYS = (
+    "closed_at",
+    "closeTime",
+    "close_time",
+    "doneTime",
+    "time",
+)
 
 
 def _try_acquire_account_sync_lock(account_id) -> bool:
@@ -64,6 +92,32 @@ def _pick_timestamp(deal: dict[str, Any], keys: tuple[str, ...]) -> datetime:
                 iso_value = value.replace("Z", "+00:00")
                 return datetime.fromisoformat(iso_value)
     raise ValueError(f"Deal timestamp missing. Expected one of keys: {keys}")
+
+
+def _extract_timestamp_with_normalized_keys(deal: dict[str, Any], keys: tuple[str, ...]) -> datetime:
+    try:
+        return _pick_timestamp(deal, keys)
+    except ValueError:
+        normalized_key_map = {
+            "".join(ch for ch in str(key).lower() if ch.isalnum()): key
+            for key in deal.keys()
+        }
+
+        for desired in keys:
+            normalized_desired = "".join(ch for ch in str(desired).lower() if ch.isalnum())
+            actual_key = normalized_key_map.get(normalized_desired)
+            if actual_key is None:
+                continue
+            value = deal.get(actual_key)
+            if not value:
+                continue
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, str):
+                iso_value = value.replace("Z", "+00:00")
+                return datetime.fromisoformat(iso_value)
+
+        raise
 
 
 def _is_trade_deal(deal: dict[str, Any]) -> bool:
@@ -108,8 +162,11 @@ def ingest_closed_deals(
 ) -> SyncResult:
     touched_dates: set[date] = set(extra_touched_dates or set())
     inserted = 0
+    updated = 0
     skipped_non_trade = 0
     skipped_missing_broker_id = 0
+    skipped_missing_open_timestamp = 0
+    skipped_missing_close_timestamp = 0
 
     for deal in deals:
         if not _is_trade_deal(deal):
@@ -121,8 +178,28 @@ def ingest_closed_deals(
             skipped_missing_broker_id += 1
             continue
 
-        opened_raw = _pick_timestamp(deal, ("opened_at", "openTime", "open_time", "time"))
-        closed_raw = _pick_timestamp(deal, ("closed_at", "closeTime", "close_time", "doneTime", "time"))
+        try:
+            closed_raw = _extract_timestamp_with_normalized_keys(deal, _CLOSE_TIMESTAMP_KEYS)
+        except ValueError:
+            skipped_missing_close_timestamp += 1
+            logger.warning(
+                "Skipping deal without close timestamp | account_id=%s broker_trade_id=%s",
+                account.id,
+                broker_trade_id,
+            )
+            continue
+
+        try:
+            opened_raw = _extract_timestamp_with_normalized_keys(deal, _OPEN_TIMESTAMP_KEYS)
+        except ValueError:
+            skipped_missing_open_timestamp += 1
+            logger.warning(
+                "Skipping deal without open timestamp | account_id=%s broker_trade_id=%s available_keys=%s",
+                account.id,
+                broker_trade_id,
+                sorted(str(key) for key in deal.keys()),
+            )
+            continue
 
         opened_at_utc = normalize_broker_datetime_to_utc(opened_raw, account.broker_utc_offset)
         closed_at_utc = normalize_broker_datetime_to_utc(closed_raw, account.broker_utc_offset)
@@ -143,7 +220,7 @@ def ingest_closed_deals(
         symbol = str(deal.get("symbol") or "").strip() or "UNKNOWN"
         volume = _pick_price(deal, ("volume", "lots"))
 
-        was_inserted = trade_repo.upsert_closed_trade(
+        was_inserted = upsert_closed_trade(
             db,
             account_id=account.id,
             broker_trade_id=broker_trade_id,
@@ -165,6 +242,28 @@ def ingest_closed_deals(
         if was_inserted:
             inserted += 1
             touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
+        else:
+            was_updated = update_closed_trade(
+                db,
+                account_id=account.id,
+                broker_trade_id=broker_trade_id,
+                symbol=symbol,
+                direction=direction,
+                open_price=open_price,
+                close_price=close_price,
+                volume=volume,
+                profit=profit,
+                commission=commission,
+                swap=swap,
+                net_profit=net_profit,
+                duration_seconds=max(0, _as_int((closed_at_utc - opened_at_utc).total_seconds())),
+                session=session_value,
+                opened_at=opened_at_utc,
+                closed_at=closed_at_utc,
+            )
+            if was_updated:
+                updated += 1
+                touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
 
     for trading_date in touched_dates:
         daily_stats_repo.delete_for_trading_date(
@@ -185,13 +284,17 @@ def ingest_closed_deals(
     logger.info(
         (
             "Journal ingest complete | account_id=%s received=%s inserted=%s "
-            "skipped_non_trade=%s skipped_missing_broker_id=%s touched_dates=%s"
+            "updated=%s skipped_non_trade=%s skipped_missing_broker_id=%s "
+            "skipped_missing_open_timestamp=%s skipped_missing_close_timestamp=%s touched_dates=%s"
         ),
         account.id,
         len(deals),
         inserted,
+        updated,
         skipped_non_trade,
         skipped_missing_broker_id,
+        skipped_missing_open_timestamp,
+        skipped_missing_close_timestamp,
         len(touched_dates),
     )
 
@@ -244,7 +347,7 @@ def sync_account_deals(
             if broker_trade_id
         }
 
-        deleted_count, deleted_dates = trade_repo.delete_trades_outside_valid_broker_ids_in_window(
+        deleted_count, deleted_dates = delete_trades_outside_valid_broker_ids_in_window(
             db,
             account_id=account.id,
             closed_from_utc=from_dt,

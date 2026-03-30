@@ -321,6 +321,7 @@ def get_or_create_daily_journal(
     return DailyJournalResponse(
         id=daily_journal.id,
         trading_date=daily_journal.trading_date,
+        account_timezone=account.timezone,
         trade_chips=trade_chips,
         messages=[_serialize_message(db, m) for m in messages],
     )

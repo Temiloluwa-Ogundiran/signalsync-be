@@ -131,6 +131,7 @@ def list_syncable_accounts(db: Session) -> list[TradingAccount]:
             [
                 TradingAccountStatus.pending_sync,
                 TradingAccountStatus.synced,
+                TradingAccountStatus.error,
             ]
         ),
     )
@@ -146,6 +147,11 @@ def set_last_synced_at(db: Session, account: TradingAccount, synced_at: datetime
 
 def set_sync_error(db: Session, account: TradingAccount, message: str) -> None:
     account.status = TradingAccountStatus.error
+    account.sync_error_message = message
+    db.flush()
+
+
+def set_sync_warning(db: Session, account: TradingAccount, message: str) -> None:
     account.sync_error_message = message
     db.flush()
 

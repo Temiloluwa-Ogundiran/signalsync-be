@@ -69,7 +69,8 @@ class Settings(BaseSettings):
     METAAPI_DEALS_TIMEOUT_SECONDS: float = 45.0
     METAAPI_DEALS_MAX_RETRIES: int = 3
     METAAPI_DEALS_RETRY_BACKOFF_SECONDS: float = 1.5
-    INITIAL_SYNC_LOOKBACK_DAYS: int = 30
+    METAAPI_DEALS_CHUNK_DAYS: int = 7
+    INITIAL_SYNC_LOOKBACK_DAYS: int = 14
 
     # Encryption key for broker credential fields (Fernet base64 key)
     ENCRYPTION_KEY: str = ""

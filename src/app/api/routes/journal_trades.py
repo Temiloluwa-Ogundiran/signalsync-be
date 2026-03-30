@@ -48,7 +48,7 @@ def list_journal_trades(
         trades = trades[:limit]
 
     return JournalTradeListResponse(
-        items=[JournalTradeResponse.model_validate(t) for t in trades],
+        items=trades,
         next_cursor=trades[-1].id if has_more else None,
     )
 

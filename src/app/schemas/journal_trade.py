@@ -25,6 +25,8 @@ class JournalTradeResponse(BaseModel):
     session: TradeSession
     opened_at: datetime
     closed_at: datetime
+    balance_before_trade: Decimal | None = None
+    net_roi_percent: Decimal | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

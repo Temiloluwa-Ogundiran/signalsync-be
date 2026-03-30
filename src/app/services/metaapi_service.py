@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 import uuid
 import json
@@ -11,6 +11,8 @@ from app.core.config import settings
 
 
 logger = logging.getLogger(__name__)
+
+TRANSIENT_METAAPI_STATUS_CODES = {429, 502, 503, 504}
 
 
 class MetaApiProvisioningError(Exception):
@@ -130,9 +132,51 @@ class MetaApiService:
         from_dt: Optional[datetime] = None,
         to_dt: Optional[datetime] = None,
     ) -> list[dict[str, Any]]:
-        from_value = from_dt.isoformat() if from_dt else "1970-01-01T00:00:00.000Z"
-        to_value = to_dt.isoformat() if to_dt else datetime.utcnow().isoformat() + "Z"
+        from_value = from_dt or datetime.fromisoformat("1970-01-01T00:00:00+00:00")
+        to_value = to_dt or datetime.now(timezone.utc)
 
+        if settings.METAAPI_DEALS_CHUNK_DAYS <= 0:
+            chunks = [(from_value, to_value)]
+        else:
+            chunks = []
+            cursor = from_value
+            while cursor < to_value:
+                chunk_end = min(
+                    to_value,
+                    cursor + timedelta(days=settings.METAAPI_DEALS_CHUNK_DAYS),
+                )
+                chunks.append((cursor, chunk_end))
+                cursor = chunk_end
+
+        all_deals: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        for chunk_from, chunk_to in chunks:
+            payload = self._get_deals_window(account_id, chunk_from, chunk_to)
+            deals = payload if isinstance(payload, list) else payload.get("deals", []) if isinstance(payload, dict) else []
+
+            for deal in deals:
+                dedupe_key = str(
+                    deal.get("id")
+                    or deal.get("broker_trade_id")
+                    or deal.get("ticket")
+                    or f"{deal.get('time')}-{deal.get('symbol')}-{deal.get('profit')}"
+                )
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+                all_deals.append(deal)
+
+        return all_deals
+
+    def _get_deals_window(
+        self,
+        account_id: str,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> Any:
+        from_value = from_dt.isoformat()
+        to_value = to_dt.isoformat() + ("Z" if to_dt.tzinfo is None else "")
         url = f"{settings.METAAPI_CLIENT_BASE_URL}/users/current/accounts/{account_id}/history-deals/time/{from_value}/{to_value}"
 
         last_exc: Exception | None = None
@@ -141,7 +185,7 @@ class MetaApiService:
                 with self._client() as client:
                     response = client.get(url, timeout=settings.METAAPI_DEALS_TIMEOUT_SECONDS)
 
-                if response.status_code in {429, 502, 503, 504}:
+                if response.status_code in TRANSIENT_METAAPI_STATUS_CODES:
                     raise httpx.HTTPStatusError(
                         f"Transient MetaAPI status {response.status_code}",
                         request=response.request,
@@ -149,18 +193,13 @@ class MetaApiService:
                     )
 
                 response.raise_for_status()
-                payload = response.json()
-                break
+                return response.json()
             except (httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError) as exc:
                 last_exc = exc
+                should_retry = is_transient_metaapi_error(exc)
                 status_code = None
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
                     status_code = exc.response.status_code
-
-                should_retry = (
-                    isinstance(exc, (httpx.ReadTimeout, httpx.ConnectError))
-                    or status_code in {429, 502, 503, 504}
-                )
 
                 if not should_retry or attempt == settings.METAAPI_DEALS_MAX_RETRIES:
                     raise
@@ -175,12 +214,8 @@ class MetaApiService:
                 )
                 time.sleep(sleep_seconds)
 
-        if last_exc is not None and 'payload' not in locals():
+        if last_exc is not None:
             raise last_exc
-
-        if isinstance(payload, list):
-            return payload
-        return payload.get("deals", []) if isinstance(payload, dict) else []
 
     def get_account_info(self, account_id: str) -> dict[str, Any]:
         url = f"{settings.METAAPI_CLIENT_BASE_URL}/users/current/accounts/{account_id}/account-information"
@@ -188,6 +223,14 @@ class MetaApiService:
             response = client.get(url)
             response.raise_for_status()
             return response.json()
+
+
+def is_transient_metaapi_error(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.ReadTimeout, httpx.ConnectError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        return exc.response.status_code in TRANSIENT_METAAPI_STATUS_CODES
+    return False
 
 
 metaapi_service = MetaApiService()

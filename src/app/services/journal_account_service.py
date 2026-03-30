@@ -12,7 +12,11 @@ from app.models.user import User
 from app.repositories import trading_account_repo
 from app.schemas.journal_account import JournalAccountConnectRequest
 from app.services.journal_sync_service import sync_account_deals
-from app.services.metaapi_service import MetaApiProvisioningError, metaapi_service
+from app.services.metaapi_service import (
+    MetaApiProvisioningError,
+    is_transient_metaapi_error,
+    metaapi_service,
+)
 from app.utils.encryption import encrypt_secret
 from app.utils.timezone import validate_timezone_name
 
@@ -188,7 +192,18 @@ def sync_account(db: Session, *, current_user: User, account_id: uuid.UUID):
     except HTTPException:
         raise
     except Exception as exc:
-        trading_account_repo.set_sync_error(db, account, str(exc))
+        if is_transient_metaapi_error(exc):
+            trading_account_repo.set_sync_warning(
+                db,
+                account,
+                f"Transient MetaAPI sync error: {str(exc)[:450]}",
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MetaAPI timed out while syncing. Please retry in a moment.",
+            ) from exc
+        trading_account_repo.set_sync_error(db, account, str(exc)[:500])
         db.commit()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Account sync failed.") from exc
 

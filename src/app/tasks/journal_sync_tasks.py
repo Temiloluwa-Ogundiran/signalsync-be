@@ -7,6 +7,7 @@ from app.core.database import SessionLocal
 from app.models.trading_account import TradingAccountStatus
 from app.repositories import sync_lock_repo, trading_account_repo
 from app.services.journal_sync_service import sync_account_deals
+from app.services.metaapi_service import is_transient_metaapi_error
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ def sync_all_accounts() -> dict:
             with SessionLocal() as db:
                 account_ids = [account.id for account in trading_account_repo.list_syncable_accounts(db)]
 
+            logger.info("Journal sync cycle candidates=%s", len(account_ids))
+
             for account_id in account_ids:
                 attempted += 1
                 try:
@@ -46,7 +49,6 @@ def sync_all_accounts() -> dict:
                         account = trading_account_repo.get_by_id(db, account_id)
                         if account is None or account.status in {
                             TradingAccountStatus.disconnected,
-                            TradingAccountStatus.error,
                         }:
                             skipped += 1
                             continue
@@ -62,7 +64,14 @@ def sync_all_accounts() -> dict:
                     with SessionLocal() as db:
                         account = trading_account_repo.get_by_id(db, account_id)
                         if account is not None:
-                            trading_account_repo.set_sync_error(db, account, str(exc)[:500])
+                            if is_transient_metaapi_error(exc):
+                                trading_account_repo.set_sync_warning(
+                                    db,
+                                    account,
+                                    f"Transient MetaAPI sync error: {str(exc)[:450]}",
+                                )
+                            else:
+                                trading_account_repo.set_sync_error(db, account, str(exc)[:500])
                             db.commit()
         finally:
             sync_lock_repo.release_cycle_lock(lock_db)
@@ -117,7 +126,16 @@ def sync_account(account_id: str) -> dict:
                 "touched_dates": result.touched_trading_dates,
             }
         except Exception as exc:  # noqa: BLE001
-            trading_account_repo.set_sync_error(db, account, str(exc)[:500])
+            if is_transient_metaapi_error(exc):
+                trading_account_repo.set_sync_warning(
+                    db,
+                    account,
+                    f"Transient MetaAPI sync error: {str(exc)[:450]}",
+                )
+            else:
+                trading_account_repo.set_sync_error(db, account, str(exc)[:500])
             db.commit()
             logger.exception("Journal sync failed for single account_id=%s", account_id)
+            if is_transient_metaapi_error(exc):
+                return {"status": "timeout", "reason": "MetaAPI timeout/transient error. Please retry."}
             return {"status": "error", "reason": str(exc)[:200]}

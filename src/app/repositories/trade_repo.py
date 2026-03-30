@@ -5,6 +5,7 @@ from typing import Optional
 
 from sqlalchemy import Date, cast, func, select
 from sqlalchemy import delete as sa_delete
+from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -108,6 +109,51 @@ def list_by_account(
     return list(db.execute(stmt).scalars().all())
 
 
+def update_closed_trade(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    broker_trade_id: str,
+    symbol: str,
+    direction: TradeDirection,
+    open_price: Decimal,
+    close_price: Decimal,
+    volume: Decimal,
+    profit: Decimal,
+    commission: Decimal,
+    swap: Decimal,
+    net_profit: Decimal,
+    duration_seconds: int,
+    session: TradeSession,
+    opened_at: datetime,
+    closed_at: datetime,
+) -> bool:
+    stmt = (
+        sa_update(Trade)
+        .where(
+            Trade.account_id == account_id,
+            Trade.broker_trade_id == broker_trade_id,
+        )
+        .values(
+            symbol=symbol,
+            direction=direction,
+            open_price=open_price,
+            close_price=close_price,
+            volume=volume,
+            profit=profit,
+            commission=commission,
+            swap=swap,
+            net_profit=net_profit,
+            duration_seconds=duration_seconds,
+            session=session,
+            opened_at=opened_at,
+            closed_at=closed_at,
+        )
+    )
+    updated = db.execute(stmt)
+    return bool(updated.rowcount)
+
+
 def list_by_account_local_date(
     db: Session,
     *,
@@ -124,6 +170,22 @@ def list_by_account_local_date(
         .order_by(Trade.closed_at.asc(), Trade.id.asc())
     )
     return list(db.execute(stmt).scalars().all())
+
+
+def sum_net_profit(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    closed_before_utc: Optional[datetime] = None,
+) -> Decimal:
+    stmt = select(func.coalesce(func.sum(Trade.net_profit), Decimal("0"))).where(Trade.account_id == account_id)
+    if closed_before_utc is not None:
+        stmt = stmt.where(Trade.closed_at < closed_before_utc)
+
+    value = db.execute(stmt).scalar_one()
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value or 0))
 
 
 def delete_trades_outside_valid_broker_ids_in_window(
