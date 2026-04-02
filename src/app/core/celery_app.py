@@ -23,6 +23,12 @@ celery_app.conf.beat_schedule = {
         "task": "journal.sync_all_accounts",
         "schedule": max(60, settings.SYNC_INTERVAL_MINUTES * 60),
     },
+    # Periodic trigger for accounts synced via the headless MT5 microservice.
+    # Fires at the same interval as the MetaAPI sync cycle.
+    "journal-sync-all-mt5-accounts": {
+        "task": "journal.sync_all_mt5_accounts",
+        "schedule": max(60, settings.SYNC_INTERVAL_MINUTES * 60),
+    },
 }
 
 

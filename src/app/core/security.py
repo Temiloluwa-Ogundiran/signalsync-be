@@ -56,7 +56,7 @@ def create_uuid_token(db: Session, user_id: UUID, token_type: Any) -> str:
     Revokes any existing active token of the same type first.
     Import Token and TokenType inside callers to avoid circular imports.
     """
-    from app.models.token import Token, TokenType  # noqa: PLC0415
+    from app.domains.auth.models import Token, TokenType  # noqa: PLC0415
 
     existing = (
         db.query(Token)
