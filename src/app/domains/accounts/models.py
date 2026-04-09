@@ -39,6 +39,14 @@ class TradingAccountProvisioningStatus(str, enum.Enum):
     failed = "failed"
 
 
+class TradingAccountConnectionState(str, enum.Enum):
+    pending_verification = "pending_verification"
+    verification_failed = "verification_failed"
+    bootstrapping = "bootstrapping"
+    ready = "ready"
+    bootstrap_failed = "bootstrap_failed"
+
+
 class TradingAccountType(str, enum.Enum):
     demo = "demo"
     live = "live"
@@ -140,6 +148,27 @@ class TradingAccount(Base):
     copy_magic_numbers: Mapped[Optional[List[int]]] = mapped_column(
         ARRAY(Integer), nullable=True, default=None
     )
+
+    connection_state: Mapped[TradingAccountConnectionState] = mapped_column(
+        Enum(
+            TradingAccountConnectionState,
+            values_callable=lambda x: [e.value for e in x],
+            name="tradingaccountconnectionstateenum",
+        ),
+        nullable=False,
+        default=TradingAccountConnectionState.pending_verification,
+    )
+    is_data_ready_for_stats: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+    last_bootstrap_synced_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+    )
+    bootstrap_error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

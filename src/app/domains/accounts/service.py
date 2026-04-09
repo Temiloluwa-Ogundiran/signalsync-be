@@ -1,20 +1,16 @@
 import uuid
 import logging
 from typing import Any
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.domains.accounts import repository as account_repo
-from app.domains.accounts.metaapi import (
-    MetaApiProvisioningError,
-    is_transient_metaapi_error,
-    metaapi_service,
-)
+from app.domains.accounts.metaapi import is_transient_metaapi_error
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.accounts.schemas import AccountConnectRequest
 from app.domains.accounts.sync import ingest_mt5_deals, sync_account_deals
@@ -26,10 +22,10 @@ from app.shared.utils.timezone import validate_timezone_name
 logger = logging.getLogger(__name__)
 
 
-def _format_provisioning_detail(message: str, code: str | None) -> str:
-    if code:
-        return f"MetaAPI rejected account provisioning ({code}): {message}"
-    return f"MetaAPI rejected account provisioning: {message}"
+def _build_pseudo_meta_account_id(
+    *, broker_login: str, broker_server: str, platform: str
+) -> str:
+    return f"{platform}:{broker_server.strip()}:{broker_login.strip()}"
 
 
 def connect_account(
@@ -38,58 +34,13 @@ def connect_account(
     current_user: User,
     payload: AccountConnectRequest,
 ) -> TradingAccount:
-    if not settings.METAAPI_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="MetaAPI is not configured.",
-        )
-
     validate_timezone_name(payload.timezone)
     broker_name = (payload.broker_name or "").strip() or payload.broker_server
-
-    try:
-        meta_account_id = metaapi_service.provision_account(
-            broker_name=broker_name,
-            broker_login=payload.broker_login,
-            broker_server=payload.broker_server,
-            platform=payload.platform.value,
-            investor_password=payload.investor_password,
-            trader_password=payload.trader_password,
-            display_name=payload.display_name,
-        )
-    except MetaApiProvisioningError as exc:
-        logger.warning(
-            "MetaAPI provisioning rejected | status=%s code=%s server=%s login=%s",
-            exc.status_code,
-            exc.code,
-            payload.broker_server,
-            payload.broker_login,
-        )
-        if exc.status_code in {400, 401, 403, 404}:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=_format_provisioning_detail(exc.message, exc.code),
-            ) from exc
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=_format_provisioning_detail(exc.message, exc.code),
-        ) from exc
-    except httpx.HTTPStatusError as exc:
-        error_status = exc.response.status_code
-        if error_status in {400, 401, 403, 404}:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Broker credentials were rejected by MetaAPI.",
-            ) from exc
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="MetaAPI provisioning failed.",
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="MetaAPI provisioning failed.",
-        ) from exc
+    meta_account_id = _build_pseudo_meta_account_id(
+        broker_login=payload.broker_login,
+        broker_server=payload.broker_server,
+        platform=payload.platform.value,
+    )
 
     existing = account_repo.get_account_by_user_and_meta_id(
         db,
@@ -131,6 +82,7 @@ def connect_account(
             timezone=payload.timezone,
             broker_utc_offset=payload.broker_utc_offset,
             display_name=payload.display_name,
+            sync_provider=SyncProvider.headless_mt5,
         )
     else:
         account = account_repo.create_account(
@@ -148,6 +100,7 @@ def connect_account(
             timezone=payload.timezone,
             broker_utc_offset=payload.broker_utc_offset,
             display_name=payload.display_name,
+            sync_provider=SyncProvider.headless_mt5,
         )
 
     try:
@@ -161,9 +114,13 @@ def connect_account(
     db.refresh(account)
 
     try:
-        celery_app.send_task("journal.sync_account", kwargs={"account_id": str(account.id)})
-    except Exception:  # noqa: BLE001
-        logger.exception("Failed to enqueue first sync for account_id=%s", account.id)
+        trigger_mt5_sync(db, account=account, mode="verify")
+    except HTTPException as exc:
+        logger.warning(
+            "Failed to trigger verification sync | account_id=%s detail=%s",
+            account.id,
+            exc.detail,
+        )
 
     return account
 
@@ -237,6 +194,8 @@ def process_mt5_webhook(
     sync_status: str,
     deals: list[dict[str, Any]],
     error_message: str | None,
+    result_type: str | None = None,
+    summary: dict[str, Any] | None = None,
 ) -> dict:
     """
     Handle the async callback from the headless MT5 microservice.
@@ -248,13 +207,41 @@ def process_mt5_webhook(
     if account is None:
         logger.warning("MT5 webhook received for unknown account_id=%s", account_id)
         return {"status": "skipped", "reason": "account_not_found"}
+    if broker_server and broker_server != account.broker_server:
+        logger.warning(
+            "MT5 webhook broker mismatch | account_id=%s expected=%s got=%s",
+            account_id,
+            account.broker_server,
+            broker_server,
+        )
 
     if sync_status == "error":
+        reason = (result_type or "error").strip().lower()
+        detail = (error_message or "unknown")[:500]
+        if reason == "invalid_credentials":
+            account_repo.mark_account_verification_failed(
+                db, account, f"Credential verification failed: {detail}"
+            )
+            account_repo.set_account_sync_error(
+                db, account, f"MT5 verification error: {detail}"
+            )
+            db.commit()
+            return {"status": "error", "reason": detail, "result_type": reason}
+
+        if reason == "transient_error":
+            account_repo.mark_account_pending_verification(db, account)
+            account_repo.set_account_sync_warning(
+                db, account, f"Transient MT5 verification error: {detail}"
+            )
+            db.commit()
+            return {"status": "retry", "reason": detail, "result_type": reason}
+
         account_repo.set_account_sync_error(
             db,
             account,
-            f"MT5 sync error: {(error_message or 'unknown')[:500]}",
+            f"MT5 sync error: {detail}",
         )
+        account_repo.mark_account_bootstrap_failed(db, account, detail)
         db.commit()
         logger.error(
             "MT5 sync reported error | account_id=%s error=%s",
@@ -263,16 +250,41 @@ def process_mt5_webhook(
         )
         return {"status": "error", "reason": error_message}
 
+    webhook_mode = (summary or {}).get("mode")
+    if webhook_mode == "verify" and sync_status == "ok":
+        account_repo.mark_account_bootstrapping(db, account)
+        db.commit()
+        try:
+            trigger_mt5_sync(db, account=account, mode="sync")
+        except HTTPException as exc:
+            detail = str(exc.detail)[:500]
+            account_repo.mark_account_bootstrap_failed(
+                db, account, f"Bootstrap sync trigger failed: {detail}"
+            )
+            account_repo.set_account_sync_error(
+                db, account, f"Bootstrap sync trigger failed: {detail}"
+            )
+            db.commit()
+            return {"status": "error", "reason": detail, "result_type": "bootstrap_failed"}
+        return {"status": "ok", "result_type": "verified"}
+
     if sync_status == "empty" or not deals:
-        account_repo.set_account_last_synced_at(db, account, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))
+        synced_at = datetime.now(timezone.utc)
+        account_repo.set_account_last_synced_at(db, account, synced_at)
+        account_repo.mark_account_ready_for_stats(db, account, synced_at=synced_at)
         db.commit()
         logger.info("MT5 sync returned empty result | account_id=%s", account_id)
         return {"status": "ok", "inserted_trades": 0, "touched_trading_dates": 0}
 
     try:
         result = ingest_mt5_deals(db, account=account, deals=deals)
+        account_repo.mark_account_ready_for_stats(
+            db, account, synced_at=datetime.now(timezone.utc)
+        )
+        db.commit()
     except Exception as exc:  # noqa: BLE001
         account_repo.set_account_sync_error(db, account, str(exc)[:500])
+        account_repo.mark_account_bootstrap_failed(db, account, str(exc)[:500])
         db.commit()
         logger.exception("MT5 deal ingestion failed | account_id=%s", account_id)
         raise HTTPException(
@@ -284,10 +296,11 @@ def process_mt5_webhook(
         "status": "ok",
         "inserted_trades": result.inserted_trades,
         "touched_trading_dates": result.touched_trading_dates,
+        "summary": summary or {},
     }
 
 
-def trigger_mt5_sync(db: Session, *, account: TradingAccount) -> dict:
+def trigger_mt5_sync(db: Session, *, account: TradingAccount, mode: str = "sync") -> dict:
     """
     Send a sync request to the headless MT5 microservice for one account.
 
@@ -314,14 +327,22 @@ def trigger_mt5_sync(db: Session, *, account: TradingAccount) -> dict:
     )
 
     known_copy_magics: list[int] = list(account.copy_magic_numbers or [])
+    try:
+        login_id = int(account.broker_login)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Broker login must be numeric for MT5 sync.",
+        ) from exc
 
     payload = {
         "account_id": str(account.id),
         "broker_server": account.broker_server,
-        "login_id": int(account.broker_login),
+        "login_id": login_id,
         "investor_password": investor_password,
         "last_sync_timestamp": last_sync_ts,
         "known_copy_magics": known_copy_magics,
+        "mode": mode,
     }
 
     try:
@@ -334,11 +355,12 @@ def trigger_mt5_sync(db: Session, *, account: TradingAccount) -> dict:
             response.raise_for_status()
         data = response.json()
         logger.info(
-            "MT5 sync triggered | account_id=%s task_id=%s",
+            "MT5 sync triggered | account_id=%s task_id=%s mode=%s",
             account.id,
             data.get("task_id"),
+            mode,
         )
-        return {"status": "queued", "task_id": data.get("task_id")}
+        return {"status": "queued", "task_id": data.get("task_id"), "mode": mode}
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

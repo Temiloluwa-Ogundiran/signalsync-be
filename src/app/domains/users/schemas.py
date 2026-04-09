@@ -15,3 +15,8 @@ class UserResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class UsernameAvailabilityResponse(BaseModel):
+    username: str
+    available: bool

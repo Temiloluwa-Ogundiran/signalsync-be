@@ -201,6 +201,7 @@ def sync_all_mt5_accounts() -> dict:
             "investor_password": investor_password,
             "last_sync_timestamp": last_sync_ts,
             "known_copy_magics": known_copy_magics,
+            "mode": "sync",
         }
 
         try:

@@ -2,52 +2,20 @@ import hmac
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
-from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import Any, Optional
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.domains.accounts import service as account_service
-from app.domains.accounts.schemas import AccountConnectRequest, AccountResponse
+from app.domains.accounts.schemas import (
+    AccountConnectRequest,
+    AccountResponse,
+    MT5WebhookPayload,
+)
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
-
-
-# ---------------------------------------------------------------------------
-# Webhook payload schema
-# ---------------------------------------------------------------------------
-
-class MT5WebhookDeal(BaseModel):
-    ticket: str
-    position_id: str
-    symbol: str
-    direction: str
-    volume: float
-    price_in: float
-    price_out: float
-    sl: Optional[float] = None
-    tp: Optional[float] = None
-    gross_profit: float
-    commission: float
-    swap: float
-    time_setup: Any
-    time_closed: Any
-    magic_number: int = 0
-    deal_comment: str = ""
-    trade_source: str
-    mfe: Optional[float] = None
-    mae: Optional[float] = None
-
-
-class MT5WebhookPayload(BaseModel):
-    account_id: uuid.UUID
-    broker_server: str
-    status: str = Field(..., description="'ok' | 'error' | 'empty'")
-    error_message: Optional[str] = None
-    deals: list[MT5WebhookDeal] = Field(default_factory=list)
 
 
 def _verify_mt5_secret(x_shared_secret: str = Header(...)) -> None:
@@ -149,4 +117,6 @@ def mt5_sync_webhook(
         sync_status=payload.status,
         deals=[d.model_dump() for d in payload.deals],
         error_message=payload.error_message,
+        result_type=payload.result_type,
+        summary=payload.summary,
     )

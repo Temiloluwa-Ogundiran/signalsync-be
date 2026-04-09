@@ -125,6 +125,8 @@ class DailyJournalResponse(BaseModel):
     id: uuid.UUID
     trading_date: date
     account_timezone: str
+    day_start_balance: Decimal | None = None
+    day_end_balance: Decimal | None = None
     trade_chips: list[DailyTradeChipResponse]
     trades: list[JournalTradeResponse]
     messages: list[JournalMessageResponse]

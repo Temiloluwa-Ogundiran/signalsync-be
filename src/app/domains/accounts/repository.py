@@ -11,11 +11,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import (
+    SyncProvider,
     Trade,
     TradeDirection,
     TradeSession,
     TradeSource,
     TradingAccount,
+    TradingAccountConnectionState,
     TradingAccountStatus,
 )
 
@@ -39,6 +41,7 @@ def create_account(
     timezone: str,
     broker_utc_offset: int,
     display_name: Optional[str],
+    sync_provider: SyncProvider = SyncProvider.metaapi,
 ) -> TradingAccount:
     account = TradingAccount(
         user_id=user_id,
@@ -55,6 +58,11 @@ def create_account(
         broker_utc_offset=broker_utc_offset,
         display_name=display_name,
         status=TradingAccountStatus.pending_sync,
+        connection_state=TradingAccountConnectionState.pending_verification,
+        is_data_ready_for_stats=False,
+        last_bootstrap_synced_at=None,
+        bootstrap_error_message=None,
+        sync_provider=sync_provider,
     )
     db.add(account)
     db.flush()
@@ -77,6 +85,7 @@ def reactivate_account(
     timezone: str,
     broker_utc_offset: int,
     display_name: Optional[str],
+    sync_provider: SyncProvider = SyncProvider.metaapi,
 ) -> TradingAccount:
     account.meta_account_id = meta_account_id
     account.broker_name = broker_name
@@ -92,7 +101,12 @@ def reactivate_account(
     account.display_name = display_name
     account.is_deleted = False
     account.status = TradingAccountStatus.pending_sync
+    account.connection_state = TradingAccountConnectionState.pending_verification
+    account.is_data_ready_for_stats = False
     account.sync_error_message = None
+    account.last_bootstrap_synced_at = None
+    account.bootstrap_error_message = None
+    account.sync_provider = sync_provider
     db.flush()
     return account
 
@@ -176,6 +190,48 @@ def set_account_sync_warning(
     db: Session, account: TradingAccount, message: str
 ) -> None:
     account.sync_error_message = message
+    db.flush()
+
+
+def mark_account_bootstrapping(db: Session, account: TradingAccount) -> None:
+    account.connection_state = TradingAccountConnectionState.bootstrapping
+    account.is_data_ready_for_stats = False
+    account.bootstrap_error_message = None
+    db.flush()
+
+
+def mark_account_ready_for_stats(
+    db: Session, account: TradingAccount, synced_at: datetime
+) -> None:
+    account.connection_state = TradingAccountConnectionState.ready
+    account.is_data_ready_for_stats = True
+    account.last_bootstrap_synced_at = synced_at
+    account.bootstrap_error_message = None
+    db.flush()
+
+
+def mark_account_verification_failed(
+    db: Session, account: TradingAccount, message: str
+) -> None:
+    account.connection_state = TradingAccountConnectionState.verification_failed
+    account.is_data_ready_for_stats = False
+    account.bootstrap_error_message = message
+    db.flush()
+
+
+def mark_account_bootstrap_failed(
+    db: Session, account: TradingAccount, message: str
+) -> None:
+    account.connection_state = TradingAccountConnectionState.bootstrap_failed
+    account.is_data_ready_for_stats = False
+    account.bootstrap_error_message = message
+    db.flush()
+
+
+def mark_account_pending_verification(db: Session, account: TradingAccount) -> None:
+    account.connection_state = TradingAccountConnectionState.pending_verification
+    account.is_data_ready_for_stats = False
+    account.bootstrap_error_message = None
     db.flush()
 
 

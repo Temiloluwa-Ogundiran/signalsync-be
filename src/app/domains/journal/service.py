@@ -397,12 +397,57 @@ def get_or_create_daily_journal(
         daily_messages = journal_repo.list_messages_by_daily_journal(db, daily_journal.id)
         messages = [_serialize_message(db, m) for m in daily_messages]
 
+    gross_pnl = sum((trade.net_profit for trade in trades), Decimal("0"))
+    snapshots_for_day = journal_repo.list_account_snapshots(
+        db,
+        account_id=account_id,
+        from_date=trading_date,
+        to_date=trading_date,
+    )
+    prev_day = trading_date.fromordinal(trading_date.toordinal() - 1)
+    snapshots_prev_day = journal_repo.list_account_snapshots(
+        db,
+        account_id=account_id,
+        from_date=prev_day,
+        to_date=prev_day,
+    )
+    day_start_balance: Decimal | None = None
+    day_end_balance: Decimal | None = None
+    balance_source = "none"
+    if snapshots_prev_day:
+        day_start_balance = snapshots_prev_day[-1].balance
+        day_end_balance = day_start_balance + gross_pnl
+        balance_source = "prev_day_snapshot"
+    elif snapshots_for_day:
+        day_end_balance = snapshots_for_day[-1].balance
+        day_start_balance = day_end_balance - gross_pnl
+        balance_source = "same_day_snapshot"
+
+    running_balance = day_start_balance
+    trade_models: list[JournalTradeResponse] = []
+    for idx, trade in enumerate(trades):
+        trade_model = _enrich_trade_response(JournalTradeResponse.model_validate(trade), trade)
+        balance_before_trade = running_balance
+        net_roi_percent = None
+        if day_start_balance is not None and day_start_balance > 0:
+            net_roi_percent = (trade.net_profit / day_start_balance) * Decimal("100")
+        trade_model.balance_before_trade = balance_before_trade
+        trade_model.net_roi_percent = net_roi_percent
+        trade_models.append(trade_model)
+        if running_balance is not None:
+            running_balance += trade.net_profit
+
+    if day_end_balance is None and day_start_balance is not None:
+        day_end_balance = day_start_balance + gross_pnl
+
     return DailyJournalResponse(
         id=daily_journal.id,
         trading_date=daily_journal.trading_date,
         account_timezone=account.timezone,
+        day_start_balance=day_start_balance,
+        day_end_balance=day_end_balance,
         trade_chips=trade_chips,
-        trades=[_enrich_trade_response(JournalTradeResponse.model_validate(trade), trade) for trade in trades],
+        trades=trade_models,
         messages=messages,
     )
 
