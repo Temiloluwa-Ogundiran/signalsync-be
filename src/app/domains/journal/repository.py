@@ -397,6 +397,27 @@ def list_trades_filtered(
     return list(db.execute(stmt).scalars().all())
 
 
+def list_trades_filtered_multi(
+    db: Session,
+    *,
+    account_ids: list[uuid.UUID],
+    closed_from_utc,
+    closed_to_utc_exclusive,
+) -> list[Trade]:
+    if not account_ids:
+        return []
+
+    stmt = select(Trade).where(Trade.account_id.in_(account_ids))
+
+    if closed_from_utc is not None:
+        stmt = stmt.where(Trade.closed_at >= closed_from_utc)
+    if closed_to_utc_exclusive is not None:
+        stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
+
+    stmt = stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())
+    return list(db.execute(stmt).scalars().all())
+
+
 def list_daily_pnl(
     db: Session,
     *,

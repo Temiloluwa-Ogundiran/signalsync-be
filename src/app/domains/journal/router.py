@@ -422,7 +422,7 @@ def get_report(
 
 @analytics_router.get("/dashboard", response_model=AnalyticsDashboardResponse)
 def get_dashboard(
-    account_id: uuid.UUID = Query(...),
+    account_id: uuid.UUID | None = Query(None),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     recent_limit: int = Query(5, ge=1, le=50),

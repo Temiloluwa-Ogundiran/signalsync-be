@@ -1,7 +1,7 @@
 import re
 import uuid
 from collections import defaultdict
-from datetime import date, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -810,6 +810,29 @@ def _get_account_or_404(db: Session, account_id: uuid.UUID, user_id: uuid.UUID):
     return account
 
 
+def _get_ready_accounts_for_user(db: Session, user_id: uuid.UUID):
+    accounts = account_repo.list_accounts_for_user(db, user_id)
+    return [
+        account
+        for account in accounts
+        if account.is_data_ready_for_stats
+        and str(account.connection_state.value) == "ready"
+    ]
+
+
+def _resolve_multi_account_date_window(from_date: date | None, to_date: date | None):
+    start_utc = None
+    end_utc = None
+
+    if from_date is not None:
+        start_utc = datetime.combine(from_date, time.min, tzinfo=timezone.utc)
+
+    if to_date is not None:
+        end_utc = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+
+    return start_utc, end_utc
+
+
 def get_analytics_summary(
     db: Session,
     *,
@@ -1220,20 +1243,54 @@ def get_analytics_report(
 def get_analytics_dashboard(
     db: Session,
     *,
-    account_id: uuid.UUID,
+    account_id: uuid.UUID | None,
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
     recent_limit: int = 5,
 ) -> AnalyticsDashboardResponse:
-    account = _get_account_or_404(db, account_id, user_id)
-    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-    trades = journal_repo.list_trades_filtered(
-        db,
-        account_id=account_id,
-        closed_from_utc=start_utc,
-        closed_to_utc_exclusive=end_utc,
-    )
+    selected_accounts = []
+    account_timezone = "UTC"
+    starting_balance = Decimal("0")
+
+    if account_id is not None:
+        account = _get_account_or_404(db, account_id, user_id)
+        selected_accounts = [account]
+        account_timezone = account.timezone
+        start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+        trades = journal_repo.list_trades_filtered(
+            db,
+            account_id=account_id,
+            closed_from_utc=start_utc,
+            closed_to_utc_exclusive=end_utc,
+        )
+        starting_balance = _estimate_starting_balance(
+            db,
+            account_id=account.id,
+            meta_account_id=account.meta_account_id,
+        )
+    else:
+        selected_accounts = _get_ready_accounts_for_user(db, user_id)
+        account_ids = [account.id for account in selected_accounts]
+        start_utc, end_utc = _resolve_multi_account_date_window(from_date, to_date)
+        trades = journal_repo.list_trades_filtered_multi(
+            db,
+            account_ids=account_ids,
+            closed_from_utc=start_utc,
+            closed_to_utc_exclusive=end_utc,
+        )
+        if selected_accounts:
+            starting_balance = sum(
+                (
+                    _estimate_starting_balance(
+                        db,
+                        account_id=ready_account.id,
+                        meta_account_id=ready_account.meta_account_id,
+                    )
+                    for ready_account in selected_accounts
+                ),
+                Decimal("0"),
+            )
 
     total_trades = len(trades)
     total_net_pnl = sum((t.net_profit for t in trades), Decimal("0"))
@@ -1259,7 +1316,14 @@ def get_analytics_dashboard(
         running_max = max(running_max, cumulative)
         drawdown = running_max - cumulative
         max_drawdown = max(max_drawdown, drawdown)
-        local_day = to_account_local_date(t.closed_at, account.timezone)
+        if account_id is not None:
+            local_day = to_account_local_date(t.closed_at, account_timezone)
+        else:
+            local_day = (
+                t.closed_at.astimezone(timezone.utc).date()
+                if t.closed_at.tzinfo is not None
+                else t.closed_at.date()
+            )
         by_day[local_day] += t.net_profit
 
     best_day = None
@@ -1270,11 +1334,6 @@ def get_analytics_dashboard(
         best_day = AnalyticsBestWorstDay(date=best_date, pnl=best_pnl)
         worst_day = AnalyticsBestWorstDay(date=worst_date, pnl=worst_pnl)
 
-    starting_balance = _estimate_starting_balance(
-        db,
-        account_id=account.id,
-        meta_account_id=account.meta_account_id,
-    )
     net_pnl_percent = (
         float((total_net_pnl / starting_balance) * Decimal("100"))
         if starting_balance != 0
@@ -1297,7 +1356,14 @@ def get_analytics_dashboard(
 
     calendar_map: dict[date, dict[str, int | Decimal]] = {}
     for trade in trades:
-        local_day = to_account_local_date(trade.closed_at, account.timezone)
+        if account_id is not None:
+            local_day = to_account_local_date(trade.closed_at, account_timezone)
+        else:
+            local_day = (
+                trade.closed_at.astimezone(timezone.utc).date()
+                if trade.closed_at.tzinfo is not None
+                else trade.closed_at.date()
+            )
         if local_day not in calendar_map:
             calendar_map[local_day] = {
                 "trade_count": 0,
@@ -1364,7 +1430,7 @@ def get_analytics_dashboard(
     hourly_groups: dict[str, list] = defaultdict(list)
     weekday_groups: dict[str, list] = defaultdict(list)
     weekday_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    account_zone = ZoneInfo(account.timezone)
+    account_zone = ZoneInfo(account_timezone)
     for trade in trades:
         closed_at_utc = (
             trade.closed_at
