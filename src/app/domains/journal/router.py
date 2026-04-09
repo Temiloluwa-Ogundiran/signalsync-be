@@ -11,12 +11,14 @@ from app.domains.journal import service as journal_service
 from app.domains.journal.models import JournalMessageType, JournalTemplateType
 from app.domains.journal.schemas import (
     AnalyticsCalendarResponse,
+    AnalyticsDashboardResponse,
     AnalyticsEquityResponse,
     AnalyticsInstrumentsResponse,
     AnalyticsReportResponse,
     AnalyticsSessionsResponse,
     AnalyticsSetupsResponse,
     AnalyticsSummaryResponse,
+    AnalyticsTimePerformanceResponse,
     AnalyticsTradeSourceResponse,
     DailyJournalFeedItemResponse,
     DailyJournalFeedResponse,
@@ -121,6 +123,7 @@ def create_trade_message(
 def get_or_create_daily_journal(
     account_id: uuid.UUID,
     trading_date: date,
+    include_messages: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DailyJournalResponse:
@@ -129,6 +132,7 @@ def get_or_create_daily_journal(
         account_id=account_id,
         trading_date=trading_date,
         current_user=current_user,
+        include_messages=include_messages,
     )
 
 
@@ -331,6 +335,23 @@ def get_instruments(
     )
 
 
+@analytics_router.get("/time-performance", response_model=AnalyticsTimePerformanceResponse)
+def get_time_performance(
+    account_id: uuid.UUID = Query(...),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnalyticsTimePerformanceResponse:
+    return journal_service.get_analytics_time_performance(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        from_date=from_date,
+        to_date=to_date,
+    )
+
+
 @analytics_router.get("/equity", response_model=AnalyticsEquityResponse)
 def get_equity(
     account_id: uuid.UUID = Query(...),
@@ -396,4 +417,23 @@ def get_report(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+    )
+
+
+@analytics_router.get("/dashboard", response_model=AnalyticsDashboardResponse)
+def get_dashboard(
+    account_id: uuid.UUID = Query(...),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    recent_limit: int = Query(5, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnalyticsDashboardResponse:
+    return journal_service.get_analytics_dashboard(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        from_date=from_date,
+        to_date=to_date,
+        recent_limit=recent_limit,
     )

@@ -126,6 +126,7 @@ class DailyJournalResponse(BaseModel):
     trading_date: date
     account_timezone: str
     trade_chips: list[DailyTradeChipResponse]
+    trades: list[JournalTradeResponse]
     messages: list[JournalMessageResponse]
 
 
@@ -232,6 +233,19 @@ class AnalyticsInstrumentsResponse(BaseModel):
     instruments: list[AnalyticsInstrumentItemResponse]
 
 
+class AnalyticsTimePerformancePointResponse(BaseModel):
+    bucket: str
+    trade_count: int
+    total_pnl: float
+    win_rate: float
+    avg_pnl: float
+
+
+class AnalyticsTimePerformanceResponse(BaseModel):
+    hourly: list[AnalyticsTimePerformancePointResponse]
+    daily: list[AnalyticsTimePerformancePointResponse]
+
+
 class AnalyticsTradeSourceItemResponse(BaseModel):
     trade_source: str
     trade_count: int
@@ -272,3 +286,11 @@ class AnalyticsReportResponse(BaseModel):
     instruments: AnalyticsInstrumentsResponse
     setups: AnalyticsSetupsResponse
     trade_sources: AnalyticsTradeSourceResponse
+
+
+class AnalyticsDashboardResponse(BaseModel):
+    summary: AnalyticsSummaryResponse
+    calendar: AnalyticsCalendarResponse
+    instruments: AnalyticsInstrumentsResponse
+    time_performance: AnalyticsTimePerformanceResponse
+    recent_trades: JournalTradeListResponse

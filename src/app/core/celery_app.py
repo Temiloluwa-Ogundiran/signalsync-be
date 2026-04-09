@@ -1,4 +1,4 @@
-from celery import Celery
+from celery import Celery  # type: ignore[import-not-found]
 
 from app.core.config import settings
 
@@ -18,18 +18,9 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
-celery_app.conf.beat_schedule = {
-    "journal-sync-all-accounts": {
-        "task": "journal.sync_all_accounts",
-        "schedule": max(60, settings.SYNC_INTERVAL_MINUTES * 60),
-    },
-    # Periodic trigger for accounts synced via the headless MT5 microservice.
-    # Fires at the same interval as the MetaAPI sync cycle.
-    "journal-sync-all-mt5-accounts": {
-        "task": "journal.sync_all_mt5_accounts",
-        "schedule": max(60, settings.SYNC_INTERVAL_MINUTES * 60),
-    },
-}
+# Intentionally disabled: we only sync on user-initiated action to reduce API costs.
+# If you want periodic syncing again, re-add the beat_schedule entries.
+celery_app.conf.beat_schedule = {}
 
 
 @celery_app.task(name="health.ping")

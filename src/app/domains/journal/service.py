@@ -1,9 +1,10 @@
 import re
 import uuid
 from collections import defaultdict
-from datetime import date
+from datetime import date, timezone
 from decimal import Decimal
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
@@ -18,6 +19,7 @@ from app.domains.journal.schemas import (
     AnalyticsBestWorstDay,
     AnalyticsCalendarDayResponse,
     AnalyticsCalendarResponse,
+    AnalyticsDashboardResponse,
     AnalyticsEquityPointResponse,
     AnalyticsEquityResponse,
     AnalyticsInstrumentItemResponse,
@@ -28,6 +30,8 @@ from app.domains.journal.schemas import (
     AnalyticsSetupItemResponse,
     AnalyticsSetupsResponse,
     AnalyticsSummaryResponse,
+    AnalyticsTimePerformancePointResponse,
+    AnalyticsTimePerformanceResponse,
     AnalyticsTradeSourceItemResponse,
     AnalyticsTradeSourceResponse,
     DailyJournalResponse,
@@ -41,9 +45,7 @@ from app.domains.journal.schemas import (
 from app.domains.users.models import User
 from app.shared.utils.storage import generate_signed_url, upload_media
 from app.shared.utils.timezone import (
-    classify_session,
     local_date_to_utc_range,
-    normalize_broker_datetime_to_utc,
     to_account_local_date,
 )
 
@@ -338,6 +340,7 @@ def get_or_create_daily_journal(
     account_id: uuid.UUID,
     trading_date: date,
     current_user: User,
+    include_messages: bool = True,
 ) -> DailyJournalResponse:
     account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
     if account is None:
@@ -389,14 +392,18 @@ def get_or_create_daily_journal(
             )
         )
 
-    messages = journal_repo.list_messages_by_daily_journal(db, daily_journal.id)
+    messages: list[JournalMessageResponse] = []
+    if include_messages:
+        daily_messages = journal_repo.list_messages_by_daily_journal(db, daily_journal.id)
+        messages = [_serialize_message(db, m) for m in daily_messages]
 
     return DailyJournalResponse(
         id=daily_journal.id,
         trading_date=daily_journal.trading_date,
         account_timezone=account.timezone,
         trade_chips=trade_chips,
-        messages=[_serialize_message(db, m) for m in messages],
+        trades=[_enrich_trade_response(JournalTradeResponse.model_validate(trade), trade) for trade in trades],
+        messages=messages,
     )
 
 
@@ -812,20 +819,11 @@ def get_analytics_summary(
         best_day = AnalyticsBestWorstDay(date=best_date, pnl=best_pnl)
         worst_day = AnalyticsBestWorstDay(date=worst_date, pnl=worst_pnl)
 
-    starting_balance = Decimal("0")
-    try:
-        account_info = metaapi_service.get_account_info(account.meta_account_id)
-        current_balance = Decimal(str(account_info.get("balance") or 0))
-        all_time_trades = journal_repo.list_trades_filtered(
-            db,
-            account_id=account_id,
-            closed_from_utc=None,
-            closed_to_utc_exclusive=None,
-        )
-        all_time_realized = sum((t.net_profit for t in all_time_trades), Decimal("0"))
-        starting_balance = current_balance - all_time_realized
-    except Exception:  # noqa: BLE001
-        starting_balance = Decimal("0")
+    starting_balance = _estimate_starting_balance(
+        db,
+        account_id=account.id,
+        meta_account_id=account.meta_account_id,
+    )
 
     net_pnl_percent = (
         float((total_net_pnl / starting_balance) * Decimal("100"))
@@ -983,6 +981,61 @@ def get_analytics_instruments(
     return AnalyticsInstrumentsResponse(instruments=items)
 
 
+def get_analytics_time_performance(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    from_date: date | None,
+    to_date: date | None,
+) -> AnalyticsTimePerformanceResponse:
+    account = _get_account_or_404(db, account_id, user_id)
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    trades = journal_repo.list_trades_filtered(
+        db,
+        account_id=account_id,
+        closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc,
+    )
+
+    hourly_groups: dict[str, list] = defaultdict(list)
+    weekday_groups: dict[str, list] = defaultdict(list)
+    weekday_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    account_zone = ZoneInfo(account.timezone)
+    for t in trades:
+        closed_at_utc = (
+            t.closed_at
+            if t.closed_at.tzinfo is not None
+            else t.closed_at.replace(tzinfo=timezone.utc)
+        )
+        local_closed_at = closed_at_utc.astimezone(account_zone)
+        hour_bucket = f"{local_closed_at.hour:02d}"
+        weekday_bucket = weekday_order[local_closed_at.weekday()]
+        hourly_groups[hour_bucket].append(t)
+        weekday_groups[weekday_bucket].append(t)
+
+    def build_point(bucket: str, bucket_trades: list) -> AnalyticsTimePerformancePointResponse:
+        trade_count = len(bucket_trades)
+        wins = sum(1 for trade in bucket_trades if trade.net_profit > 0)
+        total_pnl = sum((trade.net_profit for trade in bucket_trades), Decimal("0"))
+        return AnalyticsTimePerformancePointResponse(
+            bucket=bucket,
+            trade_count=trade_count,
+            total_pnl=float(total_pnl),
+            win_rate=(wins / trade_count) * 100 if trade_count else 0.0,
+            avg_pnl=float(total_pnl / trade_count) if trade_count else 0.0,
+        )
+
+    hourly = [
+        build_point(f"{hour:02d}", hourly_groups.get(f"{hour:02d}", []))
+        for hour in range(24)
+    ]
+    daily = [build_point(day, weekday_groups.get(day, [])) for day in weekday_order]
+
+    return AnalyticsTimePerformanceResponse(hourly=hourly, daily=daily)
+
+
 def get_analytics_equity(
     db: Session,
     *,
@@ -1116,6 +1169,199 @@ def get_analytics_report(
         trade_sources=get_analytics_trade_sources(
             db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date
         ),
+    )
+
+
+def get_analytics_dashboard(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    from_date: date | None,
+    to_date: date | None,
+    recent_limit: int = 5,
+) -> AnalyticsDashboardResponse:
+    account = _get_account_or_404(db, account_id, user_id)
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    trades = journal_repo.list_trades_filtered(
+        db,
+        account_id=account_id,
+        closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc,
+    )
+
+    total_trades = len(trades)
+    total_net_pnl = sum((t.net_profit for t in trades), Decimal("0"))
+    wins = sum(1 for t in trades if t.net_profit > 0)
+    losses = sum(1 for t in trades if t.net_profit < 0)
+    gross_win = sum((t.net_profit for t in trades if t.net_profit > 0), Decimal("0"))
+    gross_loss_negative = sum((t.net_profit for t in trades if t.net_profit < 0), Decimal("0"))
+    gross_loss_abs = abs(gross_loss_negative)
+    win_rate = (wins / total_trades) * 100 if total_trades else 0.0
+    profit_factor = float(gross_win / gross_loss_abs) if gross_loss_abs else float("inf")
+    avg_win = float(gross_win / wins) if wins else 0.0
+    avg_loss = float(gross_loss_negative / losses) if losses else 0.0
+    avg_duration_seconds = (
+        sum((t.duration_seconds for t in trades), 0) / total_trades if total_trades else 0.0
+    )
+
+    running_max = Decimal("0")
+    max_drawdown = Decimal("0")
+    cumulative = Decimal("0")
+    by_day: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
+    for t in trades:
+        cumulative += t.net_profit
+        running_max = max(running_max, cumulative)
+        drawdown = running_max - cumulative
+        max_drawdown = max(max_drawdown, drawdown)
+        local_day = to_account_local_date(t.closed_at, account.timezone)
+        by_day[local_day] += t.net_profit
+
+    best_day = None
+    worst_day = None
+    if by_day:
+        best_date, best_pnl = max(by_day.items(), key=lambda item: item[1])
+        worst_date, worst_pnl = min(by_day.items(), key=lambda item: item[1])
+        best_day = AnalyticsBestWorstDay(date=best_date, pnl=best_pnl)
+        worst_day = AnalyticsBestWorstDay(date=worst_date, pnl=worst_pnl)
+
+    starting_balance = _estimate_starting_balance(
+        db,
+        account_id=account.id,
+        meta_account_id=account.meta_account_id,
+    )
+    net_pnl_percent = (
+        float((total_net_pnl / starting_balance) * Decimal("100"))
+        if starting_balance != 0
+        else 0.0
+    )
+    summary = AnalyticsSummaryResponse(
+        total_trades=total_trades,
+        win_rate=win_rate,
+        profit_factor=profit_factor,
+        avg_win=avg_win,
+        avg_loss=avg_loss,
+        avg_trade_duration_seconds=float(avg_duration_seconds),
+        total_net_pnl=float(total_net_pnl),
+        starting_balance=float(starting_balance),
+        net_pnl_percent=net_pnl_percent,
+        max_drawdown=float(max_drawdown),
+        best_day=best_day,
+        worst_day=worst_day,
+    )
+
+    calendar_map: dict[date, dict[str, int | Decimal]] = {}
+    for trade in trades:
+        local_day = to_account_local_date(trade.closed_at, account.timezone)
+        if local_day not in calendar_map:
+            calendar_map[local_day] = {
+                "trade_count": 0,
+                "total_pnl": Decimal("0"),
+                "win_count": 0,
+                "loss_count": 0,
+            }
+        bucket = calendar_map[local_day]
+        bucket["trade_count"] = int(bucket["trade_count"]) + 1
+        bucket["total_pnl"] = Decimal(bucket["total_pnl"]) + trade.net_profit
+        if trade.net_profit > 0:
+            bucket["win_count"] = int(bucket["win_count"]) + 1
+        elif trade.net_profit < 0:
+            bucket["loss_count"] = int(bucket["loss_count"]) + 1
+
+    calendar_days = []
+    for trading_day in sorted(calendar_map.keys()):
+        row = calendar_map[trading_day]
+        total_pnl_for_day = float(Decimal(row["total_pnl"]))
+        outcome = "breakeven"
+        if total_pnl_for_day > 0:
+            outcome = "win"
+        elif total_pnl_for_day < 0:
+            outcome = "loss"
+        calendar_days.append(
+            AnalyticsCalendarDayResponse(
+                date=trading_day,
+                trade_count=int(row["trade_count"]),
+                total_pnl=total_pnl_for_day,
+                win_count=int(row["win_count"]),
+                loss_count=int(row["loss_count"]),
+                outcome=outcome,
+            )
+        )
+    calendar = AnalyticsCalendarResponse(
+        month=from_date.strftime("%Y-%m") if from_date else "all",
+        days=calendar_days,
+    )
+
+    symbol_groups: dict[str, list] = defaultdict(list)
+    for trade in trades:
+        symbol_groups[trade.symbol].append(trade)
+    instruments_items = []
+    for symbol, symbol_trades in symbol_groups.items():
+        trade_count = len(symbol_trades)
+        symbol_wins = sum(1 for t in symbol_trades if t.net_profit > 0)
+        symbol_total_pnl = sum((t.net_profit for t in symbol_trades), Decimal("0"))
+        mfe_values = [float(t.mfe) for t in symbol_trades if t.mfe is not None]
+        mae_values = [float(t.mae) for t in symbol_trades if t.mae is not None]
+        instruments_items.append(
+            AnalyticsInstrumentItemResponse(
+                symbol=symbol,
+                trade_count=trade_count,
+                win_rate=(symbol_wins / trade_count) * 100 if trade_count else 0.0,
+                total_pnl=float(symbol_total_pnl),
+                avg_pnl=float(symbol_total_pnl / trade_count) if trade_count else 0.0,
+                avg_mfe=(sum(mfe_values) / len(mfe_values)) if mfe_values else None,
+                avg_mae=(sum(mae_values) / len(mae_values)) if mae_values else None,
+            )
+        )
+    instruments_items.sort(key=lambda x: x.total_pnl, reverse=True)
+    instruments = AnalyticsInstrumentsResponse(instruments=instruments_items)
+
+    hourly_groups: dict[str, list] = defaultdict(list)
+    weekday_groups: dict[str, list] = defaultdict(list)
+    weekday_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    account_zone = ZoneInfo(account.timezone)
+    for trade in trades:
+        closed_at_utc = (
+            trade.closed_at
+            if trade.closed_at.tzinfo is not None
+            else trade.closed_at.replace(tzinfo=timezone.utc)
+        )
+        local_closed_at = closed_at_utc.astimezone(account_zone)
+        hour_bucket = f"{local_closed_at.hour:02d}"
+        weekday_bucket = weekday_order[local_closed_at.weekday()]
+        hourly_groups[hour_bucket].append(trade)
+        weekday_groups[weekday_bucket].append(trade)
+
+    def build_point(bucket: str, bucket_trades: list) -> AnalyticsTimePerformancePointResponse:
+        bucket_count = len(bucket_trades)
+        bucket_wins = sum(1 for item in bucket_trades if item.net_profit > 0)
+        bucket_pnl = sum((item.net_profit for item in bucket_trades), Decimal("0"))
+        return AnalyticsTimePerformancePointResponse(
+            bucket=bucket,
+            trade_count=bucket_count,
+            total_pnl=float(bucket_pnl),
+            win_rate=(bucket_wins / bucket_count) * 100 if bucket_count else 0.0,
+            avg_pnl=float(bucket_pnl / bucket_count) if bucket_count else 0.0,
+        )
+
+    time_performance = AnalyticsTimePerformanceResponse(
+        hourly=[build_point(f"{hour:02d}", hourly_groups.get(f"{hour:02d}", [])) for hour in range(24)],
+        daily=[build_point(day, weekday_groups.get(day, [])) for day in weekday_order],
+    )
+
+    recent_sorted = sorted(trades, key=lambda item: (item.closed_at, item.id), reverse=True)
+    recent_models = [
+        _enrich_trade_response(JournalTradeResponse.model_validate(trade), trade)
+        for trade in recent_sorted[:recent_limit]
+    ]
+    recent_trades = JournalTradeListResponse(items=recent_models, next_cursor=None)
+
+    return AnalyticsDashboardResponse(
+        summary=summary,
+        calendar=calendar,
+        instruments=instruments,
+        time_performance=time_performance,
+        recent_trades=recent_trades,
     )
 
 
