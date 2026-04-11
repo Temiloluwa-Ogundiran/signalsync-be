@@ -964,6 +964,18 @@ def get_analytics_calendar(
         closed_to_utc_exclusive=end_utc,
     )
 
+    journal_active_dates: set[date] = set()
+    if rows:
+        jd_from = min(row.trading_date for row in rows)
+        jd_to = max(row.trading_date for row in rows)
+        journal_active_dates = journal_repo.list_trading_dates_with_journal_activity(
+            db,
+            account_id=account_id,
+            account_timezone=account.timezone,
+            from_date=jd_from,
+            to_date=jd_to,
+        )
+
     days = []
     for row in rows:
         outcome = "breakeven"
@@ -983,6 +995,7 @@ def get_analytics_calendar(
                 win_count=int(row.win_count or 0),
                 loss_count=int(row.loss_count or 0),
                 outcome=outcome,
+                has_journal_activity=row.trading_date in journal_active_dates,
             )
         )
 
@@ -1346,7 +1359,7 @@ def get_analytics_dashboard(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
-    recent_limit: int = 5,
+    recent_limit: int = 8,
 ) -> AnalyticsDashboardResponse:
     selected_accounts = []
     account_timezone = "UTC"
@@ -1467,6 +1480,18 @@ def get_analytics_dashboard(
         elif trade.net_profit < 0:
             bucket["loss_count"] = int(bucket["loss_count"]) + 1
 
+    journal_active_dates: set[date] = set()
+    if account_id is not None and calendar_map:
+        jd_from = min(calendar_map.keys())
+        jd_to = max(calendar_map.keys())
+        journal_active_dates = journal_repo.list_trading_dates_with_journal_activity(
+            db,
+            account_id=account_id,
+            account_timezone=account_timezone,
+            from_date=jd_from,
+            to_date=jd_to,
+        )
+
     calendar_days = []
     for trading_day in sorted(calendar_map.keys()):
         row = calendar_map[trading_day]
@@ -1484,6 +1509,7 @@ def get_analytics_dashboard(
                 win_count=int(row["win_count"]),
                 loss_count=int(row["loss_count"]),
                 outcome=outcome,
+                has_journal_activity=trading_day in journal_active_dates,
             )
         )
     calendar = AnalyticsCalendarResponse(

@@ -445,7 +445,7 @@ def get_dashboard(
     account_id: uuid.UUID | None = Query(None),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
-    recent_limit: int = Query(5, ge=1, le=50),
+    recent_limit: int = Query(8, ge=1, le=50),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsDashboardResponse:

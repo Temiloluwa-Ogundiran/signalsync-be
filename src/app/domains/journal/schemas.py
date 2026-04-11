@@ -201,6 +201,7 @@ class AnalyticsCalendarDayResponse(BaseModel):
     win_count: int
     loss_count: int
     outcome: str
+    has_journal_activity: bool = False
 
 
 class AnalyticsCalendarResponse(BaseModel):

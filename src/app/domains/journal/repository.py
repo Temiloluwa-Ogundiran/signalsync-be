@@ -450,6 +450,53 @@ def list_daily_pnl(
     return list(db.execute(stmt).all())
 
 
+def list_trading_dates_with_journal_activity(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    account_timezone: str,
+    from_date: date,
+    to_date: date,
+) -> set[date]:
+    """Local trading dates that have at least one non-system journal message (day or trade)."""
+    local_trade_date = func.date(func.timezone(account_timezone, Trade.closed_at))
+
+    stmt_daily = (
+        select(DailyJournal.trading_date)
+        .join(JournalMessage, JournalMessage.daily_journal_id == DailyJournal.id)
+        .where(
+            DailyJournal.account_id == account_id,
+            JournalMessage.message_type != JournalMessageType.system,
+            DailyJournal.trading_date >= from_date,
+            DailyJournal.trading_date <= to_date,
+        )
+        .distinct()
+    )
+
+    stmt_trade = (
+        select(local_trade_date.label("trading_date"))
+        .select_from(Trade)
+        .join(TradeJournal, TradeJournal.trade_id == Trade.id)
+        .join(JournalMessage, JournalMessage.trade_journal_id == TradeJournal.id)
+        .where(
+            Trade.account_id == account_id,
+            JournalMessage.message_type != JournalMessageType.system,
+            local_trade_date >= from_date,
+            local_trade_date <= to_date,
+        )
+        .distinct()
+    )
+
+    dates: set[date] = set()
+    for (d,) in db.execute(stmt_daily).all():
+        if d is not None:
+            dates.add(d)
+    for (d,) in db.execute(stmt_trade).all():
+        if d is not None:
+            dates.add(d)
+    return dates
+
+
 def list_account_snapshots(
     db: Session,
     *,
