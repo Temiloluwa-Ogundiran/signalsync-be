@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import (
+    AccountSnapshot,
     SyncProvider,
     Trade,
     TradeDirection,
@@ -509,6 +510,76 @@ def delete_trades_outside_valid_broker_ids_in_window(
 
     deleted = db.execute(sa_delete(Trade).where(Trade.id.in_(ids_to_delete)))
     return int(deleted.rowcount or 0), affected_dates
+
+
+# ---------------------------------------------------------------------------
+# AccountSnapshot
+# ---------------------------------------------------------------------------
+
+def upsert_account_snapshot_for_date(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    snapshot_date: date,
+    balance: Decimal,
+    equity: Decimal,
+    floating_pnl: Decimal,
+) -> None:
+    stmt = (
+        pg_insert(AccountSnapshot)
+        .values(
+            account_id=account_id,
+            snapshot_date=snapshot_date,
+            balance=balance,
+            equity=equity,
+            floating_pnl=floating_pnl,
+        )
+        .on_conflict_do_update(
+            index_elements=["account_id", "snapshot_date"],
+            set_={
+                "balance": balance,
+                "equity": equity,
+                "floating_pnl": floating_pnl,
+            },
+        )
+    )
+    db.execute(stmt)
+
+
+def get_latest_snapshot_on_or_before_date(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    snapshot_date: date,
+) -> Optional[AccountSnapshot]:
+    stmt = (
+        select(AccountSnapshot)
+        .where(
+            AccountSnapshot.account_id == account_id,
+            AccountSnapshot.snapshot_date <= snapshot_date,
+        )
+        .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def get_latest_account_snapshot_balance(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+) -> Optional[Decimal]:
+    """Most recent persisted account balance (MT5 sync); used when MetaAPI is unavailable."""
+    stmt = (
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id == account_id)
+        .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
+        .limit(1)
+    )
+    row = db.execute(stmt).scalar_one_or_none()
+    if row is None:
+        return None
+    return row.balance
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from app.domains.journal import service as journal_service
 from app.domains.journal.models import JournalMessageType, JournalTemplateType
 from app.domains.journal.schemas import (
     AnalyticsCalendarResponse,
+    AnalyticsBalanceHistoryResponse,
     AnalyticsDashboardResponse,
     AnalyticsEquityResponse,
     AnalyticsInstrumentsResponse,
@@ -366,6 +367,25 @@ def get_equity(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+    )
+
+
+@analytics_router.get("/balance-history", response_model=AnalyticsBalanceHistoryResponse)
+def get_balance_history(
+    account_id: uuid.UUID = Query(...),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    granularity: str = Query("day", pattern="^(intraday|day)$"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnalyticsBalanceHistoryResponse:
+    return journal_service.get_analytics_balance_history(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        from_date=from_date,
+        to_date=to_date,
+        granularity=granularity,
     )
 
 

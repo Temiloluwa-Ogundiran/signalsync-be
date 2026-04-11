@@ -116,6 +116,7 @@ def mt5_sync_webhook(
         broker_server=payload.broker_server,
         sync_status=payload.status,
         deals=[d.model_dump() for d in payload.deals],
+        snapshots=[s.model_dump() for s in payload.snapshots],
         error_message=payload.error_message,
         result_type=payload.result_type,
         summary=payload.summary,

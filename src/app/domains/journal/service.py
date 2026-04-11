@@ -13,9 +13,12 @@ from app.core.config import settings
 from app.core.supabase import get_supabase
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.metaapi import metaapi_service
+from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.journal import repository as journal_repo
 from app.domains.journal.models import JournalMessageType, JournalTemplateType
 from app.domains.journal.schemas import (
+    AnalyticsBalanceHistoryPointResponse,
+    AnalyticsBalanceHistoryResponse,
     AnalyticsBestWorstDay,
     AnalyticsCalendarDayResponse,
     AnalyticsCalendarResponse,
@@ -398,38 +401,37 @@ def get_or_create_daily_journal(
         messages = [_serialize_message(db, m) for m in daily_messages]
 
     gross_pnl = sum((trade.net_profit for trade in trades), Decimal("0"))
-    snapshots_for_day = journal_repo.list_account_snapshots(
+    day_start_balance, day_end_balance = _resolve_day_balances(
         db,
         account_id=account_id,
-        from_date=trading_date,
-        to_date=trading_date,
+        trading_date=trading_date,
     )
-    prev_day = trading_date.fromordinal(trading_date.toordinal() - 1)
-    snapshots_prev_day = journal_repo.list_account_snapshots(
-        db,
-        account_id=account_id,
-        from_date=prev_day,
-        to_date=prev_day,
-    )
-    day_start_balance: Decimal | None = None
-    day_end_balance: Decimal | None = None
-    balance_source = "none"
-    if snapshots_prev_day:
-        day_start_balance = snapshots_prev_day[-1].balance
+    if day_end_balance is None and day_start_balance is not None:
         day_end_balance = day_start_balance + gross_pnl
-        balance_source = "prev_day_snapshot"
-    elif snapshots_for_day:
-        day_end_balance = snapshots_for_day[-1].balance
+    if day_start_balance is None and day_end_balance is not None:
         day_start_balance = day_end_balance - gross_pnl
-        balance_source = "same_day_snapshot"
 
     running_balance = day_start_balance
+    if running_balance is None and trades:
+        closed_from_utc, _ = local_date_to_utc_range(trading_date, account.timezone)
+        est_equity = _estimate_starting_balance(db, account=account)
+        realized_before_local_day = account_repo.sum_trade_net_profit(
+            db,
+            account_id=account_id,
+            closed_before_utc=closed_from_utc,
+        )
+        running_balance = est_equity + realized_before_local_day
+        if day_start_balance is None:
+            day_start_balance = running_balance
+
     trade_models: list[JournalTradeResponse] = []
     for idx, trade in enumerate(trades):
         trade_model = _enrich_trade_response(JournalTradeResponse.model_validate(trade), trade)
         balance_before_trade = running_balance
         net_roi_percent = None
-        if day_start_balance is not None and day_start_balance > 0:
+        if balance_before_trade is not None and balance_before_trade != 0:
+            net_roi_percent = (trade.net_profit / balance_before_trade) * Decimal("100")
+        elif day_start_balance is not None and day_start_balance > 0:
             net_roi_percent = (trade.net_profit / day_start_balance) * Decimal("100")
         trade_model.balance_before_trade = balance_before_trade
         trade_model.net_roi_percent = net_roi_percent
@@ -437,8 +439,8 @@ def get_or_create_daily_journal(
         if running_balance is not None:
             running_balance += trade.net_profit
 
-    if day_end_balance is None and day_start_balance is not None:
-        day_end_balance = day_start_balance + gross_pnl
+    if day_end_balance is None and trades and running_balance is not None:
+        day_end_balance = running_balance
 
     return DailyJournalResponse(
         id=daily_journal.id,
@@ -683,11 +685,7 @@ def list_account_trades(
     if closed_from_utc is None:
         return base_models
 
-    starting_balance = _estimate_starting_balance(
-        db,
-        account_id=account.id,
-        meta_account_id=account.meta_account_id,
-    )
+    starting_balance = _estimate_starting_balance(db, account=account)
     realized_before_window = account_repo.sum_trade_net_profit(
         db,
         account_id=account.id,
@@ -713,16 +711,52 @@ def list_account_trades(
     return base_models
 
 
-def _estimate_starting_balance(
-    db, *, account_id: uuid.UUID, meta_account_id: str
-) -> Decimal:
+def _estimate_starting_balance(db: Session, *, account: TradingAccount) -> Decimal:
+    """Implied balance before any recorded trades: current_balance - sum(all net_profit)."""
+    account_id = account.id
+    all_time_realized = account_repo.sum_trade_net_profit(db, account_id=account_id)
+
+    if account.sync_provider == SyncProvider.headless_mt5:
+        snap_balance = account_repo.get_latest_account_snapshot_balance(
+            db, account_id=account_id
+        )
+        if snap_balance is not None:
+            return snap_balance - all_time_realized
+        return Decimal("0")
+
     try:
-        account_info = metaapi_service.get_account_info(meta_account_id)
+        account_info = metaapi_service.get_account_info(account.meta_account_id)
         current_balance = Decimal(str(account_info.get("balance") or 0))
-        all_time_realized = account_repo.sum_trade_net_profit(db, account_id=account_id)
         return current_balance - all_time_realized
     except Exception:  # noqa: BLE001
+        snap_balance = account_repo.get_latest_account_snapshot_balance(
+            db, account_id=account_id
+        )
+        if snap_balance is not None:
+            return snap_balance - all_time_realized
         return Decimal("0")
+
+
+def _resolve_day_balances(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    trading_date: date,
+) -> tuple[Decimal | None, Decimal | None]:
+    prev_day = trading_date - timedelta(days=1)
+    start_snapshot = journal_repo.get_latest_account_snapshot_on_or_before(
+        db,
+        account_id=account_id,
+        snapshot_date=prev_day,
+    )
+    end_snapshot = journal_repo.get_latest_account_snapshot_on_or_before(
+        db,
+        account_id=account_id,
+        snapshot_date=trading_date,
+    )
+    day_start_balance = start_snapshot.balance if start_snapshot is not None else None
+    day_end_balance = end_snapshot.balance if end_snapshot is not None else None
+    return day_start_balance, day_end_balance
 
 
 # ---------------------------------------------------------------------------
@@ -887,11 +921,7 @@ def get_analytics_summary(
         best_day = AnalyticsBestWorstDay(date=best_date, pnl=best_pnl)
         worst_day = AnalyticsBestWorstDay(date=worst_date, pnl=worst_pnl)
 
-    starting_balance = _estimate_starting_balance(
-        db,
-        account_id=account.id,
-        meta_account_id=account.meta_account_id,
-    )
+    starting_balance = _estimate_starting_balance(db, account=account)
 
     net_pnl_percent = (
         float((total_net_pnl / starting_balance) * Decimal("100"))
@@ -1132,6 +1162,75 @@ def get_analytics_equity(
     )
 
 
+def get_analytics_balance_history(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    from_date: date | None,
+    to_date: date | None,
+    granularity: str = "day",
+) -> AnalyticsBalanceHistoryResponse:
+    account = _get_account_or_404(db, account_id, user_id)
+    effective_granularity = (granularity or "day").lower()
+
+    if (
+        effective_granularity == "intraday"
+        and from_date is not None
+        and to_date is not None
+        and from_date == to_date
+    ):
+        trades = account_repo.list_trades_by_account_local_date(
+            db,
+            account_id=account_id,
+            trading_date=from_date,
+            account_timezone=account.timezone,
+        )
+        day_start_balance, _ = _resolve_day_balances(
+            db,
+            account_id=account_id,
+            trading_date=from_date,
+        )
+        running = day_start_balance or Decimal("0")
+        points: list[AnalyticsBalanceHistoryPointResponse] = [
+            AnalyticsBalanceHistoryPointResponse(
+                timestamp=datetime.combine(from_date, time.min, tzinfo=timezone.utc),
+                balance=float(running),
+                equity=None,
+                source="intraday_anchor",
+            )
+        ]
+        for trade in sorted(trades, key=lambda t: (t.closed_at, t.id)):
+            running += trade.net_profit
+            points.append(
+                AnalyticsBalanceHistoryPointResponse(
+                    timestamp=trade.closed_at,
+                    balance=float(running),
+                    equity=None,
+                    source="trade_close",
+                )
+            )
+        return AnalyticsBalanceHistoryResponse(points=points)
+
+    snapshots = journal_repo.list_account_snapshots(
+        db,
+        account_id=account_id,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    return AnalyticsBalanceHistoryResponse(
+        points=[
+            AnalyticsBalanceHistoryPointResponse(
+                timestamp=datetime.combine(p.snapshot_date, time.min, tzinfo=timezone.utc),
+                balance=float(p.balance),
+                equity=float(p.equity),
+                source="daily_snapshot",
+            )
+            for p in snapshots
+        ]
+    )
+
+
 def get_analytics_setups(
     db: Session,
     *,
@@ -1264,11 +1363,7 @@ def get_analytics_dashboard(
             closed_from_utc=start_utc,
             closed_to_utc_exclusive=end_utc,
         )
-        starting_balance = _estimate_starting_balance(
-            db,
-            account_id=account.id,
-            meta_account_id=account.meta_account_id,
-        )
+        starting_balance = _estimate_starting_balance(db, account=account)
     else:
         selected_accounts = _get_ready_accounts_for_user(db, user_id)
         account_ids = [account.id for account in selected_accounts]
@@ -1281,14 +1376,7 @@ def get_analytics_dashboard(
         )
         if selected_accounts:
             starting_balance = sum(
-                (
-                    _estimate_starting_balance(
-                        db,
-                        account_id=ready_account.id,
-                        meta_account_id=ready_account.meta_account_id,
-                    )
-                    for ready_account in selected_accounts
-                ),
+                (_estimate_starting_balance(db, account=ready_account) for ready_account in selected_accounts),
                 Decimal("0"),
             )
 

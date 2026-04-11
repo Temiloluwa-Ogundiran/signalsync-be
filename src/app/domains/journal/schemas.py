@@ -271,6 +271,17 @@ class AnalyticsEquityResponse(BaseModel):
     points: list[AnalyticsEquityPointResponse]
 
 
+class AnalyticsBalanceHistoryPointResponse(BaseModel):
+    timestamp: datetime
+    balance: float
+    equity: float | None = None
+    source: str
+
+
+class AnalyticsBalanceHistoryResponse(BaseModel):
+    points: list[AnalyticsBalanceHistoryPointResponse]
+
+
 class AnalyticsSetupItemResponse(BaseModel):
     tag: str
     trade_count: int

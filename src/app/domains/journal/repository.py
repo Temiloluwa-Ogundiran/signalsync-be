@@ -468,6 +468,24 @@ def list_account_snapshots(
     return list(db.execute(stmt).scalars().all())
 
 
+def get_latest_account_snapshot_on_or_before(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    snapshot_date: date,
+) -> AccountSnapshot | None:
+    stmt = (
+        select(AccountSnapshot)
+        .where(
+            AccountSnapshot.account_id == account_id,
+            AccountSnapshot.snapshot_date <= snapshot_date,
+        )
+        .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def list_trade_setups(
     db: Session,
     *,

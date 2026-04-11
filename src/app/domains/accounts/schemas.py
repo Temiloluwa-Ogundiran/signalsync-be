@@ -74,6 +74,13 @@ class MT5WebhookDeal(BaseModel):
     mae: Optional[float] = None
 
 
+class MT5WebhookSnapshot(BaseModel):
+    captured_at: Any
+    balance: float
+    equity: float
+    floating_pnl: float
+
+
 class MT5WebhookPayload(BaseModel):
     account_id: uuid.UUID
     broker_server: str
@@ -85,3 +92,4 @@ class MT5WebhookPayload(BaseModel):
     error_message: Optional[str] = None
     summary: dict[str, Any] = Field(default_factory=dict)
     deals: list[MT5WebhookDeal] = Field(default_factory=list)
+    snapshots: list[MT5WebhookSnapshot] = Field(default_factory=list)

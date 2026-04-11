@@ -390,6 +390,42 @@ def ingest_mt5_deals(
     return ingest_closed_deals(db, account=account, deals=mapped_deals, mt5_enriched=True)
 
 
+def ingest_mt5_snapshots(
+    db: Session,
+    *,
+    account: TradingAccount,
+    snapshots: list[dict[str, Any]],
+) -> int:
+    """Persist MT5 account snapshots as day-level account snapshots."""
+    upserted = 0
+    for snapshot in snapshots:
+        captured = snapshot.get("captured_at")
+        if not captured:
+            continue
+        if isinstance(captured, str):
+            captured_dt = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+        elif isinstance(captured, datetime):
+            captured_dt = captured
+        else:
+            continue
+
+        if captured_dt.tzinfo is None:
+            captured_dt = captured_dt.replace(tzinfo=timezone.utc)
+        snapshot_date = to_account_local_date(captured_dt, account.timezone)
+
+        account_repo.upsert_account_snapshot_for_date(
+            db,
+            account_id=account.id,
+            snapshot_date=snapshot_date,
+            balance=_as_decimal(snapshot.get("balance")),
+            equity=_as_decimal(snapshot.get("equity")),
+            floating_pnl=_as_decimal(snapshot.get("floating_pnl")),
+        )
+        upserted += 1
+
+    return upserted
+
+
 def sync_account_deals(
     db: Session,
     *,

@@ -13,7 +13,7 @@ from app.domains.accounts import repository as account_repo
 from app.domains.accounts.metaapi import is_transient_metaapi_error
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.accounts.schemas import AccountConnectRequest
-from app.domains.accounts.sync import ingest_mt5_deals, sync_account_deals
+from app.domains.accounts.sync import ingest_mt5_deals, ingest_mt5_snapshots, sync_account_deals
 from app.domains.users.models import User
 from app.shared.utils.encryption import decrypt_secret, encrypt_secret
 from app.shared.utils.timezone import validate_timezone_name
@@ -194,6 +194,7 @@ def process_mt5_webhook(
     sync_status: str,
     deals: list[dict[str, Any]],
     error_message: str | None,
+    snapshots: list[dict[str, Any]] | None = None,
     result_type: str | None = None,
     summary: dict[str, Any] | None = None,
 ) -> dict:
@@ -229,9 +230,19 @@ def process_mt5_webhook(
             return {"status": "error", "reason": detail, "result_type": reason}
 
         if reason == "transient_error":
-            account_repo.mark_account_pending_verification(db, account)
+            # Do not regress connection_state to pending_verification or clear
+            # is_data_ready_for_stats — transient failures during post-connect sync
+            # are operational hiccups, not a credential re-check.
+            logger.warning(
+                "MT5 transient error (webhook) | account_id=%s connection_state=%s detail=%s",
+                account_id,
+                getattr(account.connection_state, "value", account.connection_state),
+                detail,
+            )
             account_repo.set_account_sync_warning(
-                db, account, f"Transient MT5 verification error: {detail}"
+                db,
+                account,
+                "Sync temporarily unavailable. Please try again in a few minutes.",
             )
             db.commit()
             return {"status": "retry", "reason": detail, "result_type": reason}
@@ -269,6 +280,8 @@ def process_mt5_webhook(
         return {"status": "ok", "result_type": "verified"}
 
     if sync_status == "empty" or not deals:
+        if snapshots:
+            ingest_mt5_snapshots(db, account=account, snapshots=snapshots)
         synced_at = datetime.now(timezone.utc)
         account_repo.set_account_last_synced_at(db, account, synced_at)
         account_repo.mark_account_ready_for_stats(db, account, synced_at=synced_at)
@@ -277,6 +290,9 @@ def process_mt5_webhook(
         return {"status": "ok", "inserted_trades": 0, "touched_trading_dates": 0}
 
     try:
+        snapshot_count = 0
+        if snapshots:
+            snapshot_count = ingest_mt5_snapshots(db, account=account, snapshots=snapshots)
         result = ingest_mt5_deals(db, account=account, deals=deals)
         account_repo.mark_account_ready_for_stats(
             db, account, synced_at=datetime.now(timezone.utc)
@@ -296,6 +312,7 @@ def process_mt5_webhook(
         "status": "ok",
         "inserted_trades": result.inserted_trades,
         "touched_trading_dates": result.touched_trading_dates,
+        "snapshots_upserted": snapshot_count,
         "summary": summary or {},
     }
 
