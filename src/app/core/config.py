@@ -12,10 +12,19 @@ class Settings(BaseSettings):
     DATABASE_URL: str
 
     # -------------------------------------------------------------------
-    # Supabase
+    # Supabase (Storage legacy paths — optional when unused)
     # -------------------------------------------------------------------
-    SUPABASE_URL: str
-    SUPABASE_SERVICE_KEY: str
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_KEY: str = ""
+
+    # -------------------------------------------------------------------
+    # Custom storage microservice (S3-backed) — preferred when set
+    # -------------------------------------------------------------------
+    STORAGE_SERVICE_BASE_URL: str = ""
+    STORAGE_SERVICE_UPLOAD_PATH: str = "/api/upload"
+    STORAGE_SERVICE_API_KEY: str = ""
+    # Hint for clients: S3 presign behind /files/… is shorter than Supabase defaults.
+    STORAGE_SERVICE_PRESIGNED_TTL_SECONDS: int = 600
 
     # Auth
     SECRET_KEY: str

@@ -10,7 +10,6 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.supabase import get_supabase
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.metaapi import metaapi_service
 from app.domains.accounts.models import SyncProvider, TradingAccount
@@ -46,53 +45,23 @@ from app.domains.journal.schemas import (
     JournalTradeResponse,
 )
 from app.domains.users.models import User
-from app.shared.utils.storage import generate_signed_url, upload_media
+from app.shared.utils.storage import (
+    generate_signed_url,
+    upload_journal_voice_note,
+    upload_media,
+)
 from app.shared.utils.timezone import (
     local_date_to_utc_range,
     to_account_local_date,
 )
 
 _HASHTAG_PATTERN = r"#([A-Za-z][A-Za-z0-9_-]*)"
-_ALLOWED_AUDIO_MIME_TYPES = {
-    "audio/mpeg",
-    "audio/mp3",
-    "audio/mp4",
-    "audio/m4a",
-    "audio/wav",
-    "audio/x-wav",
-    "audio/webm",
-    "audio/ogg",
-}
 
 
 def extract_tags(content: str | None) -> list[str]:
     if not content:
         return []
     return [match.lower() for match in re.findall(_HASHTAG_PATTERN, content)]
-
-
-def _upload_voice_note(file: UploadFile, *, user_prefix: str) -> tuple[str, str]:
-    content_type = (file.content_type or "").lower()
-    if content_type not in _ALLOWED_AUDIO_MIME_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Unsupported audio format for voice message.",
-        )
-
-    ext = "bin"
-    if "/" in content_type:
-        ext = content_type.split("/")[1].replace("x-", "")
-
-    storage_path = f"{user_prefix}/{uuid.uuid4()}.{ext}"
-    file_bytes = file.file.read()
-
-    supabase = get_supabase()
-    supabase.storage.from_(settings.JOURNAL_VOICE_BUCKET).upload(
-        path=storage_path,
-        file=file_bytes,
-        file_options={"content-type": content_type, "upsert": "false"},
-    )
-    return storage_path, content_type
 
 
 def _serialize_message(db: Session, message) -> JournalMessageResponse:
@@ -278,7 +247,7 @@ def create_trade_journal_message(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Voice message file is required.",
             )
-        audio_storage_path, audio_mime_type = _upload_voice_note(
+        audio_storage_path, audio_mime_type = upload_journal_voice_note(
             file, user_prefix=str(current_user.id)
         )
     elif message_type == JournalMessageType.image:
@@ -490,7 +459,9 @@ def create_daily_journal_message(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Voice message file is required.",
             )
-        audio_storage_path, _ = _upload_voice_note(file, user_prefix=str(current_user.id))
+        audio_storage_path, _ = upload_journal_voice_note(
+            file, user_prefix=str(current_user.id)
+        )
     elif message_type == JournalMessageType.image:
         if file is None:
             raise HTTPException(

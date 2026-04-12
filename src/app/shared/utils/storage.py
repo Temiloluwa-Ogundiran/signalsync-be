@@ -1,5 +1,5 @@
 """
-Supabase Storage utilities.
+Object storage: custom storage microservice (preferred) or Supabase Storage (legacy paths).
 """
 
 import uuid
@@ -8,8 +8,15 @@ from typing import Optional
 
 from fastapi import HTTPException, UploadFile, status
 
+from app.core.config import settings
 from app.core.supabase import get_supabase
 from app.domains.posts.models import PostMediaType
+from app.shared.utils.storage_service_client import (
+    gateway_url_for_object_key,
+    is_legacy_supabase_storage_path,
+    storage_service_enabled,
+    upload_via_storage_service,
+)
 
 _ALLOWED_MIME_PREFIXES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 
@@ -32,6 +39,19 @@ _MEDIA_MIME_MAP: dict[str, tuple[str, PostMediaType]] = {
     "application/pdf": ("pdf", PostMediaType.document),
 }
 
+JOURNAL_VOICE_ALLOWED_MIME_TYPES = frozenset(
+    {
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/mp4",
+        "audio/m4a",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/webm",
+        "audio/ogg",
+    }
+)
+
 
 def upload_image(
     file: UploadFile,
@@ -39,19 +59,11 @@ def upload_image(
     prefix: str,
 ) -> str:
     """
-    Upload an image file to a Supabase Storage bucket.
-
-    Args:
-        file:   The uploaded file from the request.
-        bucket: The Supabase Storage bucket name.
-        prefix: Path prefix inside the bucket (e.g. the owner's user_id string).
+    Upload a stream avatar/banner image.
 
     Returns:
-        The public URL of the uploaded file.
-
-    Raises:
-        HTTPException 422 if the file type is not an allowed image type.
-        HTTPException 500 if the Supabase upload fails.
+        A URL suitable for persisting on `Stream.avatar_url` / `banner_url`:
+        public Supabase URL (legacy) or HTTPS gateway URL on the storage microservice.
     """
     content_type = file.content_type or ""
     if not any(content_type.startswith(p) for p in _ALLOWED_MIME_PREFIXES):
@@ -60,9 +72,14 @@ def upload_image(
             detail=f"Invalid file type '{content_type}'. Allowed: JPEG, PNG, WebP, GIF.",
         )
 
+    if storage_service_enabled():
+        file.file.seek(0)
+        object_key = upload_via_storage_service(file)
+        return gateway_url_for_object_key(object_key)
+
     ext = _MIME_TO_EXT.get(content_type, "jpg")
     file_path = f"{prefix}/{uuid.uuid4()}.{ext}"
-
+    file.file.seek(0)
     file_bytes = file.file.read()
 
     supabase = get_supabase()
@@ -72,7 +89,6 @@ def upload_image(
         file_options={"content-type": content_type, "upsert": "false"},
     )
 
-    # supabase-py raises on error, but guard anyway
     if hasattr(response, "error") and response.error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -89,16 +105,11 @@ def upload_media(
     prefix: str,
 ) -> tuple[str, PostMediaType, str]:
     """
-    Upload a post media file (image, video, or document) to a private Supabase bucket.
+    Upload post or journal attachment media.
 
     Returns:
-        A tuple of (storage_path, PostMediaType, mime_type).
-        `storage_path` is the path *inside* the bucket — persist this in the DB
-        and use generate_signed_url() to serve it to clients.
-
-    Raises:
-        HTTPException 422 if the file type is not allowed.
-        HTTPException 500 if the Supabase upload fails.
+        (storage_path, PostMediaType, mime_type). For the microservice, `storage_path`
+        is the object key; use `generate_signed_url` to build the gateway URL for clients.
     """
     content_type = file.content_type or ""
     if content_type not in _MEDIA_MIME_MAP:
@@ -108,9 +119,15 @@ def upload_media(
             detail=f"Unsupported media type '{content_type}'. Allowed: {allowed}.",
         )
 
+    if storage_service_enabled():
+        object_key = upload_via_storage_service(file)
+        _, media_type = _MEDIA_MIME_MAP[content_type]
+        return object_key, media_type, content_type
+
     ext, media_type = _MEDIA_MIME_MAP[content_type]
     storage_path = f"{prefix}/{uuid.uuid4()}.{ext}"
 
+    file.file.seek(0)
     file_bytes = file.file.read()
 
     supabase = get_supabase()
@@ -129,29 +146,73 @@ def upload_media(
     return storage_path, media_type, content_type
 
 
+def upload_journal_voice_note(file: UploadFile, *, user_prefix: str) -> tuple[str, str]:
+    """
+    Upload a journal voice attachment.
+
+    Returns:
+        (storage_path, normalized_content_type). `user_prefix` is kept for API
+        compatibility; the storage microservice assigns its own object key.
+    """
+    _ = user_prefix
+    content_type = (file.content_type or "").lower()
+    if content_type not in JOURNAL_VOICE_ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unsupported audio format for voice message.",
+        )
+
+    if storage_service_enabled():
+        file.file.seek(0)
+        object_key = upload_via_storage_service(file)
+        return object_key, content_type
+
+    ext = "bin"
+    if "/" in content_type:
+        ext = content_type.split("/")[1].replace("x-", "")
+
+    storage_path = f"{user_prefix}/{uuid.uuid4()}.{ext}"
+    file.file.seek(0)
+    file_bytes = file.file.read()
+
+    supabase = get_supabase()
+    supabase.storage.from_(settings.JOURNAL_VOICE_BUCKET).upload(
+        path=storage_path,
+        file=file_bytes,
+        file_options={"content-type": content_type, "upsert": "false"},
+    )
+    return storage_path, content_type
+
+
 def generate_signed_url(
     bucket: str,
     storage_path: str,
     expires_in: int,
 ) -> tuple[str, datetime]:
     """
-    Generate a short-lived signed URL for a file in a private Supabase bucket.
+    Return a URL clients can use to fetch private media.
 
-    Args:
-        bucket:       The Supabase Storage bucket name.
-        storage_path: The path inside the bucket (as returned by upload_media).
-        expires_in:   Lifetime of the URL in seconds.
-
-    Returns:
-        A tuple of (signed_url, expires_at) where expires_at is timezone-aware UTC.
-
-    Raises:
-        HTTPException 500 if Supabase fails to generate the URL.
+    For the storage microservice (non-legacy keys), this returns a stable HTTPS gateway URL
+    that redirects to a fresh S3 presigned URL on each request.
     """
+    if storage_service_enabled() and not is_legacy_supabase_storage_path(storage_path):
+        url = gateway_url_for_object_key(storage_path)
+        ttl = min(
+            expires_in,
+            max(1, int(settings.STORAGE_SERVICE_PRESIGNED_TTL_SECONDS)),
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+        return url, expires_at
+
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Supabase Storage is not configured but this media requires a legacy URL.",
+        )
+
     supabase = get_supabase()
     result = supabase.storage.from_(bucket).create_signed_url(storage_path, expires_in)
 
-    # supabase-py v2 returns an object; guard for both dict and object shapes.
     signed_url: Optional[str]
     if isinstance(result, dict):
         signed_url = result.get("signedURL") or result.get("signed_url")
