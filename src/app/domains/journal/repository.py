@@ -113,6 +113,44 @@ def create_trade_journal(
     return trade_journal
 
 
+def map_trade_reviewed_at_by_trade_ids(
+    db: Session,
+    *,
+    trade_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, Optional[datetime]]:
+    if not trade_ids:
+        return {}
+    stmt = select(TradeJournal.trade_id, TradeJournal.reviewed_at).where(
+        TradeJournal.trade_id.in_(trade_ids)
+    )
+    rows = db.execute(stmt).all()
+    return {row[0]: row[1] for row in rows}
+
+
+def adjacent_traded_local_dates(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    account_timezone: str,
+    trading_date: date,
+) -> tuple[Optional[date], Optional[date]]:
+    """Previous / next local calendar dates (vs account tz) that have at least one closed trade."""
+    local_date_expr = func.date(func.timezone(account_timezone, Trade.closed_at))
+    prev_stmt = select(func.max(local_date_expr)).where(
+        Trade.account_id == account_id,
+        local_date_expr < trading_date,
+    )
+    next_stmt = select(func.min(local_date_expr)).where(
+        Trade.account_id == account_id,
+        local_date_expr > trading_date,
+    )
+    prev_raw = db.execute(prev_stmt).scalar_one_or_none()
+    next_raw = db.execute(next_stmt).scalar_one_or_none()
+    prev_date = prev_raw if isinstance(prev_raw, date) else None
+    next_date = next_raw if isinstance(next_raw, date) else None
+    return prev_date, next_date
+
+
 def get_trade_journal_message_counts(
     db: Session,
     *,
@@ -458,7 +496,11 @@ def list_trading_dates_with_journal_activity(
     from_date: date,
     to_date: date,
 ) -> set[date]:
-    """Local trading dates that have at least one non-system journal message (day or trade)."""
+    """Local trading dates with journal engagement for calendar UI.
+
+    Includes: non-system day/trade messages, explicitly reviewed daily journals,
+    or trade journals marked reviewed (local close date).
+    """
     local_trade_date = func.date(func.timezone(account_timezone, Trade.closed_at))
 
     stmt_daily = (
@@ -487,11 +529,41 @@ def list_trading_dates_with_journal_activity(
         .distinct()
     )
 
+    stmt_daily_reviewed = (
+        select(DailyJournal.trading_date)
+        .where(
+            DailyJournal.account_id == account_id,
+            DailyJournal.reviewed_at.isnot(None),
+            DailyJournal.trading_date >= from_date,
+            DailyJournal.trading_date <= to_date,
+        )
+        .distinct()
+    )
+
+    stmt_trade_reviewed = (
+        select(local_trade_date.label("trading_date"))
+        .select_from(Trade)
+        .join(TradeJournal, TradeJournal.trade_id == Trade.id)
+        .where(
+            Trade.account_id == account_id,
+            TradeJournal.reviewed_at.isnot(None),
+            local_trade_date >= from_date,
+            local_trade_date <= to_date,
+        )
+        .distinct()
+    )
+
     dates: set[date] = set()
     for (d,) in db.execute(stmt_daily).all():
         if d is not None:
             dates.add(d)
     for (d,) in db.execute(stmt_trade).all():
+        if d is not None:
+            dates.add(d)
+    for (d,) in db.execute(stmt_daily_reviewed).all():
+        if d is not None:
+            dates.add(d)
+    for (d,) in db.execute(stmt_trade_reviewed).all():
         if d is not None:
             dates.add(d)
     return dates

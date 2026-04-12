@@ -36,9 +36,11 @@ from app.domains.journal.schemas import (
     AnalyticsTimePerformanceResponse,
     AnalyticsTradeSourceItemResponse,
     AnalyticsTradeSourceResponse,
+    AdjacentTradedDatesResponse,
     DailyJournalResponse,
     DailyTradeChipResponse,
     JournalAttachmentResponse,
+    JournalReviewedAtResponse,
     JournalMessageResponse,
     JournalTemplateCreateRequest,
     JournalTradeListResponse,
@@ -297,6 +299,9 @@ def create_trade_journal_message(
             caption=content,
         )
 
+    if trade_journal.reviewed_at is None:
+        trade_journal.reviewed_at = datetime.now(timezone.utc)
+
     db.commit()
     db.refresh(message)
     return _serialize_message(db, message)
@@ -341,6 +346,10 @@ def get_or_create_daily_journal(
         account_timezone=account.timezone,
     )
     message_counts = journal_repo.get_trade_journal_message_counts(
+        db,
+        trade_ids=[trade.id for trade in trades],
+    )
+    trade_reviewed_map = journal_repo.map_trade_reviewed_at_by_trade_ids(
         db,
         trade_ids=[trade.id for trade in trades],
     )
@@ -404,6 +413,7 @@ def get_or_create_daily_journal(
             net_roi_percent = (trade.net_profit / day_start_balance) * Decimal("100")
         trade_model.balance_before_trade = balance_before_trade
         trade_model.net_roi_percent = net_roi_percent
+        trade_model.trade_reviewed_at = trade_reviewed_map.get(trade.id)
         trade_models.append(trade_model)
         if running_balance is not None:
             running_balance += trade.net_profit
@@ -415,12 +425,69 @@ def get_or_create_daily_journal(
         id=daily_journal.id,
         trading_date=daily_journal.trading_date,
         account_timezone=account.timezone,
+        reviewed_at=daily_journal.reviewed_at,
         day_start_balance=day_start_balance,
         day_end_balance=day_end_balance,
         trade_chips=trade_chips,
         trades=trade_models,
         messages=messages,
     )
+
+
+def get_adjacent_traded_dates(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    trading_date: date,
+    current_user: User,
+) -> AdjacentTradedDatesResponse:
+    account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
+        )
+
+    prev_date, next_date = journal_repo.adjacent_traded_local_dates(
+        db,
+        account_id=account_id,
+        account_timezone=account.timezone,
+        trading_date=trading_date,
+    )
+    return AdjacentTradedDatesResponse(prev_date=prev_date, next_date=next_date)
+
+
+def mark_daily_journal_reviewed(
+    db: Session,
+    *,
+    daily_journal_id: uuid.UUID,
+    current_user: User,
+) -> JournalReviewedAtResponse:
+    daily_journal, _ = _get_daily_journal_owned_by_user(
+        db,
+        daily_journal_id=daily_journal_id,
+        current_user=current_user,
+    )
+    now = datetime.now(timezone.utc)
+    daily_journal.reviewed_at = now
+    db.commit()
+    db.refresh(daily_journal)
+    return JournalReviewedAtResponse(reviewed_at=daily_journal.reviewed_at)
+
+
+def mark_trade_journal_reviewed(
+    db: Session,
+    *,
+    trade_id: uuid.UUID,
+    current_user: User,
+) -> JournalReviewedAtResponse:
+    trade_journal, _ = get_or_create_trade_journal(
+        db, trade_id=trade_id, current_user=current_user
+    )
+    now = datetime.now(timezone.utc)
+    trade_journal.reviewed_at = now
+    db.commit()
+    db.refresh(trade_journal)
+    return JournalReviewedAtResponse(reviewed_at=trade_journal.reviewed_at)
 
 
 def create_daily_journal_message(
@@ -507,6 +574,9 @@ def create_daily_journal_message(
             original_filename=image_original_filename,
             caption=content,
         )
+
+    if daily_journal.reviewed_at is None:
+        daily_journal.reviewed_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(message)
@@ -653,6 +723,13 @@ def list_account_trades(
         return []
 
     base_models = [_enrich_trade_response(JournalTradeResponse.model_validate(trade), trade) for trade in trades]
+    trade_reviewed_map = journal_repo.map_trade_reviewed_at_by_trade_ids(
+        db,
+        trade_ids=[trade.id for trade in trades],
+    )
+    for model in base_models:
+        model.trade_reviewed_at = trade_reviewed_map.get(model.id)
+
     if closed_from_utc is None:
         return base_models
 

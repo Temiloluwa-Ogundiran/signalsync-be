@@ -10,6 +10,7 @@ from app.domains.accounts.models import TradeDirection, TradeSession
 from app.domains.journal import service as journal_service
 from app.domains.journal.models import JournalMessageType, JournalTemplateType
 from app.domains.journal.schemas import (
+    AdjacentTradedDatesResponse,
     AnalyticsCalendarResponse,
     AnalyticsBalanceHistoryResponse,
     AnalyticsDashboardResponse,
@@ -26,6 +27,7 @@ from app.domains.journal.schemas import (
     DailyJournalResponse,
     JournalMessageResponse,
     JournalMessageUpdateRequest,
+    JournalReviewedAtResponse,
     JournalTemplateCreateRequest,
     JournalTemplateResponse,
     JournalTradeListResponse,
@@ -116,9 +118,67 @@ def create_trade_message(
     return JournalMessageResponse.model_validate(message)
 
 
+@trades_router.post("/{trade_id}/review", response_model=JournalReviewedAtResponse)
+def mark_trade_journal_reviewed(
+    trade_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> JournalReviewedAtResponse:
+    return journal_service.mark_trade_journal_reviewed(
+        db, trade_id=trade_id, current_user=current_user
+    )
+
+
 # ---------------------------------------------------------------------------
 # Daily
 # ---------------------------------------------------------------------------
+
+@daily_router.get(
+    "/{account_id}/adjacent-traded-dates",
+    response_model=AdjacentTradedDatesResponse,
+)
+def get_adjacent_traded_dates(
+    account_id: uuid.UUID,
+    trading_date: date = Query(..., description="Reference local trading date (YYYY-MM-DD)."),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AdjacentTradedDatesResponse:
+    return journal_service.get_adjacent_traded_dates(
+        db,
+        account_id=account_id,
+        trading_date=trading_date,
+        current_user=current_user,
+    )
+
+
+@daily_router.get("/{account_id}/feed", response_model=DailyJournalFeedResponse)
+def list_daily_feed(
+    account_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=100),
+    cursor: Optional[uuid.UUID] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DailyJournalFeedResponse:
+    items = journal_service.list_daily_journal_feed(
+        db,
+        account_id=account_id,
+        current_user=current_user,
+        limit=limit + 1,
+        cursor_daily_journal_id=cursor,
+    )
+
+    has_more = len(items) > limit
+    if has_more:
+        items = items[:limit]
+
+    return DailyJournalFeedResponse(
+        items=[
+            DailyJournalFeedItemResponse(id=item.id, trading_date=item.trading_date)
+            for item in items
+        ],
+        next_cursor=items[-1].id if has_more else None,
+    )
+
 
 @daily_router.get("/{account_id}/{trading_date}", response_model=DailyJournalResponse)
 def get_or_create_daily_journal(
@@ -157,32 +217,14 @@ def create_daily_message(
     return JournalMessageResponse.model_validate(message)
 
 
-@daily_router.get("/{account_id}/feed", response_model=DailyJournalFeedResponse)
-def list_daily_feed(
-    account_id: uuid.UUID,
-    limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[uuid.UUID] = Query(None),
+@daily_router.post("/{daily_journal_id}/review", response_model=JournalReviewedAtResponse)
+def mark_daily_journal_reviewed(
+    daily_journal_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> DailyJournalFeedResponse:
-    items = journal_service.list_daily_journal_feed(
-        db,
-        account_id=account_id,
-        current_user=current_user,
-        limit=limit + 1,
-        cursor_daily_journal_id=cursor,
-    )
-
-    has_more = len(items) > limit
-    if has_more:
-        items = items[:limit]
-
-    return DailyJournalFeedResponse(
-        items=[
-            DailyJournalFeedItemResponse(id=item.id, trading_date=item.trading_date)
-            for item in items
-        ],
-        next_cursor=items[-1].id if has_more else None,
+) -> JournalReviewedAtResponse:
+    return journal_service.mark_daily_journal_reviewed(
+        db, daily_journal_id=daily_journal_id, current_user=current_user
     )
 
 

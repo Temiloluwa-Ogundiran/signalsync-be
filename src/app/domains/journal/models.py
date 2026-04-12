@@ -46,6 +46,11 @@ class DailyJournal(Base):
         nullable=False,
     )
 
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     account: Mapped["TradingAccount"] = relationship(back_populates="daily_journals")  # noqa: F821
     trade_journals: Mapped[List["TradeJournal"]] = relationship(
         back_populates="daily_journal",
@@ -83,6 +88,11 @@ class TradeJournal(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
+    )
+
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
     trade: Mapped["Trade"] = relationship(back_populates="journal")  # noqa: F821

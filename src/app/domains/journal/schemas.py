@@ -53,6 +53,8 @@ class JournalTradeResponse(BaseModel):
         ),
     )
 
+    trade_reviewed_at: Optional[datetime] = None
+
     model_config = {"from_attributes": True}
 
 
@@ -125,6 +127,7 @@ class DailyJournalResponse(BaseModel):
     id: uuid.UUID
     trading_date: date
     account_timezone: str
+    reviewed_at: Optional[datetime] = None
     day_start_balance: Decimal | None = None
     day_end_balance: Decimal | None = None
     trade_chips: list[DailyTradeChipResponse]
@@ -140,6 +143,15 @@ class DailyJournalFeedItemResponse(BaseModel):
 class DailyJournalFeedResponse(BaseModel):
     items: list[DailyJournalFeedItemResponse]
     next_cursor: Optional[uuid.UUID] = None
+
+
+class JournalReviewedAtResponse(BaseModel):
+    reviewed_at: datetime
+
+
+class AdjacentTradedDatesResponse(BaseModel):
+    prev_date: Optional[date] = None
+    next_date: Optional[date] = None
 
 
 # ---------------------------------------------------------------------------
