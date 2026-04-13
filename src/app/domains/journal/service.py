@@ -1223,6 +1223,92 @@ def get_analytics_equity(
     )
 
 
+def _balance_history_points_from_trade_closes(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    account: TradingAccount,
+    from_date: date,
+    to_date: date,
+) -> list[AnalyticsBalanceHistoryPointResponse]:
+    """
+    Per-trade closing equity in range: day anchor + balance after each close
+    (same reconstruction as journal day balance curve, multi-day window).
+
+    When snapshot-based day opens are missing, seed from implied equity before
+    the first close in the window (estimate + realized PnL before that close)
+    and carry running balance across local days so the series is account equity,
+    not cumulative PnL from zero.
+    """
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    trades = journal_repo.list_trades_filtered(
+        db,
+        account_id=account_id,
+        closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc,
+    )
+    if not trades:
+        return []
+
+    sorted_trades = sorted(trades, key=lambda t: (t.closed_at, t.id))
+    first_in_window = None
+    for t in sorted_trades:
+        ld0 = to_account_local_date(t.closed_at, account.timezone)
+        if from_date <= ld0 <= to_date:
+            first_in_window = t
+            break
+    if first_in_window is None:
+        return []
+
+    seed_before_first = _estimate_starting_balance(db, account=account) + account_repo.sum_trade_net_profit(
+        db,
+        account_id=account_id,
+        closed_before_utc=first_in_window.closed_at,
+    )
+
+    points: list[AnalyticsBalanceHistoryPointResponse] = []
+    last_local_date: date | None = None
+    running: Decimal | None = None
+
+    for trade in sorted_trades:
+        ld = to_account_local_date(trade.closed_at, account.timezone)
+        if ld < from_date or ld > to_date:
+            continue
+
+        if ld != last_local_date:
+            ds, _ = _resolve_day_balances(
+                db,
+                account_id=account_id,
+                trading_date=ld,
+            )
+            if ds is not None:
+                running = ds
+            elif last_local_date is None:
+                running = seed_before_first
+            # else: carry `running` from previous local day (end-of-day equity)
+            last_local_date = ld
+            points.append(
+                AnalyticsBalanceHistoryPointResponse(
+                    timestamp=datetime.combine(ld, time.min, tzinfo=timezone.utc),
+                    balance=float(running or Decimal("0")),
+                    equity=None,
+                    source="trade_day_anchor",
+                )
+            )
+
+        running = (running or Decimal("0")) + trade.net_profit
+        points.append(
+            AnalyticsBalanceHistoryPointResponse(
+                timestamp=trade.closed_at,
+                balance=float(running),
+                equity=None,
+                source="trade_close",
+            )
+        )
+
+    return points
+
+
 def get_analytics_balance_history(
     db: Session,
     *,
@@ -1252,7 +1338,17 @@ def get_analytics_balance_history(
             account_id=account_id,
             trading_date=from_date,
         )
-        running = day_start_balance or Decimal("0")
+        if day_start_balance is not None:
+            running = day_start_balance
+        else:
+            closed_from_utc, _ = local_date_to_utc_range(from_date, account.timezone)
+            est = _estimate_starting_balance(db, account=account)
+            realized_before_day = account_repo.sum_trade_net_profit(
+                db,
+                account_id=account_id,
+                closed_before_utc=closed_from_utc,
+            )
+            running = est + realized_before_day
         points: list[AnalyticsBalanceHistoryPointResponse] = [
             AnalyticsBalanceHistoryPointResponse(
                 timestamp=datetime.combine(from_date, time.min, tzinfo=timezone.utc),
@@ -1279,17 +1375,36 @@ def get_analytics_balance_history(
         from_date=from_date,
         to_date=to_date,
     )
-    return AnalyticsBalanceHistoryResponse(
-        points=[
+    snapshot_points: list[AnalyticsBalanceHistoryPointResponse] = []
+    if snapshots:
+        snapshot_points = [
             AnalyticsBalanceHistoryPointResponse(
-                timestamp=datetime.combine(p.snapshot_date, time.min, tzinfo=timezone.utc),
+                timestamp=datetime.combine(
+                    p.snapshot_date, time.min, tzinfo=timezone.utc
+                ),
                 balance=float(p.balance),
                 equity=float(p.equity),
                 source="daily_snapshot",
             )
             for p in snapshots
         ]
+
+    if from_date is None or to_date is None:
+        return AnalyticsBalanceHistoryResponse(points=snapshot_points)
+
+    trade_points = _balance_history_points_from_trade_closes(
+        db,
+        account_id=account_id,
+        account=account,
+        from_date=from_date,
+        to_date=to_date,
     )
+
+    if trade_points:
+        return AnalyticsBalanceHistoryResponse(points=trade_points)
+    if snapshot_points:
+        return AnalyticsBalanceHistoryResponse(points=snapshot_points)
+    return AnalyticsBalanceHistoryResponse(points=[])
 
 
 def get_analytics_setups(
