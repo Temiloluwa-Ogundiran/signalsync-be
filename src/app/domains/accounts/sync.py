@@ -426,6 +426,76 @@ def ingest_mt5_snapshots(
     return upserted
 
 
+def ingest_mt5_core_history_result(
+    db: Session,
+    *,
+    account: TradingAccount,
+    result: dict[str, Any],
+) -> SyncResult:
+    """
+    Ingest normalized history result from mt5-core.
+    """
+    deals = result.get("deals") or []
+    snapshot = result.get("snapshot")
+    broker_offset = int(result.get("broker_offset_seconds") or 0)
+
+    # Save broker offset if it changed
+    if broker_offset != account.broker_utc_offset:
+        account.broker_utc_offset = broker_offset
+        db.flush()
+
+    # Ingest snapshot if present
+    snapshot_count = 0
+    if snapshot:
+        snapshot_count = ingest_mt5_snapshots(db, account=account, snapshots=[snapshot])
+
+    # Ingest deals using ingest_mt5_deals
+    sync_result = ingest_mt5_deals(db, account=account, deals=deals)
+    return sync_result
+
+
+async def sync_account_deals_mt5(
+    db: Session,
+    account: TradingAccount,
+    lookback_days: Optional[int] = None,
+) -> SyncResult:
+    from app.domains.accounts.mt5_core_client import Mt5CoreClient
+    from app.shared.utils.encryption import decrypt_secret
+    
+    # 1. Decrypt investor password
+    try:
+        investor_password = decrypt_secret(account.encrypted_investor_password)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to decrypt account credentials.",
+        ) from exc
+
+    # 2. Determine from_time
+    effective_lookback_days = lookback_days or settings.INITIAL_SYNC_LOOKBACK_DAYS
+    cleanup_floor = datetime.now(timezone.utc) - timedelta(days=effective_lookback_days)
+    if account.last_synced_at is None:
+        from_time = cleanup_floor
+    else:
+        from_time = min(account.last_synced_at, cleanup_floor)
+
+    # 3. Call mt5-core client
+    client = Mt5CoreClient()
+    sync_result = await client.submit_history_sync(
+        account_id=str(account.id),
+        from_time=from_time,
+        credentials={
+            "login": account.broker_login,
+            "password": investor_password,
+            "server": account.broker_server,
+            "broker": account.broker_name,
+        }
+    )
+
+    # 4. Ingest normalized results
+    return ingest_mt5_core_history_result(db, account=account, result=sync_result)
+
+
 def sync_account_deals(
     db: Session,
     *,
@@ -439,6 +509,11 @@ def sync_account_deals(
         )
 
     try:
+        from app.domains.accounts.models import SyncProvider
+        if account.sync_provider == SyncProvider.headless_mt5:
+            import anyio
+            return anyio.run(sync_account_deals_mt5, db, account, lookback_days)
+
         effective_lookback_days = lookback_days or settings.INITIAL_SYNC_LOOKBACK_DAYS
         cleanup_floor = datetime.now(timezone.utc) - timedelta(days=effective_lookback_days)
         if account.last_synced_at is None:

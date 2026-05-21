@@ -43,8 +43,10 @@ def create_account(
     broker_utc_offset: int,
     display_name: Optional[str],
     sync_provider: SyncProvider = SyncProvider.metaapi,
+    id: Optional[uuid.UUID] = None,
 ) -> TradingAccount:
     account = TradingAccount(
+        id=id or uuid.uuid4(),
         user_id=user_id,
         meta_account_id=meta_account_id,
         broker_name=broker_name,

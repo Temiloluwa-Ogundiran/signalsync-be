@@ -87,11 +87,13 @@ class Settings(BaseSettings):
     # Sync
     SYNC_INTERVAL_MINUTES: int = 5
 
-    # Headless MT5 microservice
-    MT5_SERVICE_URL: str = ""
-    # Shared secret for authenticating requests to/from the headless MT5 service.
-    # Must match SHARED_SECRET in the headless-mt5-service .env.
-    MT5_SERVICE_SHARED_SECRET: str = ""
+
+
+    # mt5-core service config
+    MT5_CORE_URL: str = ""
+    MT5_CORE_INTERNAL_SHARED_SECRET: str = ""
+    MT5_CORE_POLL_TIMEOUT_SECONDS: int = 120
+    MT5_CORE_POLL_INTERVAL_SECONDS: int = 2
 
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"

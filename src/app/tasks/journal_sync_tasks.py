@@ -152,23 +152,18 @@ def sync_account(account_id: str) -> dict:
 @celery_app.task(name="journal.sync_all_mt5_accounts")
 def sync_all_mt5_accounts() -> dict:
     """
-    Periodic Celery beat task: triggers the headless MT5 microservice for every
-    trading account that uses sync_provider=headless_mt5.
-
-    Each trigger is a fire-and-forget HTTP POST to the MT5 service.
-    Results are delivered asynchronously via the /accounts/webhook/mt5-sync endpoint.
+    Periodic Celery beat task: triggers the new mt5-core client sync flow
+    for every trading account that uses sync_provider=headless_mt5.
     """
-    import httpx
-    from app.domains.accounts.sync import _try_acquire_account_sync_lock, _release_account_sync_lock
-
-    if not settings.MT5_SERVICE_URL or not settings.MT5_SERVICE_SHARED_SECRET:
-        logger.info("MT5 sync skipped: MT5_SERVICE_URL or MT5_SERVICE_SHARED_SECRET not configured.")
-        return {"skipped": True, "reason": "mt5_service_not_configured"}
+    import anyio
+    from app.domains.accounts.sync import sync_account_deals_mt5
+    from app.domains.accounts.models import TradingAccountConnectionState
 
     cycle_started = datetime.now(timezone.utc)
     triggered = 0
     skipped = 0
     failed = 0
+    inserted_total = 0
 
     with SessionLocal() as db:
         all_accounts = account_repo.list_syncable_accounts(db)
@@ -184,42 +179,21 @@ def sync_all_mt5_accounts() -> dict:
             continue
 
         try:
-            from app.shared.utils.encryption import decrypt_secret
-            investor_password = decrypt_secret(account.encrypted_investor_password)
-        except Exception:  # noqa: BLE001
-            logger.warning("Failed to decrypt password for account_id=%s — skipping.", account.id)
-            skipped += 1
-            continue
-
-        last_sync_ts = int(account.last_synced_at.timestamp()) if account.last_synced_at else 0
-        known_copy_magics = list(account.copy_magic_numbers or [])
-
-        payload = {
-            "account_id": str(account.id),
-            "broker_server": account.broker_server,
-            "login_id": int(account.broker_login),
-            "investor_password": investor_password,
-            "last_sync_timestamp": last_sync_ts,
-            "known_copy_magics": known_copy_magics,
-            "mode": "sync",
-        }
-
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.post(
-                    f"{settings.MT5_SERVICE_URL.rstrip('/')}/sync",
-                    json=payload,
-                    headers={"X-Shared-Secret": settings.MT5_SERVICE_SHARED_SECRET},
-                )
-                response.raise_for_status()
-            triggered += 1
+            with SessionLocal() as db_session:
+                # Reload account in this session
+                acct = account_repo.get_account_by_id(db_session, account.id)
+                if acct is not None:
+                    res = anyio.run(sync_account_deals_mt5, db_session, acct, None)
+                    if acct.connection_state == TradingAccountConnectionState.bootstrap_failed:
+                        account_repo.mark_account_ready_for_stats(db_session, acct, synced_at=datetime.now(timezone.utc))
+                    else:
+                        account_repo.set_account_last_synced_at(db_session, acct, datetime.now(timezone.utc))
+                    db_session.commit()
+                    inserted_total += res.inserted_trades
+                    triggered += 1
         except Exception as exc:  # noqa: BLE001
             failed += 1
-            logger.error(
-                "MT5 sync trigger failed | account_id=%s error=%s",
-                account.id,
-                str(exc)[:200],
-            )
+            logger.exception("MT5 celery sync failed for account_id=%s", account.id)
 
     duration_seconds = (datetime.now(timezone.utc) - cycle_started).total_seconds()
     logger.info(
@@ -234,5 +208,6 @@ def sync_all_mt5_accounts() -> dict:
         "triggered": triggered,
         "skipped": skipped,
         "failed": failed,
+        "inserted_trades": inserted_total,
         "duration_seconds": duration_seconds,
     }

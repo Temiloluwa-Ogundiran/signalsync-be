@@ -1,7 +1,6 @@
-import hmac
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -10,7 +9,6 @@ from app.domains.accounts import service as account_service
 from app.domains.accounts.schemas import (
     AccountConnectRequest,
     AccountResponse,
-    MT5WebhookPayload,
 )
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
@@ -18,31 +16,13 @@ from app.shared.deps import get_current_user
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
-def _verify_mt5_secret(x_shared_secret: str = Header(...)) -> None:
-    """Constant-time comparison of the MT5 shared secret."""
-    if not settings.MT5_SERVICE_SHARED_SECRET:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="MT5 shared secret is not configured on this server.",
-        )
-    is_valid = hmac.compare_digest(
-        x_shared_secret.encode("utf-8"),
-        settings.MT5_SERVICE_SHARED_SECRET.encode("utf-8"),
-    )
-    if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid shared secret.",
-        )
-
-
 @router.post("", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
-def connect_account(
+async def connect_account(
     payload: AccountConnectRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AccountResponse:
-    account = account_service.connect_account(db, current_user=current_user, payload=payload)
+    account = await account_service.connect_account(db, current_user=current_user, payload=payload)
     return AccountResponse.model_validate(account)
 
 
@@ -76,7 +56,7 @@ def disconnect_account(
 
 
 @router.post("/{account_id}/sync")
-def manual_sync(
+async def manual_sync(
     account_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -86,38 +66,19 @@ def manual_sync(
     account = account_service.get_account(db, current_user=current_user, account_id=account_id)
 
     if account.sync_provider == SyncProvider.headless_mt5:
-        return account_service.trigger_mt5_sync(db, account=account)
+        from app.domains.accounts.sync import sync_account_deals_mt5
+        from app.domains.accounts.models import TradingAccountConnectionState
+        from datetime import datetime, timezone
+        
+        result = await sync_account_deals_mt5(db, account=account)
+        if account.connection_state == TradingAccountConnectionState.bootstrap_failed:
+            account_repo.mark_account_ready_for_stats(db, account, synced_at=datetime.now(timezone.utc))
+        else:
+            account_repo.set_account_last_synced_at(db, account, datetime.now(timezone.utc))
+        db.commit()
+        return {
+            "inserted_trades": result.inserted_trades,
+            "touched_trading_dates": result.touched_trading_dates,
+        }
 
     return account_service.sync_account(db, current_user=current_user, account_id=account_id)
-
-
-# ---------------------------------------------------------------------------
-# Headless MT5 webhook receiver
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "/webhook/mt5-sync",
-    dependencies=[Depends(_verify_mt5_secret)],
-    status_code=status.HTTP_200_OK,
-    tags=["accounts-mt5"],
-    summary="Receive MT5 sync callback from headless microservice",
-    description=(
-        "Server-to-server endpoint. Authenticated via X-Shared-Secret header. "
-        "Ingests the enriched deal payload from the headless-mt5-service."
-    ),
-)
-def mt5_sync_webhook(
-    payload: MT5WebhookPayload,
-    db: Session = Depends(get_db),
-) -> dict:
-    return account_service.process_mt5_webhook(
-        db,
-        account_id=payload.account_id,
-        broker_server=payload.broker_server,
-        sync_status=payload.status,
-        deals=[d.model_dump() for d in payload.deals],
-        snapshots=[s.model_dump() for s in payload.snapshots],
-        error_message=payload.error_message,
-        result_type=payload.result_type,
-        summary=payload.summary,
-    )
