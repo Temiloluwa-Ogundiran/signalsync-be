@@ -39,6 +39,18 @@ class Mt5CoreClient:
             "X-Internal-Shared-Secret": self.shared_secret,
         }
 
+    def _new_client(self) -> httpx.AsyncClient:
+        """Create a fresh httpx client with keep-alive disabled.
+
+        A new client is used per-request so that keep-alive connection
+        reuse across POST → GET boundaries cannot cause RemoteProtocolError
+        ("Server disconnected without sending a response").
+        """
+        return httpx.AsyncClient(
+            headers=self._headers(),
+            timeout=10.0,
+        )
+
     async def verify_credentials(
         self,
         *,
@@ -60,21 +72,21 @@ class Mt5CoreClient:
             "metadata": metadata or {},
         }
         
-        async with httpx.AsyncClient() as client:
+        # Use a dedicated client just for the POST so the connection is not
+        # shared with the subsequent polling GET requests.
+        async with self._new_client() as client:
             try:
                 response = await client.post(
                     f"{self.base_url}/accounts/verify",
                     json=payload,
-                    headers=self._headers(),
-                    timeout=10.0,
                 )
                 response.raise_for_status()
                 data = response.json()
             except Exception as e:
                 raise Mt5CoreClientError(f"Failed to submit account verification job: {e}") from e
 
-            job_id = data["job_id"]
-            return await self._poll_job(client, job_id)
+        job_id = data["job_id"]
+        return await self._poll_job(job_id)
 
     async def submit_history_sync(
         self,
@@ -106,43 +118,51 @@ class Mt5CoreClient:
             "correlation_id": correlation_id,
         }
 
-        async with httpx.AsyncClient() as client:
+        # Use a dedicated client just for the POST.
+        async with self._new_client() as client:
             try:
                 response = await client.post(
                     f"{self.base_url}/history/sync",
                     json=payload,
-                    headers=self._headers(),
-                    timeout=10.0,
                 )
                 response.raise_for_status()
                 data = response.json()
             except Exception as e:
                 raise Mt5CoreClientError(f"Failed to submit history sync job: {e}") from e
 
-            job_id = data["job_id"]
-            return await self._poll_job(client, job_id)
+        job_id = data["job_id"]
+        return await self._poll_job(job_id)
 
-    async def _poll_job(self, client: httpx.AsyncClient, job_id: str) -> dict[str, Any]:
-        """Poll the status of a job until succeeded or failed."""
+    async def _poll_job(self, job_id: str) -> dict[str, Any]:
+        """Poll the status of a job until succeeded or failed.
+
+        Each poll opens a fresh HTTP connection to avoid RemoteProtocolError
+        that occurs when a keep-alive connection is closed by the server
+        between polls.
+        """
         start_time = asyncio.get_event_loop().time()
         
         while True:
             try:
-                response = await client.get(
-                    f"{self.base_url}/jobs/{job_id}",
-                    headers=self._headers(),
-                    timeout=5.0,
-                )
-                response.raise_for_status()
-                job_status_resp = response.json()
+                # Fresh client per poll — avoids reusing a stale keep-alive conn.
+                async with self._new_client() as client:
+                    response = await client.get(
+                        f"{self.base_url}/jobs/{job_id}",
+                    )
+                    response.raise_for_status()
+                    job_status_resp = response.json()
+            except httpx.RemoteProtocolError:
+                # Server closed the connection before responding — transient,
+                # will retry after poll_interval.
+                pass
             except Exception as e:
                 raise Mt5CoreClientError(f"Failed to fetch job status for {job_id}: {e}") from e
-
-            status = job_status_resp.get("status")
-            if status == "succeeded":
-                return job_status_resp.get("result") or {}
-            elif status == "failed":
-                raise Mt5CoreClientJobFailed(job_status_resp.get("error") or "Job failed")
+            else:
+                status = job_status_resp.get("status")
+                if status == "succeeded":
+                    return job_status_resp.get("result") or {}
+                elif status == "failed":
+                    raise Mt5CoreClientJobFailed(job_status_resp.get("error") or "Job failed")
             
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed >= self.poll_timeout:
