@@ -243,3 +243,19 @@ def sync_account(
     }
 
 
+def update_account(
+    db: Session, *, current_user: User, account_id: uuid.UUID, display_name: str
+) -> TradingAccount:
+    account = get_account(db, current_user=current_user, account_id=account_id)
+    display_name = display_name.strip()
+    if not display_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Display name cannot be empty."
+        )
+    account.display_name = display_name
+    db.commit()
+    db.refresh(account)
+    return account
+
+

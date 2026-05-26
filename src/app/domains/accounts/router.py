@@ -10,6 +10,7 @@ from app.domains.accounts import service as account_service
 from app.domains.accounts.schemas import (
     AccountConnectRequest,
     AccountResponse,
+    AccountUpdateRequest,
 )
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
@@ -83,3 +84,16 @@ async def manual_sync(
         }
 
     return account_service.sync_account(db, current_user=current_user, account_id=account_id)
+
+
+@router.patch("/{account_id}", response_model=AccountResponse)
+def update_account(
+    account_id: uuid.UUID,
+    payload: AccountUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AccountResponse:
+    account = account_service.update_account(
+        db, current_user=current_user, account_id=account_id, display_name=payload.display_name
+    )
+    return AccountResponse.model_validate(account)

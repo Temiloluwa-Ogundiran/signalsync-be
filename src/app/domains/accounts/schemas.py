@@ -93,3 +93,7 @@ class MT5WebhookPayload(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     deals: list[MT5WebhookDeal] = Field(default_factory=list)
     snapshots: list[MT5WebhookSnapshot] = Field(default_factory=list)
+
+
+class AccountUpdateRequest(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=120)
