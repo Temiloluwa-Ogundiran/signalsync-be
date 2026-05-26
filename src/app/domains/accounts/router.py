@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.domains.accounts import repository as account_repo
 from app.domains.accounts import service as account_service
 from app.domains.accounts.schemas import (
     AccountConnectRequest,

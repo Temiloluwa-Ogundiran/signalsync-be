@@ -254,3 +254,90 @@ class JournalTemplate(Base):
     )
 
     owner: Mapped[Optional["User"]] = relationship(back_populates="journal_templates")  # noqa: F821
+
+
+class TagCategory(Base):
+    __tablename__ = "tag_categories"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    options: Mapped[List["TagOption"]] = relationship(
+        back_populates="category",
+        cascade="all, delete-orphan",
+    )
+
+
+class TagOption(Base):
+    __tablename__ = "tag_options"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    category_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tag_categories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    value: Mapped[str] = mapped_column(String(100), nullable=False)
+    color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)  # HEX code
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    category: Mapped["TagCategory"] = relationship(back_populates="options")
+
+
+class TradeTagSelection(Base):
+    __tablename__ = "trade_tag_selections"
+
+    trade_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("trades.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    option_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tag_options.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+

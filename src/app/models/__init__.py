@@ -25,6 +25,9 @@ from app.domains.journal.models import (
     JournalTemplate,
     JournalTemplateType,
     TradeJournal,
+    TagCategory,
+    TagOption,
+    TradeTagSelection,
 )
 
 __all__ = [
@@ -57,4 +60,7 @@ __all__ = [
     "JournalAttachment",
     "JournalTemplate",
     "JournalTemplateType",
+    "TagCategory",
+    "TagOption",
+    "TradeTagSelection",
 ]

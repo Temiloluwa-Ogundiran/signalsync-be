@@ -626,6 +626,19 @@ def list_trade_setups(
           AND cardinality(jm.tags) > 0
           AND (:closed_from_utc IS NULL OR t.closed_at >= :closed_from_utc)
           AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
+        UNION
+        SELECT
+            lower(to.value) AS tag,
+            t.id AS trade_id,
+            t.net_profit AS net_profit
+        FROM trades t
+        JOIN trade_tag_selections tts ON tts.trade_id = t.id
+        JOIN tag_options to ON to.id = tts.option_id
+        JOIN tag_categories tc ON tc.id = to.category_id
+        WHERE t.account_id = :account_id
+          AND tc.title = 'Strategy'
+          AND (:closed_from_utc IS NULL OR t.closed_at >= :closed_from_utc)
+          AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
     )
     SELECT
         tag,

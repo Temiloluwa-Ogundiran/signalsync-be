@@ -14,6 +14,7 @@ from app.domains.journal.router import (
     templates_router as journal_templates_router,
     trades_router as journal_trades_router,
 )
+from app.domains.journal.router_tags import router as journal_tags_router
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import configure_logging
@@ -35,11 +36,16 @@ app.add_middleware(
 )
 
 
+from app.domains.journal.repository_tags import seed_system_tags
+
+
 @app.on_event("startup")
 def run_startup_tasks() -> None:
     if settings.AUTO_SEED_ON_STARTUP:
         with SessionLocal() as db:
             journal_service.seed_system_journal_templates(db)
+            seed_system_tags(db)
+            db.commit()
 
 
 @app.get("/")
@@ -60,3 +66,4 @@ app.include_router(journal_daily_router)
 app.include_router(journal_messages_router)
 app.include_router(journal_templates_router)
 app.include_router(journal_analytics_router)
+app.include_router(journal_tags_router)
