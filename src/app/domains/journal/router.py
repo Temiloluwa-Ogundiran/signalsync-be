@@ -383,6 +383,7 @@ def get_time_performance(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    time_basis: str = Query("close", pattern="^(open|close)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsTimePerformanceResponse:
@@ -392,6 +393,7 @@ def get_time_performance(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        time_basis=time_basis,
     )
 
 
@@ -488,6 +490,7 @@ def get_dashboard(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     recent_limit: int = Query(8, ge=1, le=50),
+    time_basis: str = Query("close", pattern="^(open|close)$"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsDashboardResponse:
@@ -498,4 +501,5 @@ def get_dashboard(
         from_date=from_date,
         to_date=to_date,
         recent_limit=recent_limit,
+        time_basis=time_basis,
     )

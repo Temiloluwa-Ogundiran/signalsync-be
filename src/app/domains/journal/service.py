@@ -1157,6 +1157,7 @@ def get_analytics_time_performance(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    time_basis: str = "close",
 ) -> AnalyticsTimePerformanceResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
@@ -1173,10 +1174,11 @@ def get_analytics_time_performance(
 
     account_zone = ZoneInfo(account.timezone)
     for t in trades:
+        basis_time = t.opened_at if time_basis == "open" else t.closed_at
         closed_at_utc = (
-            t.closed_at
-            if t.closed_at.tzinfo is not None
-            else t.closed_at.replace(tzinfo=timezone.utc)
+            basis_time
+            if basis_time.tzinfo is not None
+            else basis_time.replace(tzinfo=timezone.utc)
         )
         local_closed_at = closed_at_utc.astimezone(account_zone)
         hour_bucket = f"{local_closed_at.hour:02d}"
@@ -1533,6 +1535,7 @@ def get_analytics_dashboard(
     from_date: date | None,
     to_date: date | None,
     recent_limit: int = 8,
+    time_basis: str = "close",
 ) -> AnalyticsDashboardResponse:
     selected_accounts = []
     account_timezone = "UTC"
@@ -1719,10 +1722,11 @@ def get_analytics_dashboard(
     weekday_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     account_zone = ZoneInfo(account_timezone)
     for trade in trades:
+        basis_time = trade.opened_at if time_basis == "open" else trade.closed_at
         closed_at_utc = (
-            trade.closed_at
-            if trade.closed_at.tzinfo is not None
-            else trade.closed_at.replace(tzinfo=timezone.utc)
+            basis_time
+            if basis_time.tzinfo is not None
+            else basis_time.replace(tzinfo=timezone.utc)
         )
         local_closed_at = closed_at_utc.astimezone(account_zone)
         hour_bucket = f"{local_closed_at.hour:02d}"
