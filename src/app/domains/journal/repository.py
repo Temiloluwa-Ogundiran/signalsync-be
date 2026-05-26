@@ -127,6 +127,20 @@ def map_trade_reviewed_at_by_trade_ids(
     return {row[0]: row[1] for row in rows}
 
 
+def map_trade_journal_ratings_by_trade_ids(
+    db: Session,
+    *,
+    trade_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, Optional[int]]:
+    if not trade_ids:
+        return {}
+    stmt = select(TradeJournal.trade_id, TradeJournal.rating).where(
+        TradeJournal.trade_id.in_(trade_ids)
+    )
+    rows = db.execute(stmt).all()
+    return {row[0]: row[1] for row in rows}
+
+
 def adjacent_traded_local_dates(
     db: Session,
     *,

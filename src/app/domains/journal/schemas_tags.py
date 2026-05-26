@@ -32,3 +32,7 @@ class OptionCreateRequest(BaseModel):
 
 class TradeTagUpdateRequest(BaseModel):
     option_ids: List[uuid.UUID]
+
+
+class TradeRatingUpdateRequest(BaseModel):
+    rating: int = Field(..., ge=1, le=5)

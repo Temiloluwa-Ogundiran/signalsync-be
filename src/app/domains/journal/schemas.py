@@ -54,6 +54,7 @@ class JournalTradeResponse(BaseModel):
     )
 
     trade_reviewed_at: Optional[datetime] = None
+    rating: Optional[int] = None
 
     model_config = {"from_attributes": True}
 

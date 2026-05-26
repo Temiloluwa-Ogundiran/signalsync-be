@@ -353,6 +353,10 @@ def get_or_create_daily_journal(
         db,
         trade_ids=[trade.id for trade in trades],
     )
+    trade_rating_map = journal_repo.map_trade_journal_ratings_by_trade_ids(
+        db,
+        trade_ids=[trade.id for trade in trades],
+    )
 
     trade_chips: list[DailyTradeChipResponse] = []
     for trade in trades:
@@ -414,6 +418,7 @@ def get_or_create_daily_journal(
         trade_model.balance_before_trade = balance_before_trade
         trade_model.net_roi_percent = net_roi_percent
         trade_model.trade_reviewed_at = trade_reviewed_map.get(trade.id)
+        trade_model.rating = trade_rating_map.get(trade.id)
         trade_models.append(trade_model)
         if running_balance is not None:
             running_balance += trade.net_profit
@@ -727,8 +732,13 @@ def list_account_trades(
         db,
         trade_ids=[trade.id for trade in trades],
     )
+    trade_rating_map = journal_repo.map_trade_journal_ratings_by_trade_ids(
+        db,
+        trade_ids=[trade.id for trade in trades],
+    )
     for model in base_models:
         model.trade_reviewed_at = trade_reviewed_map.get(model.id)
+        model.rating = trade_rating_map.get(model.id)
 
     if closed_from_utc is None:
         return base_models

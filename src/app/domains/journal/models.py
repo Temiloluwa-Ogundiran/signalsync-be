@@ -94,6 +94,7 @@ class TradeJournal(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    rating: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     trade: Mapped["Trade"] = relationship(back_populates="journal")  # noqa: F821
     daily_journal: Mapped[Optional["DailyJournal"]] = relationship(back_populates="trade_journals")

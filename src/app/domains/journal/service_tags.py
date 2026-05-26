@@ -181,3 +181,23 @@ def update_trade_tags(db: Session, user: User, trade_id: uuid.UUID, option_ids: 
     tags_repo.update_trade_tags(db, trade_id=trade_id, option_ids=option_ids)
     db.commit()
     return tags_repo.get_trade_tag_options(db, trade_id=trade_id)
+
+
+def update_trade_rating(db: Session, user: User, trade_id: uuid.UUID, rating: int) -> int:
+    """
+    Sets the rating for a trade after verifying ownership, creating the
+    TradeJournal if it doesn't already exist.
+    """
+    _validate_trade_ownership(db, user_id=user.id, trade_id=trade_id)
+
+    from app.domains.journal import repository as journal_repo
+
+    tj = journal_repo.get_trade_journal_by_trade_id(db, trade_id=trade_id)
+    if not tj:
+        # Create trade journal
+        tj = journal_repo.create_trade_journal(db, trade_id=trade_id, daily_journal_id=None)
+
+    tj.rating = rating
+    db.commit()
+    return rating
+

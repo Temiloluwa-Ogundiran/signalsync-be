@@ -13,6 +13,7 @@ from app.domains.journal.schemas_tags import (
     CategoryCreateRequest,
     OptionCreateRequest,
     TradeTagUpdateRequest,
+    TradeRatingUpdateRequest,
 )
 from app.domains.journal import service_tags as tags_service
 
@@ -139,3 +140,21 @@ def update_trade_tags(
         db, user=current_user, trade_id=trade_id, option_ids=payload.option_ids
     )
     return [TagOptionResponse.model_validate(o) for o in options]
+
+
+@router.put(
+    "/journal/trades/{trade_id}/rating",
+)
+def update_trade_rating(
+    trade_id: uuid.UUID,
+    payload: TradeRatingUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Update the rating for a specific trade.
+    """
+    rating = tags_service.update_trade_rating(
+        db, user=current_user, trade_id=trade_id, rating=payload.rating
+    )
+    return {"rating": rating}
