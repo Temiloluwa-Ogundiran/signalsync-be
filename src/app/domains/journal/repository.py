@@ -141,6 +141,30 @@ def map_trade_journal_ratings_by_trade_ids(
     return {row[0]: row[1] for row in rows}
 
 
+def map_trade_journal_assessments_by_trade_ids(
+    db: Session,
+    *,
+    trade_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, dict]:
+    if not trade_ids:
+        return {}
+    stmt = select(
+        TradeJournal.trade_id,
+        TradeJournal.execution_quality,
+        TradeJournal.setup_quality,
+        TradeJournal.discipline_score,
+    ).where(TradeJournal.trade_id.in_(trade_ids))
+    rows = db.execute(stmt).all()
+    return {
+        row[0]: {
+            "execution_quality": row[1],
+            "setup_quality": row[2],
+            "discipline_score": row[3],
+        }
+        for row in rows
+    }
+
+
 def adjacent_traded_local_dates(
     db: Session,
     *,
@@ -437,9 +461,15 @@ def list_trades_filtered(
     account_id: uuid.UUID,
     closed_from_utc,
     closed_to_utc_exclusive,
+    include_manual: bool = True,
 ) -> list[Trade]:
-    stmt = select(Trade).where(Trade.account_id == account_id)
+    stmt = select(Trade).where(
+        Trade.account_id == account_id,
+        Trade.is_missed.is_(False),
+    )
 
+    if not include_manual:
+        stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
@@ -455,12 +485,18 @@ def list_trades_filtered_multi(
     account_ids: list[uuid.UUID],
     closed_from_utc,
     closed_to_utc_exclusive,
+    include_manual: bool = True,
 ) -> list[Trade]:
     if not account_ids:
         return []
 
-    stmt = select(Trade).where(Trade.account_id.in_(account_ids))
+    stmt = select(Trade).where(
+        Trade.account_id.in_(account_ids),
+        Trade.is_missed.is_(False),
+    )
 
+    if not include_manual:
+        stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
@@ -477,6 +513,7 @@ def list_daily_pnl(
     account_timezone: str,
     closed_from_utc,
     closed_to_utc_exclusive,
+    include_manual: bool = True,
 ) -> list[tuple]:
     from sqlalchemy import func as sa_func
     local_date_expr = sa_func.date(sa_func.timezone(account_timezone, Trade.closed_at))
@@ -489,10 +526,16 @@ def list_daily_pnl(
             sa_func.count(Trade.id).filter(Trade.net_profit > 0).label("win_count"),
             sa_func.count(Trade.id).filter(Trade.net_profit < 0).label("loss_count"),
         )
-        .where(Trade.account_id == account_id)
-        .group_by(local_date_expr)
-        .order_by(local_date_expr)
+        .where(
+            Trade.account_id == account_id,
+            Trade.is_missed.is_(False),
+        )
     )
+
+    if not include_manual:
+        stmt = stmt.where(Trade.is_manual.is_(False))
+
+    stmt = stmt.group_by(local_date_expr).order_by(local_date_expr)
 
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
@@ -625,6 +668,7 @@ def list_trade_setups(
     account_id: uuid.UUID,
     closed_from_utc,
     closed_to_utc_exclusive,
+    include_manual: bool = True,
 ) -> list[tuple]:
     from sqlalchemy import text
     sql = """
@@ -637,6 +681,8 @@ def list_trade_setups(
         JOIN trade_journals tj ON tj.trade_id = t.id
         JOIN journal_messages jm ON jm.trade_journal_id = tj.id
         WHERE t.account_id = :account_id
+          AND t.is_missed = FALSE
+          AND (:include_manual OR t.is_manual = FALSE)
           AND cardinality(jm.tags) > 0
           AND (:closed_from_utc IS NULL OR t.closed_at >= :closed_from_utc)
           AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
@@ -651,6 +697,8 @@ def list_trade_setups(
         JOIN tag_categories tc ON tc.id = to.category_id
         WHERE t.account_id = :account_id
           AND tc.title = 'Strategy'
+          AND t.is_missed = FALSE
+          AND (:include_manual OR t.is_manual = FALSE)
           AND (:closed_from_utc IS NULL OR t.closed_at >= :closed_from_utc)
           AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
     )
@@ -671,6 +719,7 @@ def list_trade_setups(
                 "account_id": str(account_id),
                 "closed_from_utc": closed_from_utc,
                 "closed_to_utc_exclusive": closed_to_utc_exclusive,
+                "include_manual": include_manual,
             },
         ).all()
     )

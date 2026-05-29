@@ -31,6 +31,8 @@ class JournalTradeResponse(BaseModel):
     session: TradeSession
     opened_at: datetime
     closed_at: datetime
+    is_manual: bool = False
+    is_missed: bool = False
     balance_before_trade: Decimal | None = None
     net_roi_percent: Decimal | None = None
     created_at: datetime
@@ -55,6 +57,9 @@ class JournalTradeResponse(BaseModel):
 
     trade_reviewed_at: Optional[datetime] = None
     rating: Optional[int] = None
+    execution_quality: Optional[int] = None
+    setup_quality: Optional[int] = None
+    discipline_score: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -122,6 +127,8 @@ class DailyTradeChipResponse(BaseModel):
     net_profit: Decimal
     outcome: str
     journal_message_count: int
+    is_manual: bool = False
+    is_missed: bool = False
 
 
 class DailyJournalResponse(BaseModel):

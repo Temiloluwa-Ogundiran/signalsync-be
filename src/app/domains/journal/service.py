@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.domains.accounts import repository as account_repo
+from app.domains.accounts.schemas import ManualTradeCreateRequest, ManualTradeUpdateRequest
 from app.domains.accounts.metaapi import metaapi_service
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.journal import repository as journal_repo
@@ -318,6 +319,7 @@ def get_or_create_daily_journal(
     trading_date: date,
     current_user: User,
     include_messages: bool = True,
+    include_manual: bool = True,
 ) -> DailyJournalResponse:
     account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
     if account is None:
@@ -344,6 +346,7 @@ def get_or_create_daily_journal(
         account_id=account_id,
         trading_date=trading_date,
         account_timezone=account.timezone,
+        include_manual=include_manual,
     )
     message_counts = journal_repo.get_trade_journal_message_counts(
         db,
@@ -354,6 +357,10 @@ def get_or_create_daily_journal(
         trade_ids=[trade.id for trade in trades],
     )
     trade_rating_map = journal_repo.map_trade_journal_ratings_by_trade_ids(
+        db,
+        trade_ids=[trade.id for trade in trades],
+    )
+    trade_assessments_map = journal_repo.map_trade_journal_assessments_by_trade_ids(
         db,
         trade_ids=[trade.id for trade in trades],
     )
@@ -374,6 +381,8 @@ def get_or_create_daily_journal(
                 net_profit=trade.net_profit,
                 outcome=outcome,
                 journal_message_count=message_counts.get(trade.id, 0),
+                is_manual=trade.is_manual,
+                is_missed=trade.is_missed,
             )
         )
 
@@ -419,6 +428,12 @@ def get_or_create_daily_journal(
         trade_model.net_roi_percent = net_roi_percent
         trade_model.trade_reviewed_at = trade_reviewed_map.get(trade.id)
         trade_model.rating = trade_rating_map.get(trade.id)
+        
+        assess = trade_assessments_map.get(trade.id, {})
+        trade_model.execution_quality = assess.get("execution_quality")
+        trade_model.setup_quality = assess.get("setup_quality")
+        trade_model.discipline_score = assess.get("discipline_score")
+        
         trade_models.append(trade_model)
         if running_balance is not None:
             running_balance += trade.net_profit
@@ -695,6 +710,7 @@ def list_account_trades(
     session=None,
     limit: int = 50,
     cursor_trade_id: Optional[uuid.UUID] = None,
+    include_manual: bool = True,
 ) -> list[JournalTradeResponse]:
     account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
     if account is None:
@@ -722,6 +738,7 @@ def list_account_trades(
         session=session,
         limit=limit,
         cursor_trade_id=cursor_trade_id,
+        include_manual=include_manual,
     )
 
     if not trades:
@@ -736,9 +753,18 @@ def list_account_trades(
         db,
         trade_ids=[trade.id for trade in trades],
     )
+    trade_assessments_map = journal_repo.map_trade_journal_assessments_by_trade_ids(
+        db,
+        trade_ids=[trade.id for trade in trades],
+    )
     for model in base_models:
         model.trade_reviewed_at = trade_reviewed_map.get(model.id)
         model.rating = trade_rating_map.get(model.id)
+        
+        assess = trade_assessments_map.get(model.id, {})
+        model.execution_quality = assess.get("execution_quality")
+        model.setup_quality = assess.get("setup_quality")
+        model.discipline_score = assess.get("discipline_score")
 
     if closed_from_utc is None:
         return base_models
@@ -932,6 +958,7 @@ def get_analytics_summary(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    include_manual: bool = True,
 ) -> AnalyticsSummaryResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
@@ -940,6 +967,7 @@ def get_analytics_summary(
         account_id=account_id,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
 
     total_trades = len(trades)
@@ -1010,6 +1038,7 @@ def get_analytics_calendar(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    include_manual: bool = True,
 ) -> AnalyticsCalendarResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
@@ -1020,6 +1049,7 @@ def get_analytics_calendar(
         account_timezone=account.timezone,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
 
     journal_active_dates: set[date] = set()
@@ -1068,6 +1098,7 @@ def get_analytics_sessions(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    include_manual: bool = True,
 ) -> AnalyticsSessionsResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
@@ -1076,6 +1107,7 @@ def get_analytics_sessions(
         account_id=account_id,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
 
     grouped: dict = defaultdict(list)
@@ -1108,6 +1140,7 @@ def get_analytics_instruments(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    include_manual: bool = True,
 ) -> AnalyticsInstrumentsResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
@@ -1116,6 +1149,7 @@ def get_analytics_instruments(
         account_id=account_id,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
 
     grouped: dict = defaultdict(list)
@@ -1158,6 +1192,7 @@ def get_analytics_time_performance(
     from_date: date | None,
     to_date: date | None,
     time_basis: str = "close",
+    include_manual: bool = True,
 ) -> AnalyticsTimePerformanceResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
@@ -1166,6 +1201,7 @@ def get_analytics_time_performance(
         account_id=account_id,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
 
     hourly_groups: dict[str, list] = defaultdict(list)
@@ -1242,6 +1278,7 @@ def _balance_history_points_from_trade_closes(
     account: TradingAccount,
     from_date: date,
     to_date: date,
+    include_manual: bool = True,
 ) -> list[AnalyticsBalanceHistoryPointResponse]:
     """
     Per-trade closing equity in range: day anchor + balance after each close
@@ -1258,6 +1295,7 @@ def _balance_history_points_from_trade_closes(
         account_id=account_id,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
     if not trades:
         return []
@@ -1329,6 +1367,7 @@ def get_analytics_balance_history(
     from_date: date | None,
     to_date: date | None,
     granularity: str = "day",
+    include_manual: bool = True,
 ) -> AnalyticsBalanceHistoryResponse:
     account = _get_account_or_404(db, account_id, user_id)
     effective_granularity = (granularity or "day").lower()
@@ -1344,6 +1383,7 @@ def get_analytics_balance_history(
             account_id=account_id,
             trading_date=from_date,
             account_timezone=account.timezone,
+            include_manual=include_manual,
         )
         day_start_balance, _ = _resolve_day_balances(
             db,
@@ -1410,6 +1450,7 @@ def get_analytics_balance_history(
         account=account,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
     if trade_points:
@@ -1426,6 +1467,7 @@ def get_analytics_setups(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    include_manual: bool = True,
 ) -> AnalyticsSetupsResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
@@ -1434,6 +1476,7 @@ def get_analytics_setups(
         account_id=account_id,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
 
     setups = []
@@ -1459,6 +1502,7 @@ def get_analytics_trade_sources(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    include_manual: bool = True,
 ) -> AnalyticsTradeSourceResponse:
     """
     Break down performance by trade source (personal vs copied).
@@ -1474,6 +1518,7 @@ def get_analytics_trade_sources(
         account_id=account_id,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
     )
 
     grouped: dict = defaultdict(list)
@@ -1507,22 +1552,23 @@ def get_analytics_report(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
+    include_manual: bool = True,
 ) -> AnalyticsReportResponse:
     return AnalyticsReportResponse(
         summary=get_analytics_summary(
-            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date
+            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual
         ),
         sessions=get_analytics_sessions(
-            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date
+            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual
         ),
         instruments=get_analytics_instruments(
-            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date
+            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual
         ),
         setups=get_analytics_setups(
-            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date
+            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual
         ),
         trade_sources=get_analytics_trade_sources(
-            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date
+            db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual
         ),
     )
 
@@ -1536,6 +1582,7 @@ def get_analytics_dashboard(
     to_date: date | None,
     recent_limit: int = 8,
     time_basis: str = "close",
+    include_manual: bool = True,
 ) -> AnalyticsDashboardResponse:
     selected_accounts = []
     account_timezone = "UTC"
@@ -1551,6 +1598,7 @@ def get_analytics_dashboard(
             account_id=account_id,
             closed_from_utc=start_utc,
             closed_to_utc_exclusive=end_utc,
+            include_manual=include_manual,
         )
         starting_balance = _estimate_starting_balance(db, account=account)
     else:
@@ -1562,6 +1610,7 @@ def get_analytics_dashboard(
             account_ids=account_ids,
             closed_from_utc=start_utc,
             closed_to_utc_exclusive=end_utc,
+            include_manual=include_manual,
         )
         if selected_accounts:
             starting_balance = sum(
@@ -1781,3 +1830,124 @@ def seed_system_journal_templates(db: Session) -> dict[str, int]:
         "created": created,
         "skipped_existing": skipped,
     }
+
+
+def create_manual_trade(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    payload: ManualTradeCreateRequest,
+    current_user: User,
+):
+    # 1. Create trade in account repo
+    trade = account_repo.create_manual_trade(db, account_id=account_id, payload=payload)
+    
+    # 2. Rebuild daily stats for the day so manual trade stats are updated
+    local_trade_date = to_account_local_date(trade.closed_at, trade.account.timezone)
+    account_repo.rebuild_daily_stats_for_date(
+        db,
+        account_id=account_id,
+        trading_date=local_trade_date,
+        account_timezone=trade.account.timezone,
+    )
+    
+    # 3. Create/get journal structure so chat environment is ready
+    get_or_create_trade_journal(db, trade_id=trade.id, current_user=current_user)
+    
+    db.commit()
+    db.refresh(trade)
+    
+    return trade
+
+
+def update_manual_trade(
+    db: Session,
+    *,
+    trade_id: uuid.UUID,
+    payload: ManualTradeUpdateRequest,
+    current_user: User,
+):
+    # 1. Retrieve old trade/day before updating to rebuild daily stats later
+    old_trade = account_repo.get_trade_by_id(db, trade_id)
+    if not old_trade:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found.")
+    
+    old_local_date = to_account_local_date(old_trade.closed_at, old_trade.account.timezone)
+    account_id = old_trade.account_id
+    account_timezone = old_trade.account.timezone
+    
+    # 2. Update trade via repository
+    try:
+        trade = account_repo.update_manual_trade(db, trade_id=trade_id, user_id=current_user.id, payload=payload)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        
+    # 3. Rebuild daily stats for both old date and new date
+    new_local_date = to_account_local_date(trade.closed_at, account_timezone)
+    
+    account_repo.rebuild_daily_stats_for_date(
+        db,
+        account_id=account_id,
+        trading_date=old_local_date,
+        account_timezone=account_timezone,
+    )
+    
+    if new_local_date != old_local_date:
+        account_repo.rebuild_daily_stats_for_date(
+            db,
+            account_id=account_id,
+            trading_date=new_local_date,
+            account_timezone=account_timezone,
+        )
+        
+    # 4. If there is a system message inside the trade journal, update it
+    trade_journal = journal_repo.get_trade_journal_by_trade_id(db, trade_id)
+    if trade_journal:
+        messages = journal_repo.list_messages_by_trade_journal(db, trade_journal.id)
+        system_msgs = [m for m in messages if m.message_type == JournalMessageType.system]
+        if system_msgs:
+            sys_msg = system_msgs[0]
+            sys_msg.system_data = {
+                "symbol": trade.symbol,
+                "direction": trade.direction.value,
+                "net_profit": str(trade.net_profit),
+                "open_price": str(trade.open_price),
+                "close_price": str(trade.close_price),
+                "volume": str(trade.volume),
+                "duration_seconds": trade.duration_seconds,
+                "session": trade.session.value,
+                "opened_at": trade.opened_at.isoformat(),
+                "closed_at": trade.closed_at.isoformat(),
+            }
+            
+    db.commit()
+    db.refresh(trade)
+    return trade
+
+
+def delete_manual_trade(
+    db: Session,
+    *,
+    trade_id: uuid.UUID,
+    current_user: User,
+):
+    old_trade = account_repo.get_trade_by_id(db, trade_id)
+    if not old_trade:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found.")
+        
+    old_local_date = to_account_local_date(old_trade.closed_at, old_trade.account.timezone)
+    account_id = old_trade.account_id
+    account_timezone = old_trade.account.timezone
+    
+    try:
+        account_repo.delete_manual_trade(db, trade_id=trade_id, user_id=current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        
+    account_repo.rebuild_daily_stats_for_date(
+        db,
+        account_id=account_id,
+        trading_date=old_local_date,
+        account_timezone=account_timezone,
+    )
+    db.commit()

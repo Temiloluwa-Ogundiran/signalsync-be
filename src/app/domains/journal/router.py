@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.domains.accounts.models import TradeDirection, TradeSession
+from app.domains.accounts.schemas import ManualTradeCreateRequest, ManualTradeUpdateRequest
 from app.domains.journal import service as journal_service
 from app.domains.journal.models import JournalMessageType, JournalTemplateType
 from app.domains.journal.schemas import (
@@ -58,6 +59,7 @@ def list_journal_trades(
     session: Optional[TradeSession] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     cursor: Optional[uuid.UUID] = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> JournalTradeListResponse:
@@ -72,6 +74,7 @@ def list_journal_trades(
         session=session,
         limit=limit + 1,
         cursor_trade_id=cursor,
+        include_manual=include_manual,
     )
 
     has_more = len(trades) > limit
@@ -127,6 +130,50 @@ def mark_trade_journal_reviewed(
     return journal_service.mark_trade_journal_reviewed(
         db, trade_id=trade_id, current_user=current_user
     )
+
+
+@trades_router.post("/manual", response_model=JournalTradeResponse, status_code=status.HTTP_201_CREATED)
+def create_manual_trade(
+    account_id: uuid.UUID = Query(...),
+    payload: ManualTradeCreateRequest = ...,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> JournalTradeResponse:
+    return journal_service.create_manual_trade(
+        db,
+        account_id=account_id,
+        payload=payload,
+        current_user=current_user,
+    )
+
+
+@trades_router.patch("/manual/{trade_id}", response_model=JournalTradeResponse)
+def update_manual_trade(
+    trade_id: uuid.UUID,
+    payload: ManualTradeUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> JournalTradeResponse:
+    return journal_service.update_manual_trade(
+        db,
+        trade_id=trade_id,
+        payload=payload,
+        current_user=current_user,
+    )
+
+
+@trades_router.delete("/manual/{trade_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_manual_trade(
+    trade_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    journal_service.delete_manual_trade(
+        db,
+        trade_id=trade_id,
+        current_user=current_user,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +232,7 @@ def get_or_create_daily_journal(
     account_id: uuid.UUID,
     trading_date: date,
     include_messages: bool = Query(True),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DailyJournalResponse:
@@ -194,6 +242,7 @@ def get_or_create_daily_journal(
         trading_date=trading_date,
         current_user=current_user,
         include_messages=include_messages,
+        include_manual=include_manual,
     )
 
 
@@ -315,6 +364,7 @@ def get_summary(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsSummaryResponse:
@@ -324,6 +374,7 @@ def get_summary(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
 
@@ -332,6 +383,7 @@ def get_calendar(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsCalendarResponse:
@@ -341,6 +393,7 @@ def get_calendar(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
 
@@ -349,6 +402,7 @@ def get_sessions(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsSessionsResponse:
@@ -358,6 +412,7 @@ def get_sessions(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
 
@@ -366,6 +421,7 @@ def get_instruments(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsInstrumentsResponse:
@@ -375,6 +431,7 @@ def get_instruments(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
 
@@ -384,6 +441,7 @@ def get_time_performance(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     time_basis: str = Query("close", pattern="^(open|close)$"),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsTimePerformanceResponse:
@@ -394,6 +452,7 @@ def get_time_performance(
         from_date=from_date,
         to_date=to_date,
         time_basis=time_basis,
+        include_manual=include_manual,
     )
 
 
@@ -402,6 +461,7 @@ def get_equity(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsEquityResponse:
@@ -420,6 +480,7 @@ def get_balance_history(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     granularity: str = Query("day", pattern="^(intraday|day)$"),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsBalanceHistoryResponse:
@@ -430,6 +491,7 @@ def get_balance_history(
         from_date=from_date,
         to_date=to_date,
         granularity=granularity,
+        include_manual=include_manual,
     )
 
 
@@ -438,6 +500,7 @@ def get_setups(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsSetupsResponse:
@@ -447,6 +510,7 @@ def get_setups(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
 
@@ -455,6 +519,7 @@ def get_trade_sources(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsTradeSourceResponse:
@@ -464,6 +529,7 @@ def get_trade_sources(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
 
@@ -472,6 +538,7 @@ def get_report(
     account_id: uuid.UUID = Query(...),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsReportResponse:
@@ -481,6 +548,7 @@ def get_report(
         user_id=current_user.id,
         from_date=from_date,
         to_date=to_date,
+        include_manual=include_manual,
     )
 
 
@@ -491,6 +559,7 @@ def get_dashboard(
     to_date: date | None = Query(None),
     recent_limit: int = Query(8, ge=1, le=50),
     time_basis: str = Query("close", pattern="^(open|close)$"),
+    include_manual: bool = Query(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsDashboardResponse:
@@ -502,4 +571,5 @@ def get_dashboard(
         to_date=to_date,
         recent_limit=recent_limit,
         time_basis=time_basis,
+        include_manual=include_manual,
     )

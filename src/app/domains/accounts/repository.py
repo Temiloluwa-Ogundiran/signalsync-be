@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -21,6 +21,7 @@ from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingAccountStatus,
 )
+from app.shared.utils.timezone import classify_session
 
 # ---------------------------------------------------------------------------
 # TradingAccount
@@ -341,6 +342,7 @@ def list_trades_by_account(
     session: Optional[TradeSession] = None,
     limit: int = 50,
     cursor_trade_id: Optional[uuid.UUID] = None,
+    include_manual: bool = True,
 ) -> list[Trade]:
     stmt = (
         select(Trade)
@@ -349,6 +351,8 @@ def list_trades_by_account(
         .limit(limit)
     )
 
+    if not include_manual:
+        stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
@@ -453,6 +457,7 @@ def list_trades_by_account_local_date(
     account_id: uuid.UUID,
     trading_date: date,
     account_timezone: str,
+    include_manual: bool = True,
 ) -> list[Trade]:
     stmt = (
         select(Trade)
@@ -460,8 +465,10 @@ def list_trades_by_account_local_date(
             Trade.account_id == account_id,
             cast(func.timezone(account_timezone, Trade.closed_at), Date) == trading_date,
         )
-        .order_by(Trade.closed_at.asc(), Trade.id.asc())
     )
+    if not include_manual:
+        stmt = stmt.where(Trade.is_manual.is_(False))
+    stmt = stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())
     return list(db.execute(stmt).scalars().all())
 
 
@@ -512,6 +519,157 @@ def delete_trades_outside_valid_broker_ids_in_window(
 
     deleted = db.execute(sa_delete(Trade).where(Trade.id.in_(ids_to_delete)))
     return int(deleted.rowcount or 0), affected_dates
+
+
+# ---------------------------------------------------------------------------
+# Manual Trades
+# ---------------------------------------------------------------------------
+
+def create_manual_trade(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    payload,  # ManualTradeCreateRequest
+) -> Trade:
+    # Generate unique broker_trade_id
+    broker_trade_id = f"manual-{uuid.uuid4()}"
+    
+    # Session classification: auto-derived from opened_at UTC time
+    opened_at_utc = payload.opened_at if payload.opened_at.tzinfo else payload.opened_at.replace(tzinfo=timezone.utc)
+    session_value = TradeSession(classify_session(opened_at_utc))
+    
+    if payload.is_missed:
+        closed_at_utc = opened_at_utc
+        duration_seconds = 0
+        close_price = payload.tp or payload.open_price
+        net_profit = Decimal("0")
+        commission = Decimal("0")
+        swap = Decimal("0")
+        profit = Decimal("0")
+        volume = Decimal("0.01")  # placeholder
+    else:
+        closed_at_utc = payload.closed_at if payload.closed_at.tzinfo else payload.closed_at.replace(tzinfo=timezone.utc)
+        duration_seconds = max(0, int((closed_at_utc - opened_at_utc).total_seconds()))
+        close_price = payload.close_price
+        net_profit = payload.net_profit
+        commission = payload.commission or Decimal("0")
+        swap = payload.swap or Decimal("0")
+        profit = net_profit - commission - swap
+        volume = payload.volume
+
+    trade = Trade(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        broker_trade_id=broker_trade_id,
+        symbol=payload.symbol,
+        direction=payload.direction,
+        open_price=payload.open_price,
+        close_price=close_price,
+        volume=volume,
+        profit=profit,
+        commission=commission,
+        swap=swap,
+        net_profit=net_profit,
+        duration_seconds=duration_seconds,
+        session=session_value,
+        opened_at=opened_at_utc,
+        closed_at=closed_at_utc,
+        sl=payload.sl,
+        tp=payload.tp,
+        is_manual=True,
+        is_missed=payload.is_missed,
+    )
+    db.add(trade)
+    db.flush()
+    return trade
+
+
+def update_manual_trade(
+    db: Session,
+    *,
+    trade_id: uuid.UUID,
+    user_id: uuid.UUID,
+    payload,  # ManualTradeUpdateRequest
+) -> Trade:
+    stmt = select(Trade).where(Trade.id == trade_id)
+    trade = db.execute(stmt).scalar_one_or_none()
+    if not trade:
+        raise ValueError("Trade not found")
+        
+    if not trade.is_manual:
+        raise ValueError("Cannot modify non-manual trades")
+        
+    # Validate ownership
+    if trade.account.user_id != user_id:
+        raise ValueError("Access denied")
+
+    # Update fields if provided
+    update_data = payload.model_dump(exclude_unset=True)
+    
+    for key, value in update_data.items():
+        setattr(trade, key, value)
+        
+    # Recalculate derived fields if relevant
+    if "is_missed" in update_data or trade.is_missed:
+        if trade.is_missed:
+            trade.closed_at = trade.opened_at
+            trade.duration_seconds = 0
+            trade.close_price = trade.tp or trade.open_price
+            trade.net_profit = Decimal("0")
+            trade.commission = Decimal("0")
+            trade.swap = Decimal("0")
+            trade.profit = Decimal("0")
+            trade.volume = Decimal("0.01")
+        else:
+            if not trade.volume or trade.volume == Decimal("0.01"):
+                trade.volume = Decimal("0.1")
+            if trade.commission is None:
+                trade.commission = Decimal("0")
+            if trade.swap is None:
+                trade.swap = Decimal("0")
+            trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
+            if trade.opened_at and trade.closed_at:
+                trade.duration_seconds = max(0, int((trade.closed_at - trade.opened_at).total_seconds()))
+
+    else:
+        # Normal executed trade updates
+        if "opened_at" in update_data or "closed_at" in update_data:
+            opened_at_utc = trade.opened_at if trade.opened_at.tzinfo else trade.opened_at.replace(tzinfo=timezone.utc)
+            closed_at_utc = trade.closed_at if trade.closed_at.tzinfo else trade.closed_at.replace(tzinfo=timezone.utc)
+            trade.opened_at = opened_at_utc
+            trade.closed_at = closed_at_utc
+            trade.duration_seconds = max(0, int((closed_at_utc - opened_at_utc).total_seconds()))
+            trade.session = TradeSession(classify_session(opened_at_utc))
+            
+        if "net_profit" in update_data or "commission" in update_data or "swap" in update_data:
+            trade.commission = trade.commission or Decimal("0")
+            trade.swap = trade.swap or Decimal("0")
+            trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
+
+    db.flush()
+    return trade
+
+
+def delete_manual_trade(
+    db: Session,
+    *,
+    trade_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    stmt = select(Trade).where(Trade.id == trade_id)
+    trade = db.execute(stmt).scalar_one_or_none()
+    if not trade:
+        raise ValueError("Trade not found")
+        
+    if not trade.is_manual:
+        raise ValueError("Cannot delete non-manual trades")
+        
+    # Validate ownership
+    if trade.account.user_id != user_id:
+        raise ValueError("Access denied")
+
+    db.delete(trade)
+    db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +808,7 @@ def rebuild_daily_stats_for_date(
                 SELECT t1.id
                 FROM trades t1
                 WHERE t1.account_id = :account_id
+                  AND t1.is_missed = FALSE
                   AND DATE(timezone(:account_timezone, t1.closed_at)) = :trading_date
                 ORDER BY t1.net_profit DESC
                 LIMIT 1
@@ -658,6 +817,7 @@ def rebuild_daily_stats_for_date(
                 SELECT t2.id
                 FROM trades t2
                 WHERE t2.account_id = :account_id
+                  AND t2.is_missed = FALSE
                   AND DATE(timezone(:account_timezone, t2.closed_at)) = :trading_date
                 ORDER BY t2.net_profit ASC
                 LIMIT 1
@@ -665,6 +825,7 @@ def rebuild_daily_stats_for_date(
             now()
         FROM trades t
         WHERE t.account_id = :account_id
+          AND t.is_missed = FALSE
           AND DATE(timezone(:account_timezone, t.closed_at)) = :trading_date
         ON CONFLICT (account_id, trading_date) DO UPDATE
         SET

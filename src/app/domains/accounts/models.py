@@ -317,6 +317,12 @@ class Trade(Base):
     # Maximum Adverse Excursion — lowest price reached during the trade.
     mae: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 5), nullable=True)
 
+    # Whether this trade was manually added (not synced from MT5)
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Whether this is a "missed trade" — only meaningful when is_manual=True
+    is_missed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

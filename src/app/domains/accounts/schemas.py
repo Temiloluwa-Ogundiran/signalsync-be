@@ -1,14 +1,16 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingAccountStatus,
     TradingAccountType,
     TradingPlatform,
+    TradeDirection,
 )
 
 
@@ -97,3 +99,55 @@ class MT5WebhookPayload(BaseModel):
 
 class AccountUpdateRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=120)
+
+
+class ManualTradeCreateRequest(BaseModel):
+    # Trade type
+    is_missed: bool = False
+
+    # Core — always required
+    symbol: str = Field(..., min_length=1, max_length=20)
+    direction: TradeDirection
+    opened_at: datetime          # ISO 8601 with timezone
+    open_price: Decimal = Field(..., gt=0)
+
+    # Executed trade — required when is_missed=False
+    volume: Optional[Decimal] = Field(None, gt=0)
+    closed_at: Optional[datetime] = None
+    close_price: Optional[Decimal] = Field(None, gt=0)
+    net_profit: Optional[Decimal] = None
+    commission: Optional[Decimal] = Decimal("0")   # optional, default 0
+    swap: Optional[Decimal] = Decimal("0")          # optional, default 0
+
+    # Risk levels — optional for executed, prominent for missed
+    sl: Optional[Decimal] = None
+    tp: Optional[Decimal] = None
+
+    @model_validator(mode="after")
+    def validate_executed_fields(self) -> "ManualTradeCreateRequest":
+        if not self.is_missed:
+            if self.volume is None:
+                raise ValueError("volume is required for executed trades")
+            if self.closed_at is None:
+                raise ValueError("closed_at is required for executed trades")
+            if self.close_price is None:
+                raise ValueError("close_price is required for executed trades")
+            if self.net_profit is None:
+                raise ValueError("net_profit is required for executed trades")
+        return self
+
+
+class ManualTradeUpdateRequest(BaseModel):
+    symbol: Optional[str] = Field(None, min_length=1, max_length=20)
+    direction: Optional[TradeDirection] = None
+    opened_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    open_price: Optional[Decimal] = Field(None, gt=0)
+    close_price: Optional[Decimal] = Field(None, gt=0)
+    volume: Optional[Decimal] = Field(None, gt=0)
+    net_profit: Optional[Decimal] = None
+    commission: Optional[Decimal] = None
+    swap: Optional[Decimal] = None
+    sl: Optional[Decimal] = None
+    tp: Optional[Decimal] = None
+    is_missed: Optional[bool] = None

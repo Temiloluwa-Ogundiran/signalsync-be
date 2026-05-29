@@ -36,3 +36,9 @@ class TradeTagUpdateRequest(BaseModel):
 
 class TradeRatingUpdateRequest(BaseModel):
     rating: int = Field(..., ge=1, le=5)
+
+
+class TradeAssessmentUpdateRequest(BaseModel):
+    execution_quality: Optional[int] = Field(default=None, ge=0, le=10)
+    setup_quality: Optional[int] = Field(default=None, ge=0, le=10)
+    discipline_score: Optional[int] = Field(default=None, ge=0, le=10)

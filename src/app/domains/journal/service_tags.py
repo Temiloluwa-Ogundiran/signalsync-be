@@ -201,3 +201,38 @@ def update_trade_rating(db: Session, user: User, trade_id: uuid.UUID, rating: in
     db.commit()
     return rating
 
+
+def update_trade_assessment(
+    db: Session,
+    user: User,
+    trade_id: uuid.UUID,
+    execution_quality: Optional[int] = None,
+    setup_quality: Optional[int] = None,
+    discipline_score: Optional[int] = None,
+) -> dict:
+    """
+    Updates the trade assessment scores (execution quality, setup quality, discipline score)
+    after verifying trade ownership, creating a TradeJournal if it does not exist.
+    """
+    _validate_trade_ownership(db, user_id=user.id, trade_id=trade_id)
+
+    from app.domains.journal import repository as journal_repo
+
+    tj = journal_repo.get_trade_journal_by_trade_id(db, trade_id=trade_id)
+    if not tj:
+        tj = journal_repo.create_trade_journal(db, trade_id=trade_id, daily_journal_id=None)
+
+    if execution_quality is not None:
+        tj.execution_quality = execution_quality
+    if setup_quality is not None:
+        tj.setup_quality = setup_quality
+    if discipline_score is not None:
+        tj.discipline_score = discipline_score
+
+    db.commit()
+    return {
+        "execution_quality": tj.execution_quality,
+        "setup_quality": tj.setup_quality,
+        "discipline_score": tj.discipline_score,
+    }
+
