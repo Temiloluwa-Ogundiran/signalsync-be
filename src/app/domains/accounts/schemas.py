@@ -49,6 +49,7 @@ class AccountResponse(BaseModel):
     sync_error_message: Optional[str]
     bootstrap_error_message: Optional[str]
     is_deleted: bool
+    sync_provider: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

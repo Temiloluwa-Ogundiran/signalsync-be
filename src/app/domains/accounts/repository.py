@@ -73,6 +73,66 @@ def create_account(
     return account
 
 
+def create_csv_account(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    account_number: str,
+    broker_name: str,
+    broker_server: str,
+    platform: str,
+    currency: str,
+    timezone: str,
+    display_name: Optional[str],
+    account_type: str,
+) -> TradingAccount:
+    """Create a TradingAccount for CSV imports (no API credentials)."""
+    meta_account_id = f"csv:{platform}:{broker_server}:{account_number}"
+    
+    # Check if the account was previously deleted (is_deleted=True) or already exists
+    stmt = select(TradingAccount).where(
+        TradingAccount.user_id == user_id,
+        TradingAccount.meta_account_id == meta_account_id
+    )
+    account = db.execute(stmt).scalar_one_or_none()
+    
+    if account:
+        account.is_deleted = False
+        account.display_name = display_name or account.display_name
+        account.broker_name = broker_name
+        account.broker_server = broker_server
+        account.account_type = account_type
+        account.platform = platform
+        account.currency = currency
+        account.timezone = timezone
+        account.status = TradingAccountStatus.synced
+        account.connection_state = TradingAccountConnectionState.ready
+        account.is_data_ready_for_stats = True
+        db.flush()
+        return account
+
+    account = TradingAccount(
+        user_id=user_id,
+        meta_account_id=meta_account_id,
+        broker_name=broker_name,
+        broker_login=account_number,
+        broker_server=broker_server,
+        encrypted_investor_password="csv_import_no_password",  # Placeholder
+        account_type=account_type,
+        platform=platform,
+        currency=currency,
+        timezone=timezone,
+        display_name=display_name,
+        sync_provider=SyncProvider.csv_import,
+        status=TradingAccountStatus.synced,
+        connection_state=TradingAccountConnectionState.ready,
+        is_data_ready_for_stats=True,
+    )
+    db.add(account)
+    db.flush()
+    return account
+
+
 def reactivate_account(
     db: Session,
     *,

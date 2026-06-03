@@ -31,6 +31,7 @@ class TradingAccountStatus(str, enum.Enum):
 class SyncProvider(str, enum.Enum):
     metaapi = "metaapi"
     headless_mt5 = "headless_mt5"
+    csv_import = "csv_import"
 
 
 class TradingAccountProvisioningStatus(str, enum.Enum):
@@ -55,6 +56,8 @@ class TradingAccountType(str, enum.Enum):
 class TradingPlatform(str, enum.Enum):
     mt4 = "MT4"
     mt5 = "MT5"
+    matchtrader = "MatchTrader"
+    ctrader = "cTrader"
 
 
 class TradingAccount(Base):

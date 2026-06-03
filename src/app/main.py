@@ -7,6 +7,7 @@ from app.domains.streams.router import router as streams_router
 from app.domains.uploads.router import router as uploads_router
 from app.domains.posts.router import posts_router, stream_posts_router
 from app.domains.accounts.router import router as accounts_router
+from app.domains.csv_import.router import router as csv_import_router
 from app.domains.journal.router import (
     analytics_router as journal_analytics_router,
     daily_router as journal_daily_router,
@@ -61,6 +62,7 @@ app.include_router(uploads_router)
 app.include_router(stream_posts_router)
 app.include_router(posts_router)
 app.include_router(accounts_router)
+app.include_router(csv_import_router)
 app.include_router(journal_trades_router)
 app.include_router(journal_daily_router)
 app.include_router(journal_messages_router)

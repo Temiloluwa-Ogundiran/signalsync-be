@@ -800,6 +800,18 @@ def _estimate_starting_balance(db: Session, *, account: TradingAccount) -> Decim
     account_id = account.id
     all_time_realized = account_repo.sum_trade_net_profit(db, account_id=account_id)
 
+    if account.sync_provider == SyncProvider.csv_import:
+        from app.domains.accounts.models import AccountSnapshot
+        earliest_snapshot = (
+            db.query(AccountSnapshot)
+            .filter(AccountSnapshot.account_id == account_id)
+            .order_by(AccountSnapshot.snapshot_date.asc())
+            .first()
+        )
+        if earliest_snapshot is not None:
+            return earliest_snapshot.balance
+        return Decimal("0")
+
     if account.sync_provider == SyncProvider.headless_mt5:
         snap_balance = account_repo.get_latest_account_snapshot_balance(
             db, account_id=account_id
