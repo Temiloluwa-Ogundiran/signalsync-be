@@ -25,9 +25,10 @@ def get_supported_platforms() -> list[PlatformInfo]:
             export_instructions=(
                 "1. Open your MetaTrader 5 Desktop Terminal.\n"
                 "2. Go to the 'History' tab at the bottom.\n"
-                "3. Right-click inside the History list -> select 'Report' -> click 'Open XML (MS Excel)'.\n"
-                "4. Save the generated report file as an Excel workbook (.xlsx).\n"
-                "5. Upload the saved workbook here."
+                "3. Right-click inside the History list -> select 'All History' (critical to include your entire trade data).\n"
+                "4. Right-click again -> select 'Report' -> click 'Open XML (MS Excel)'.\n"
+                "5. Save the generated report file as an Excel workbook (.xlsx).\n"
+                "6. Upload the saved workbook here."
             ),
             max_file_size_mb=10,
         )

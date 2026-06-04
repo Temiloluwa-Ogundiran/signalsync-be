@@ -37,7 +37,9 @@ async def preview_import(
     """Parse file and return preview statistics without writing to the database."""
     parser = get_parser(platform_id)
     content = BytesIO(file_content)
-    result = parser.parse(content, timezone_str)
+    # MT5 server time is assumed to be EET (GMT+2 winter / GMT+3 DST)
+    broker_timezone = "Europe/Riga" if platform_id.lower() == "mt5" else timezone_str
+    result = parser.parse(content, broker_timezone)
 
     # Convert ParseResult objects to Pydantic schemas
     meta_schema = CSVPreviewAccountMeta(
@@ -123,7 +125,9 @@ async def confirm_import(
     """Create or update a CSV account and import the parsed trades into database."""
     parser = get_parser(platform_id)
     content = BytesIO(file_content)
-    result = parser.parse(content, timezone_str)
+    # MT5 server time is assumed to be EET (GMT+2 winter / GMT+3 DST)
+    broker_timezone = "Europe/Riga" if platform_id.lower() == "mt5" else timezone_str
+    result = parser.parse(content, broker_timezone)
 
     if result.errors:
         # Check if there are strict blocking errors
