@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import configure_logging
 from app.domains.journal import service as journal_service
+from app.shared.activity import AuthActivityMiddleware
 
 configure_logging(debug=settings.DEBUG)
 
@@ -35,6 +36,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuthActivityMiddleware)
 
 
 from app.domains.journal.repository_tags import seed_system_tags

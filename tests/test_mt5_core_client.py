@@ -5,6 +5,7 @@ from app.domains.accounts.mt5_core_client import (
     Mt5CoreClient,
     Mt5CoreClientError,
     Mt5CoreClientJobFailed,
+    Mt5CoreClientRateLimited,
     Mt5CoreClientTimeout,
 )
 
@@ -142,3 +143,27 @@ async def test_submit_history_sync_success(client: Mt5CoreClient, httpx_mock) ->
     )
 
     assert result == {"deals": [{"ticket": "100"}]}
+
+
+@pytest.mark.anyio
+async def test_submit_history_sync_raises_rate_limited_error(client: Mt5CoreClient, httpx_mock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/history/sync",
+        status_code=429,
+        json={
+            "detail": {
+                "code": "RATE_LIMITED",
+                "message": "Submission rate limit exceeded. Please retry shortly.",
+            }
+        },
+        headers={"Retry-After": "3"},
+    )
+
+    with pytest.raises(Mt5CoreClientRateLimited) as exc:
+        await client.submit_history_sync(
+            account_id="acct-1",
+            credentials={"login": "10001", "password": "p", "server": "s"},
+        )
+
+    assert exc.value.retry_after_seconds == 3

@@ -14,7 +14,12 @@ import app.domains.auth.models  # noqa: F401
 from app.domains.accounts.models import TradingAccount, TradingAccountConnectionState, TradingAccountStatus, TradingAccountType, TradingPlatform
 from app.domains.accounts.schemas import AccountConnectRequest
 from app.domains.accounts.service import connect_account
-from app.domains.accounts.mt5_core_client import Mt5CoreClientJobFailed, Mt5CoreClientTimeout, Mt5CoreClientError
+from app.domains.accounts.mt5_core_client import (
+    Mt5CoreClientError,
+    Mt5CoreClientJobFailed,
+    Mt5CoreClientRateLimited,
+    Mt5CoreClientTimeout,
+)
 
 @pytest.fixture
 def db_session() -> MagicMock:
@@ -77,7 +82,8 @@ async def test_connect_account_invalid_credentials(
         await connect_account(db_session, current_user=current_user, payload=payload)
     
     assert exc.value.status_code == 400
-    assert "Credential verification failed" in exc.value.detail
+    assert exc.value.detail["code"] == "INVALID_CREDENTIALS"
+    assert "Credential verification failed" in exc.value.detail["message"]
     
     # DB create_account should never be called (persistence boundary)
     mock_repo.create_account.assert_not_called()
@@ -151,3 +157,33 @@ async def test_connect_account_warning_state_recovery(
     # Check that bootstrap failed and error message are set, and commit is still called
     mock_repo.mark_account_bootstrap_failed.assert_called_once_with(db_session, mock_account, "Sync timed out")
     mock_repo.set_account_sync_error.assert_called_once_with(db_session, mock_account, "Initial sync failed: Sync timed out")
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.service.account_repo")
+@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
+async def test_connect_account_rate_limited_uses_429_response(
+    mock_client_cls,
+    mock_repo,
+    db_session,
+    current_user,
+    payload,
+) -> None:
+    mock_client = AsyncMock()
+    mock_client.verify_credentials.side_effect = Mt5CoreClientRateLimited(
+        "RATE_LIMITED",
+        "Submission rate limit exceeded. Please retry shortly.",
+        status_code=429,
+        retry_after_seconds=60,
+    )
+    mock_client_cls.return_value = mock_client
+
+    mock_repo.get_account_by_user_and_meta_id.return_value = None
+
+    with pytest.raises(HTTPException) as exc:
+        await connect_account(db_session, current_user=current_user, payload=payload)
+
+    assert exc.value.status_code == 429
+    assert exc.value.headers["Retry-After"] == "60"
+    assert exc.value.detail["code"] == "RATE_LIMITED"
+    mock_repo.create_account.assert_not_called()

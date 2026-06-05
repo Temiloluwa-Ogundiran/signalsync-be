@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -21,6 +21,7 @@ from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingAccountStatus,
 )
+from app.domains.users.models import User
 from app.shared.utils.timezone import classify_session
 
 # ---------------------------------------------------------------------------
@@ -233,12 +234,110 @@ def list_syncable_accounts(db: Session) -> list[TradingAccount]:
     return list(db.execute(stmt).scalars().all())
 
 
+def list_active_mt5_sync_candidates(
+    db: Session,
+    *,
+    active_after: datetime,
+    now: datetime,
+) -> list[TradingAccount]:
+    stmt = (
+        select(TradingAccount)
+        .join(User, User.id == TradingAccount.user_id)
+        .where(
+            TradingAccount.is_deleted.is_(False),
+            TradingAccount.sync_provider == SyncProvider.headless_mt5,
+            TradingAccount.connection_state.in_(
+                [
+                    TradingAccountConnectionState.ready,
+                    TradingAccountConnectionState.bootstrap_failed,
+                ]
+            ),
+            TradingAccount.status.in_(
+                [
+                    TradingAccountStatus.pending_sync,
+                    TradingAccountStatus.synced,
+                    TradingAccountStatus.error,
+                ]
+            ),
+            User.last_active_at.is_not(None),
+            User.last_active_at >= active_after,
+            (
+                TradingAccount.next_sync_not_before.is_(None)
+                | (TradingAccount.next_sync_not_before <= now)
+            ),
+        )
+        .order_by(
+            TradingAccount.last_synced_at.asc().nullsfirst(),
+            TradingAccount.created_at.asc(),
+        )
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
 def set_account_last_synced_at(
     db: Session, account: TradingAccount, synced_at: datetime
 ) -> None:
     account.last_synced_at = synced_at
     account.status = TradingAccountStatus.synced
     account.sync_error_message = None
+    db.flush()
+
+
+def set_sync_attempt_started(
+    db: Session,
+    *,
+    account: TradingAccount,
+    attempted_at: datetime,
+) -> None:
+    account.last_sync_attempted_at = attempted_at
+    db.flush()
+
+
+def mark_sync_success(
+    db: Session,
+    *,
+    account: TradingAccount,
+    synced_at: datetime,
+) -> None:
+    account.last_synced_at = synced_at
+    account.last_sync_attempted_at = synced_at
+    account.next_sync_not_before = None
+    account.last_sync_outcome = "success"
+    account.consecutive_sync_failures = 0
+    account.status = TradingAccountStatus.synced
+    account.sync_error_message = None
+    db.flush()
+
+
+def mark_sync_retryable(
+    db: Session,
+    *,
+    account: TradingAccount,
+    outcome: str,
+    message: str,
+    retry_after_seconds: int | None,
+    attempted_at: datetime,
+) -> None:
+    account.last_sync_attempted_at = attempted_at
+    account.last_sync_outcome = outcome
+    account.consecutive_sync_failures = (account.consecutive_sync_failures or 0) + 1
+    delay_seconds = retry_after_seconds if retry_after_seconds is not None else 60
+    account.next_sync_not_before = attempted_at + timedelta(seconds=delay_seconds)
+    account.sync_error_message = message
+    db.flush()
+
+
+def mark_sync_attention_required(
+    db: Session,
+    *,
+    account: TradingAccount,
+    outcome: str,
+    message: str,
+    attempted_at: datetime,
+) -> None:
+    account.last_sync_attempted_at = attempted_at
+    account.last_sync_outcome = outcome
+    account.sync_error_message = message
     db.flush()
 
 
@@ -320,6 +419,24 @@ def try_acquire_cycle_lock(db: Session) -> bool:
 def release_cycle_lock(db: Session) -> None:
     stmt = text("SELECT pg_advisory_unlock(:lock_key)")
     db.execute(stmt, {"lock_key": _JOURNAL_SYNC_CYCLE_LOCK_KEY})
+
+
+def try_acquire_account_sync_lock(db: Session, account_id: uuid.UUID) -> bool:
+    stmt = text("SELECT pg_try_advisory_lock(hashtext(:lock_key))")
+    return bool(
+        db.execute(
+            stmt,
+            {"lock_key": f"trading-account-sync:{account_id}"},
+        ).scalar()
+    )
+
+
+def release_account_sync_lock(db: Session, account_id: uuid.UUID) -> None:
+    stmt = text("SELECT pg_advisory_unlock(hashtext(:lock_key))")
+    db.execute(
+        stmt,
+        {"lock_key": f"trading-account-sync:{account_id}"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +917,25 @@ def get_latest_account_snapshot_balance(
     if row is None:
         return None
     return row.balance
+
+
+def get_latest_snapshots_for_accounts(
+    db: Session,
+    *,
+    account_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, AccountSnapshot]:
+    snapshots: dict[uuid.UUID, AccountSnapshot] = {}
+    for account_id in account_ids:
+        stmt = (
+            select(AccountSnapshot)
+            .where(AccountSnapshot.account_id == account_id)
+            .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
+            .limit(1)
+        )
+        snapshot = db.execute(stmt).scalar_one_or_none()
+        if snapshot is not None:
+            snapshots[account_id] = snapshot
+    return snapshots
 
 
 # ---------------------------------------------------------------------------

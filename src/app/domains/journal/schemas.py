@@ -31,6 +31,7 @@ class JournalTradeResponse(BaseModel):
     session: TradeSession
     opened_at: datetime
     closed_at: datetime
+    trading_date: Optional[date] = None
     is_manual: bool = False
     is_missed: bool = False
     balance_before_trade: Decimal | None = None

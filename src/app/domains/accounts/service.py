@@ -37,7 +37,9 @@ async def connect_account(
     from datetime import timedelta
     from app.domains.accounts.mt5_core_client import (
         Mt5CoreClient,
+        Mt5CoreClientBackpressure,
         Mt5CoreClientJobFailed,
+        Mt5CoreClientRateLimited,
         Mt5CoreClientTimeout,
         Mt5CoreClientError,
     )
@@ -75,17 +77,48 @@ async def connect_account(
     except Mt5CoreClientJobFailed as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Credential verification failed: {str(exc)}",
+            detail={
+                "code": "INVALID_CREDENTIALS",
+                "message": f"Credential verification failed: {str(exc)}",
+            },
+        )
+    except Mt5CoreClientRateLimited as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+            },
+            headers={"Retry-After": str(exc.retry_after_seconds)}
+            if exc.retry_after_seconds is not None
+            else None,
+        )
+    except Mt5CoreClientBackpressure as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+            },
+            headers={"Retry-After": str(exc.retry_after_seconds)}
+            if exc.retry_after_seconds is not None
+            else None,
         )
     except Mt5CoreClientTimeout as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Credential verification timed out: {str(exc)}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "MT5_CORE_TIMEOUT",
+                "message": f"Credential verification timed out: {str(exc)}",
+            },
         )
     except Mt5CoreClientError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Credential verification failed: {str(exc)}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "MT5_CORE_ERROR",
+                "message": f"Credential verification failed: {str(exc)}",
+            },
         )
 
     # Step 2: Successful verification becomes the persistence boundary.
@@ -188,7 +221,19 @@ async def connect_account(
 
 
 def list_accounts(db: Session, *, current_user: User) -> list[TradingAccount]:
-    return account_repo.list_accounts_for_user(db, current_user.id)
+    accounts = account_repo.list_accounts_for_user(db, current_user.id)
+    if not accounts:
+        return accounts
+
+    latest_snapshots = account_repo.get_latest_snapshots_for_accounts(
+        db,
+        account_ids=[account.id for account in accounts],
+    )
+    for account in accounts:
+        snapshot = latest_snapshots.get(account.id)
+        account.latest_balance = snapshot.balance if snapshot is not None else None
+        account.latest_equity = snapshot.equity if snapshot is not None else None
+    return accounts
 
 
 def get_account(

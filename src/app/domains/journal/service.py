@@ -417,7 +417,7 @@ def get_or_create_daily_journal(
 
     trade_models: list[JournalTradeResponse] = []
     for idx, trade in enumerate(trades):
-        trade_model = _enrich_trade_response(JournalTradeResponse.model_validate(trade), trade)
+        trade_model = _build_trade_response(trade, account_timezone=account.timezone)
         balance_before_trade = running_balance
         net_roi_percent = None
         if balance_before_trade is not None and balance_before_trade != 0:
@@ -694,6 +694,12 @@ def _enrich_trade_response(model: JournalTradeResponse, trade) -> JournalTradeRe
     return model
 
 
+def _build_trade_response(trade, *, account_timezone: str) -> JournalTradeResponse:
+    model = _enrich_trade_response(JournalTradeResponse.model_validate(trade), trade)
+    model.trading_date = to_account_local_date(trade.closed_at, account_timezone)
+    return model
+
+
 # ---------------------------------------------------------------------------
 # Trade list
 # ---------------------------------------------------------------------------
@@ -744,7 +750,10 @@ def list_account_trades(
     if not trades:
         return []
 
-    base_models = [_enrich_trade_response(JournalTradeResponse.model_validate(trade), trade) for trade in trades]
+    base_models = [
+        _build_trade_response(trade, account_timezone=account.timezone)
+        for trade in trades
+    ]
     trade_reviewed_map = journal_repo.map_trade_reviewed_at_by_trade_ids(
         db,
         trade_ids=[trade.id for trade in trades],
@@ -1814,7 +1823,7 @@ def get_analytics_dashboard(
 
     recent_sorted = sorted(trades, key=lambda item: (item.closed_at, item.id), reverse=True)
     recent_models = [
-        _enrich_trade_response(JournalTradeResponse.model_validate(trade), trade)
+        _build_trade_response(trade, account_timezone=account.timezone)
         for trade in recent_sorted[:recent_limit]
     ]
     recent_trades = JournalTradeListResponse(items=recent_models, next_cursor=None)

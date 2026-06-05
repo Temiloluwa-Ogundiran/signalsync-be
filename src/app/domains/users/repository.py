@@ -1,7 +1,9 @@
 import uuid
+from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 from app.domains.users.models import User
@@ -44,3 +46,23 @@ def create(
     db.add(user)
     db.flush()
     return user
+
+
+def touch_last_active_at_if_stale(
+    db: Session,
+    *,
+    user_id: UUID,
+    observed_at: datetime,
+    min_interval_seconds: int,
+) -> bool:
+    cutoff = observed_at - timedelta(seconds=min_interval_seconds)
+    stmt = (
+        sa_update(User)
+        .where(
+            User.id == user_id,
+            (User.last_active_at.is_(None) | (User.last_active_at < cutoff)),
+        )
+        .values(last_active_at=observed_at)
+    )
+    result = db.execute(stmt)
+    return bool(result.rowcount)

@@ -18,6 +18,29 @@ class Mt5CoreClientJobFailed(Mt5CoreClientError):
     """Raised when enqueued job fails."""
     pass
 
+
+class Mt5CoreClientHttpError(Mt5CoreClientError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+
+
+class Mt5CoreClientRateLimited(Mt5CoreClientHttpError):
+    pass
+
+
+class Mt5CoreClientBackpressure(Mt5CoreClientHttpError):
+    pass
+
 class Mt5CoreClient:
     """Robust, polling-based client for mt5-core engine integration."""
 
@@ -51,6 +74,55 @@ class Mt5CoreClient:
             timeout=10.0,
         )
 
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> int | None:
+        retry_after = response.headers.get("Retry-After")
+        if not retry_after:
+            return None
+        try:
+            return int(retry_after)
+        except ValueError:
+            return None
+
+    def _raise_submit_error(self, response: httpx.Response) -> None:
+        detail: Any
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        detail = payload.get("detail") if isinstance(payload, dict) else None
+        if isinstance(detail, dict):
+            code = str(detail.get("code") or detail.get("error_code") or "MT5_CORE_ERROR")
+            message = str(detail.get("message") or response.text or "MT5 core request failed.")
+        elif isinstance(detail, str):
+            code = "MT5_CORE_ERROR"
+            message = detail
+        else:
+            code = "MT5_CORE_ERROR"
+            message = response.text or "MT5 core request failed."
+
+        retry_after_seconds = self._retry_after_seconds(response)
+        if response.status_code == 429:
+            raise Mt5CoreClientRateLimited(
+                code,
+                message,
+                status_code=response.status_code,
+                retry_after_seconds=retry_after_seconds,
+            )
+        if response.status_code == 503:
+            raise Mt5CoreClientBackpressure(
+                code,
+                message,
+                status_code=response.status_code,
+                retry_after_seconds=retry_after_seconds,
+            )
+        raise Mt5CoreClientHttpError(
+            code,
+            message,
+            status_code=response.status_code,
+            retry_after_seconds=retry_after_seconds,
+        )
+
     async def verify_credentials(
         self,
         *,
@@ -80,8 +152,11 @@ class Mt5CoreClient:
                     f"{self.base_url}/accounts/verify",
                     json=payload,
                 )
-                response.raise_for_status()
+                if response.is_error:
+                    self._raise_submit_error(response)
                 data = response.json()
+            except Mt5CoreClientHttpError:
+                raise
             except Exception as e:
                 raise Mt5CoreClientError(f"Failed to submit account verification job: {e}") from e
 
@@ -125,8 +200,11 @@ class Mt5CoreClient:
                     f"{self.base_url}/history/sync",
                     json=payload,
                 )
-                response.raise_for_status()
+                if response.is_error:
+                    self._raise_submit_error(response)
                 data = response.json()
+            except Mt5CoreClientHttpError:
+                raise
             except Exception as e:
                 raise Mt5CoreClientError(f"Failed to submit history sync job: {e}") from e
 

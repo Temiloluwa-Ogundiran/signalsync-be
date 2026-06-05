@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -8,6 +8,7 @@ from app.core.database import SessionLocal
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.metaapi import is_transient_metaapi_error
 from app.domains.accounts.models import SyncProvider, TradingAccountStatus
+from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
 from app.domains.accounts.sync import sync_account_deals
 
 logger = logging.getLogger(__name__)
@@ -156,8 +157,6 @@ def sync_all_mt5_accounts() -> dict:
     for every trading account that uses sync_provider=headless_mt5.
     """
     import anyio
-    from app.domains.accounts.sync import sync_account_deals_mt5
-    from app.domains.accounts.models import TradingAccountConnectionState
 
     cycle_started = datetime.now(timezone.utc)
     triggered = 0
@@ -166,34 +165,42 @@ def sync_all_mt5_accounts() -> dict:
     inserted_total = 0
 
     with SessionLocal() as db:
-        all_accounts = account_repo.list_syncable_accounts(db)
-        mt5_accounts = [
-            a for a in all_accounts if a.sync_provider == SyncProvider.headless_mt5
+        active_after = cycle_started - timedelta(minutes=settings.ACTIVE_USER_WINDOW_MINUTES)
+        account_ids = [
+            account.id
+            for account in account_repo.list_active_mt5_sync_candidates(
+                db,
+                active_after=active_after,
+                now=cycle_started,
+            )
         ]
 
-    logger.info("MT5 sync cycle | candidates=%s", len(mt5_accounts))
+    logger.info("MT5 sync cycle | candidates=%s", len(account_ids))
 
-    for account in mt5_accounts:
-        if account.status == TradingAccountStatus.disconnected:
-            skipped += 1
-            continue
-
+    for account_id in account_ids:
         try:
             with SessionLocal() as db_session:
-                # Reload account in this session
-                acct = account_repo.get_account_by_id(db_session, account.id)
-                if acct is not None:
-                    res = anyio.run(sync_account_deals_mt5, db_session, acct, None)
-                    if acct.connection_state == TradingAccountConnectionState.bootstrap_failed:
-                        account_repo.mark_account_ready_for_stats(db_session, acct, synced_at=datetime.now(timezone.utc))
-                    else:
-                        account_repo.set_account_last_synced_at(db_session, acct, datetime.now(timezone.utc))
-                    db_session.commit()
+                acct = account_repo.get_account_by_id(db_session, account_id)
+                if acct is None or acct.status == TradingAccountStatus.disconnected:
+                    skipped += 1
+                    continue
+
+                async def _run_sync():
+                    return await orchestrate_mt5_sync(
+                        db_session,
+                        account=acct,
+                        trigger="recurring",
+                    )
+
+                res = anyio.run(_run_sync)
+                if res.outcome == "success":
                     inserted_total += res.inserted_trades
                     triggered += 1
+                else:
+                    skipped += 1
         except Exception as exc:  # noqa: BLE001
             failed += 1
-            logger.exception("MT5 celery sync failed for account_id=%s", account.id)
+            logger.exception("MT5 celery sync failed for account_id=%s", account_id)
 
     duration_seconds = (datetime.now(timezone.utc) - cycle_started).total_seconds()
     logger.info(

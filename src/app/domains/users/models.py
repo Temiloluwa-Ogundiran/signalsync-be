@@ -33,6 +33,11 @@ class User(Base):
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+    last_active_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -86,6 +86,8 @@ class Settings(BaseSettings):
 
     # Sync
     SYNC_INTERVAL_MINUTES: int = 5
+    ACTIVE_USER_WINDOW_MINUTES: int = 10
+    USER_ACTIVITY_TOUCH_MIN_INTERVAL_SECONDS: int = 60
 
 
 

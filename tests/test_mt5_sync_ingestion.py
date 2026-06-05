@@ -33,6 +33,7 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
     # Set up mock repository expectations
     mock_repo.upsert_closed_trade.return_value = True
     mock_repo.update_closed_trade.return_value = False
+    mock_repo.delete_trades_outside_valid_broker_ids_in_window.return_value = (1, {datetime(2026, 5, 20, tzinfo=timezone.utc).date()})
 
     payload = {
         "broker_offset_seconds": 7200,  # 2 hours
@@ -67,7 +68,14 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
     }
 
     # Execute
-    result = ingest_mt5_core_history_result(db_session, account=mock_account, result=payload)
+    result = ingest_mt5_core_history_result(
+        db_session,
+        account=mock_account,
+        result=payload,
+        closed_from_utc=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        closed_to_utc_exclusive=None,
+        authoritative=True,
+    )
 
     # Asserts
     assert result.inserted_trades == 1
@@ -86,6 +94,8 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
         equity=Decimal("10050.0"),
         floating_pnl=Decimal("50.0"),
     )
+
+    mock_repo.delete_trades_outside_valid_broker_ids_in_window.assert_called_once()
 
     # Verify trade upserted with correct mappings
     mock_repo.upsert_closed_trade.assert_called_once()

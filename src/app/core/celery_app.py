@@ -18,9 +18,12 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
-# Intentionally disabled: we only sync on user-initiated action to reduce API costs.
-# If you want periodic syncing again, re-add the beat_schedule entries.
-celery_app.conf.beat_schedule = {}
+celery_app.conf.beat_schedule = {
+    "journal-sync-active-mt5-accounts": {
+        "task": "journal.sync_all_mt5_accounts",
+        "schedule": settings.SYNC_INTERVAL_MINUTES * 60,
+    },
+}
 
 
 @celery_app.task(name="health.ping")

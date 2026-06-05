@@ -172,6 +172,25 @@ class TradingAccount(Base):
         default=None,
     )
     bootstrap_error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_sync_attempted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+    )
+    next_sync_not_before: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+    )
+    last_sync_outcome: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    consecutive_sync_failures: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
 
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

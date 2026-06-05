@@ -343,6 +343,7 @@ def ingest_mt5_deals(
     *,
     account: TradingAccount,
     deals: list[dict[str, Any]],
+    extra_touched_dates: set[date] | None = None,
 ) -> SyncResult:
     """
     Ingest a list of closed deals from the headless MT5 microservice callback.
@@ -387,7 +388,13 @@ def ingest_mt5_deals(
         }
         mapped_deals.append(mapped)
 
-    return ingest_closed_deals(db, account=account, deals=mapped_deals, mt5_enriched=True)
+    return ingest_closed_deals(
+        db,
+        account=account,
+        deals=mapped_deals,
+        extra_touched_dates=extra_touched_dates,
+        mt5_enriched=True,
+    )
 
 
 def ingest_mt5_snapshots(
@@ -431,6 +438,9 @@ def ingest_mt5_core_history_result(
     *,
     account: TradingAccount,
     result: dict[str, Any],
+    closed_from_utc: datetime | None = None,
+    closed_to_utc_exclusive: datetime | None = None,
+    authoritative: bool = False,
 ) -> SyncResult:
     """
     Ingest normalized history result from mt5-core.
@@ -449,8 +459,29 @@ def ingest_mt5_core_history_result(
     if snapshot:
         snapshot_count = ingest_mt5_snapshots(db, account=account, snapshots=[snapshot])
 
+    deleted_dates: set[date] = set()
+    if authoritative:
+        valid_broker_trade_ids = {
+            str(deal.get("ticket") or "").strip()
+            for deal in deals
+            if str(deal.get("ticket") or "").strip()
+        }
+        _, deleted_dates = account_repo.delete_trades_outside_valid_broker_ids_in_window(
+            db,
+            account_id=account.id,
+            closed_from_utc=closed_from_utc,
+            closed_to_utc_exclusive=closed_to_utc_exclusive,
+            account_timezone=account.timezone,
+            valid_broker_trade_ids=valid_broker_trade_ids,
+        )
+
     # Ingest deals using ingest_mt5_deals
-    sync_result = ingest_mt5_deals(db, account=account, deals=deals)
+    sync_result = ingest_mt5_deals(
+        db,
+        account=account,
+        deals=deals,
+        extra_touched_dates=deleted_dates,
+    )
     return sync_result
 
 
@@ -462,38 +493,54 @@ async def sync_account_deals_mt5(
     from app.domains.accounts.mt5_core_client import Mt5CoreClient
     from app.shared.utils.encryption import decrypt_secret
     
+    if not account_repo.try_acquire_account_sync_lock(db, account.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Sync already in progress for this account.",
+        )
+
     # 1. Decrypt investor password
     try:
-        investor_password = decrypt_secret(account.encrypted_investor_password)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to decrypt account credentials.",
-        ) from exc
+        try:
+            investor_password = decrypt_secret(account.encrypted_investor_password)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to decrypt account credentials.",
+            ) from exc
 
-    # 2. Determine from_time
-    effective_lookback_days = lookback_days or settings.INITIAL_SYNC_LOOKBACK_DAYS
-    cleanup_floor = datetime.now(timezone.utc) - timedelta(days=effective_lookback_days)
-    if account.last_synced_at is None:
-        from_time = cleanup_floor
-    else:
-        from_time = min(account.last_synced_at, cleanup_floor)
+        # 2. Determine from_time
+        effective_lookback_days = lookback_days or settings.INITIAL_SYNC_LOOKBACK_DAYS
+        cleanup_floor = datetime.now(timezone.utc) - timedelta(days=effective_lookback_days)
+        if account.last_synced_at is None:
+            from_time = cleanup_floor
+        else:
+            from_time = min(account.last_synced_at, cleanup_floor)
 
-    # 3. Call mt5-core client
-    client = Mt5CoreClient()
-    sync_result = await client.submit_history_sync(
-        account_id=str(account.id),
-        from_time=from_time,
-        credentials={
-            "login": account.broker_login,
-            "password": investor_password,
-            "server": account.broker_server,
-            "broker": account.broker_name,
-        }
-    )
+        # 3. Call mt5-core client
+        client = Mt5CoreClient()
+        sync_result = await client.submit_history_sync(
+            account_id=str(account.id),
+            from_time=from_time,
+            credentials={
+                "login": account.broker_login,
+                "password": investor_password,
+                "server": account.broker_server,
+                "broker": account.broker_name,
+            }
+        )
 
-    # 4. Ingest normalized results
-    return ingest_mt5_core_history_result(db, account=account, result=sync_result)
+        # 4. Ingest normalized results
+        return ingest_mt5_core_history_result(
+            db,
+            account=account,
+            result=sync_result,
+            closed_from_utc=from_time,
+            closed_to_utc_exclusive=None,
+            authoritative=True,
+        )
+    finally:
+        account_repo.release_account_sync_lock(db, account.id)
 
 
 def sync_account_deals(
