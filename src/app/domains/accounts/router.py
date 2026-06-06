@@ -12,6 +12,7 @@ from app.domains.accounts.schemas import (
     AccountResponse,
     AccountUpdateRequest,
 )
+from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
 
@@ -63,24 +64,24 @@ async def manual_sync(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
+    account = account_service.get_account(db, current_user=current_user, account_id=account_id)
     from app.domains.accounts.models import SyncProvider
 
-    account = account_service.get_account(db, current_user=current_user, account_id=account_id)
-
     if account.sync_provider == SyncProvider.headless_mt5:
-        from app.domains.accounts.sync import sync_account_deals_mt5
-        from app.domains.accounts.models import TradingAccountConnectionState
-        from datetime import datetime, timezone
-        
-        result = await sync_account_deals_mt5(db, account=account)
-        if account.connection_state == TradingAccountConnectionState.bootstrap_failed:
-            account_repo.mark_account_ready_for_stats(db, account, synced_at=datetime.now(timezone.utc))
-        else:
-            account_repo.set_account_last_synced_at(db, account, datetime.now(timezone.utc))
-        db.commit()
+        result = await orchestrate_mt5_sync(
+            db,
+            account=account,
+            trigger="manual",
+        )
+        if result.outcome == "success":
+            return {
+                "inserted_trades": result.inserted_trades,
+                "touched_trading_dates": result.touched_trading_dates,
+            }
         return {
-            "inserted_trades": result.inserted_trades,
-            "touched_trading_dates": result.touched_trading_dates,
+            "status": result.outcome,
+            "retry_after_seconds": result.retry_after_seconds,
+            "message": result.message,
         }
 
     return account_service.sync_account(db, current_user=current_user, account_id=account_id)

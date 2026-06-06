@@ -15,6 +15,7 @@ import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts import repository as account_repo
+from app.domains.accounts import router as accounts_router
 from app.domains.accounts.models import TradingAccountConnectionState
 from app.domains.accounts.schemas import AccountResponse
 from app.domains.accounts.mt5_core_client import Mt5CoreClientRateLimited
@@ -235,6 +236,38 @@ def test_sync_all_mt5_accounts_only_runs_for_recently_active_users(
 
     assert result["triggered"] == 1
     mock_account_repo.list_active_mt5_sync_candidates.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.router.account_service")
+@patch("app.domains.accounts.router.orchestrate_mt5_sync")
+async def test_manual_sync_uses_shared_orchestrator(
+    mock_orchestrate_mt5_sync,
+    mock_account_service,
+    db_session: MagicMock,
+) -> None:
+    from app.domains.accounts.sync_orchestrator import Mt5SyncExecutionResult
+
+    current_user = MagicMock(id=uuid.uuid4())
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    account.sync_provider = "headless_mt5"
+    mock_account_service.get_account.return_value = account
+    mock_orchestrate_mt5_sync.return_value = Mt5SyncExecutionResult(
+        outcome="rate_limited",
+        retry_after_seconds=60,
+        message="Submission rate limit exceeded. Please retry shortly.",
+    )
+
+    result = await accounts_router.manual_sync(
+        account_id=account.id,
+        db=db_session,
+        current_user=current_user,
+    )
+
+    assert result["status"] == "rate_limited"
+    assert result["retry_after_seconds"] == 60
+    mock_orchestrate_mt5_sync.assert_called_once()
 
 
 @patch("app.domains.accounts.service.account_repo")

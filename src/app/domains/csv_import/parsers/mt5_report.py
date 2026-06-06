@@ -110,6 +110,7 @@ class MT5ReportParser(PlatformParser):
                 pass
 
         # 2. Parse Positions (Trades)
+        stripped_symbol_seen = False
         if positions_idx == -1:
             result.errors.append(
                 ParseError(
@@ -171,6 +172,7 @@ class MT5ReportParser(PlatformParser):
                 symbol = str(symbol_val).strip()
                 if "." in symbol:
                     symbol = symbol.split(".")[0]
+                    stripped_symbol_seen = True
 
                 direction = str(type_val).strip().lower()
                 if "sell" in direction:
@@ -255,9 +257,10 @@ class MT5ReportParser(PlatformParser):
             account_meta.starting_balance = account_meta.current_balance or Decimal("0")
 
         # Create warning if symbols were stripped
-        stripped_symbols = [t.symbol for t in result.trades if "." in str(ws.cell(row=positions_idx + 2, column=3).value or "")]
-        if stripped_symbols:
-            result.warnings.append("Symbol suffixes stripped (e.g., AUDUSD.x → AUDUSD) for compatibility.")
+        if stripped_symbol_seen:
+            result.warnings.append(
+                "Symbol suffixes stripped (e.g., AUDUSD.x -> AUDUSD) for compatibility."
+            )
 
         return result
 
