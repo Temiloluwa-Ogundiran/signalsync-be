@@ -1,18 +1,106 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_NAME: ${APP_NAME:-SyncTrades API}
+      DEBUG: ${DEBUG:-false}
+      IS_PRODUCTION: ${IS_PRODUCTION:-true}
+      PORT: ${PORT:-8000}
+      AUTO_SEED_ON_STARTUP: ${AUTO_SEED_ON_STARTUP:-true}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://synctrades:synctrades@postgres:5432/synctrades}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-14}
+      EMAIL_VERIFY_EXPIRY_HOURS: ${EMAIL_VERIFY_EXPIRY_HOURS:-24}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      MT5_CORE_URL: ${MT5_CORE_URL:-}
+      MT5_CORE_INTERNAL_SHARED_SECRET: ${MT5_CORE_INTERNAL_SHARED_SECRET:-}
+      MT5_CORE_POLL_TIMEOUT_SECONDS: ${MT5_CORE_POLL_TIMEOUT_SECONDS:-120}
+      MT5_CORE_POLL_INTERVAL_SECONDS: ${MT5_CORE_POLL_INTERVAL_SECONDS:-2}
+      INITIAL_SYNC_LOOKBACK_DAYS: ${INITIAL_SYNC_LOOKBACK_DAYS:-14}
+      SMTP_SERVER: ${SMTP_SERVER:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-SyncTrades}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:-}
+      SUPABASE_STREAM_AVATARS_BUCKET: ${SUPABASE_STREAM_AVATARS_BUCKET:-stream-avatars}
+      SUPABASE_STREAM_BANNERS_BUCKET: ${SUPABASE_STREAM_BANNERS_BUCKET:-stream-banners}
+      SUPABASE_POST_MEDIA_BUCKET: ${SUPABASE_POST_MEDIA_BUCKET:-post-media}
+      JOURNAL_VOICE_BUCKET: ${JOURNAL_VOICE_BUCKET:-journal-voice-notes}
+      JOURNAL_IMAGES_BUCKET: ${JOURNAL_IMAGES_BUCKET:-journal-images}
+      MEDIA_SIGNED_URL_TTL_SECONDS: ${MEDIA_SIGNED_URL_TTL_SECONDS:-3600}
+      VOICE_SIGNED_URL_TTL_SECONDS: ${VOICE_SIGNED_URL_TTL_SECONDS:-3600}
+      IMAGE_SIGNED_URL_TTL_SECONDS: ${IMAGE_SIGNED_URL_TTL_SECONDS:-3600}
+      STORAGE_SERVICE_BASE_URL: ${STORAGE_SERVICE_BASE_URL:-}
+      STORAGE_SERVICE_UPLOAD_PATH: ${STORAGE_SERVICE_UPLOAD_PATH:-/api/upload}
+      STORAGE_SERVICE_API_KEY: ${STORAGE_SERVICE_API_KEY:-}
+      STORAGE_SERVICE_PRESIGNED_TTL_SECONDS: ${STORAGE_SERVICE_PRESIGNED_TTL_SECONDS:-600}
+      METAAPI_TOKEN: ${METAAPI_TOKEN:-}
+      METAAPI_VERIFY_SSL: ${METAAPI_VERIFY_SSL:-true}
+      METAAPI_PROVISIONING_BASE_URL: ${METAAPI_PROVISIONING_BASE_URL:-https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai}
+      METAAPI_CLIENT_BASE_URL: ${METAAPI_CLIENT_BASE_URL:-https://mt-client-api-v1.london.agiliumtrade.ai}
+      METAAPI_ACCOUNT_ENGINE: ${METAAPI_ACCOUNT_ENGINE:-cloud-g2}
+      METAAPI_ACCOUNT_MAGIC: ${METAAPI_ACCOUNT_MAGIC:-10001}
+      METAAPI_DEALS_TIMEOUT_SECONDS: ${METAAPI_DEALS_TIMEOUT_SECONDS:-45}
+      METAAPI_DEALS_MAX_RETRIES: ${METAAPI_DEALS_MAX_RETRIES:-3}
+      METAAPI_DEALS_RETRY_BACKOFF_SECONDS: ${METAAPI_DEALS_RETRY_BACKOFF_SECONDS:-1.5}
+      METAAPI_DEALS_CHUNK_DAYS: ${METAAPI_DEALS_CHUNK_DAYS:-7}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: synctrades
+      POSTGRES_USER: synctrades
+      POSTGRES_PASSWORD: synctrades
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U synctrades -d synctrades"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    volumes:
+      - synctrades_postgres_data:/var/lib/postgresql/data
+
   redis:
     image: redis:7-alpine
-    container_name: synctrades-be-redis
-    restart: unless-stopped
     command: redis-server --appendonly yes
-    ports:
-      - "6381:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
     volumes:
       - synctrades_redis_data:/data
 
 volumes:
+  synctrades_postgres_data:
   synctrades_redis_data:
