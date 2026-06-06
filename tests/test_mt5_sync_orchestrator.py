@@ -71,6 +71,12 @@ def test_account_response_exposes_sync_state_fields() -> None:
     assert response.latest_equity == Decimal("10050.00")
 
 
+def test_mt5_recurring_sync_is_not_scheduled() -> None:
+    from app.core.celery_app import celery_app
+
+    assert "journal-sync-active-mt5-accounts" not in celery_app.conf.beat_schedule
+
+
 def test_touch_last_active_at_if_stale_returns_true_when_row_updated(
     db_session: MagicMock,
 ) -> None:

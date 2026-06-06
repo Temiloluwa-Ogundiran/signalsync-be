@@ -18,12 +18,7 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
-celery_app.conf.beat_schedule = {
-    "journal-sync-active-mt5-accounts": {
-        "task": "journal.sync_all_mt5_accounts",
-        "schedule": settings.SYNC_INTERVAL_MINUTES * 60,
-    },
-}
+celery_app.conf.beat_schedule = {}
 
 
 @celery_app.task(name="health.ping")
