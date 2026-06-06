@@ -27,11 +27,9 @@ def main() -> None:
     wait_for("postgres", parsed.hostname or "postgres", parsed.port or 5432)
     wait_for("redis", "redis", 6379)
 
-    subprocess.run(["uv", "run", "alembic", "upgrade", "head"], check=True)
+    subprocess.run(["alembic", "upgrade", "head"], check=True)
     subprocess.run(
         [
-            "uv",
-            "run",
             "uvicorn",
             "main:app",
             "--host",
