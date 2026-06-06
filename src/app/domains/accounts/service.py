@@ -1,21 +1,18 @@
 import uuid
 import logging
-from typing import Any
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.domains.accounts import repository as account_repo
-from app.domains.accounts.metaapi import is_transient_metaapi_error
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.accounts.schemas import AccountConnectRequest
-from app.domains.accounts.sync import ingest_mt5_deals, ingest_mt5_snapshots, sync_account_deals, ingest_mt5_core_history_result
+from app.domains.accounts.sync import sync_account_deals, ingest_mt5_core_history_result
 from app.domains.users.models import User
-from app.shared.utils.encryption import decrypt_secret, encrypt_secret
+from app.shared.utils.encryption import encrypt_secret
 from app.shared.utils.timezone import validate_timezone_name
 
 
@@ -260,22 +257,17 @@ def sync_account(
 ) -> dict:
     account = get_account(db, current_user=current_user, account_id=account_id)
 
+    if account.sync_provider != SyncProvider.headless_mt5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This account does not support broker sync.",
+        )
+
     try:
         result = sync_account_deals(db, account=account)
     except HTTPException:
         raise
     except Exception as exc:
-        if is_transient_metaapi_error(exc):
-            account_repo.set_account_sync_warning(
-                db,
-                account,
-                f"Transient MetaAPI sync error: {str(exc)[:450]}",
-            )
-            db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="MetaAPI timed out while syncing. Please retry in a moment.",
-            ) from exc
         account_repo.set_account_sync_error(db, account, str(exc)[:500])
         db.commit()
         raise HTTPException(

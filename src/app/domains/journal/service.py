@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.schemas import ManualTradeCreateRequest, ManualTradeUpdateRequest
-from app.domains.accounts.metaapi import metaapi_service
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.journal import repository as journal_repo
 from app.domains.journal.models import JournalMessageType, JournalTemplateType
@@ -682,7 +681,7 @@ def _enrich_trade_response(model: JournalTradeResponse, trade) -> JournalTradeRe
     risk_per_unit = |open_price - sl|.
 
     Only computed when the SL field is present and non-zero, to avoid
-    division by zero on MetaAPI-sourced trades that have no SL data.
+    division by zero on trades that have no SL data.
     """
     if trade.sl is not None and trade.sl != 0 and trade.open_price is not None:
         try:
@@ -829,17 +828,12 @@ def _estimate_starting_balance(db: Session, *, account: TradingAccount) -> Decim
             return snap_balance - all_time_realized
         return Decimal("0")
 
-    try:
-        account_info = metaapi_service.get_account_info(account.meta_account_id)
-        current_balance = Decimal(str(account_info.get("balance") or 0))
-        return current_balance - all_time_realized
-    except Exception:  # noqa: BLE001
-        snap_balance = account_repo.get_latest_account_snapshot_balance(
-            db, account_id=account_id
-        )
-        if snap_balance is not None:
-            return snap_balance - all_time_realized
-        return Decimal("0")
+    snap_balance = account_repo.get_latest_account_snapshot_balance(
+        db, account_id=account_id
+    )
+    if snap_balance is not None:
+        return snap_balance - all_time_realized
+    return Decimal("0")
 
 
 def _resolve_day_balances(
@@ -1529,8 +1523,7 @@ def get_analytics_trade_sources(
     Break down performance by trade source (personal vs copied).
 
     Only meaningful for accounts synced via the headless MT5 service.
-    For MetaAPI-sourced accounts, all trades will have trade_source=None
-    and will appear under the 'unknown' bucket.
+    Trades without stored source metadata will appear under the 'unknown' bucket.
     """
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)

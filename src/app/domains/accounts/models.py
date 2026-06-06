@@ -29,7 +29,6 @@ class TradingAccountStatus(str, enum.Enum):
 
 
 class SyncProvider(str, enum.Enum):
-    metaapi = "metaapi"
     headless_mt5 = "headless_mt5"
     csv_import = "csv_import"
 
@@ -135,7 +134,7 @@ class TradingAccount(Base):
     )
     provisioning_error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    # Sync provider: 'metaapi' (default) or 'headless_mt5'.
+    # Sync provider for this account. Broker-connected accounts use headless_mt5.
     sync_provider: Mapped[SyncProvider] = mapped_column(
         Enum(
             SyncProvider,
@@ -143,7 +142,7 @@ class TradingAccount(Base):
             name="syncproviderenum",
         ),
         nullable=False,
-        default=SyncProvider.metaapi,
+        default=SyncProvider.headless_mt5,
     )
 
     # Magic numbers that belong to copy-trading subscriptions on this account.
@@ -311,7 +310,7 @@ class Trade(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
-    # --- MT5-enriched fields (nullable — MetaAPI-sourced trades will not have these) ---
+    # --- MT5-enriched fields (nullable — trades without MT5 metadata will not have these) ---
 
     # Risk management levels at trade entry.
     sl: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 5), nullable=True)

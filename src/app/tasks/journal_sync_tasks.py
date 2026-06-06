@@ -6,8 +6,7 @@ from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.accounts import repository as account_repo
-from app.domains.accounts.metaapi import is_transient_metaapi_error
-from app.domains.accounts.models import SyncProvider, TradingAccountStatus
+from app.domains.accounts.models import TradingAccountStatus
 from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
 from app.domains.accounts.sync import sync_account_deals
 
@@ -68,16 +67,9 @@ def sync_all_accounts() -> dict:
                     with SessionLocal() as db:
                         account = account_repo.get_account_by_id(db, account_id)
                         if account is not None:
-                            if is_transient_metaapi_error(exc):
-                                account_repo.set_account_sync_warning(
-                                    db,
-                                    account,
-                                    f"Transient MetaAPI sync error: {str(exc)[:450]}",
-                                )
-                            else:
-                                account_repo.set_account_sync_error(
-                                    db, account, str(exc)[:500]
-                                )
+                            account_repo.set_account_sync_error(
+                                db, account, str(exc)[:500]
+                            )
                             db.commit()
         finally:
             account_repo.release_cycle_lock(lock_db)
@@ -132,21 +124,9 @@ def sync_account(account_id: str) -> dict:
                 "touched_dates": result.touched_trading_dates,
             }
         except Exception as exc:  # noqa: BLE001
-            if is_transient_metaapi_error(exc):
-                account_repo.set_account_sync_warning(
-                    db,
-                    account,
-                    f"Transient MetaAPI sync error: {str(exc)[:450]}",
-                )
-            else:
-                account_repo.set_account_sync_error(db, account, str(exc)[:500])
+            account_repo.set_account_sync_error(db, account, str(exc)[:500])
             db.commit()
             logger.exception("Journal sync failed for single account_id=%s", account_id)
-            if is_transient_metaapi_error(exc):
-                return {
-                    "status": "timeout",
-                    "reason": "MetaAPI timeout/transient error. Please retry.",
-                }
             return {"status": "error", "reason": str(exc)[:200]}
 
 

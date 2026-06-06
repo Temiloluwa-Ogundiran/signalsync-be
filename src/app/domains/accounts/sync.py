@@ -8,8 +8,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.domains.accounts.metaapi import is_transient_metaapi_error, metaapi_service
-from app.domains.accounts.models import TradingAccount, TradeDirection, TradeSession, TradeSource
+from app.domains.accounts.models import SyncProvider, TradingAccount, TradeDirection, TradeSession, TradeSource
 from app.domains.accounts import repository as account_repo
 from app.core.config import settings
 from app.shared.utils.timezone import classify_session, normalize_broker_datetime_to_utc, to_account_local_date
@@ -252,7 +251,7 @@ def ingest_closed_deals(
         symbol = str(deal.get("symbol") or "").strip() or "UNKNOWN"
         volume = _pick_price(deal, ("volume", "lots"))
 
-        # Extract MT5 enrichment fields (all None for MetaAPI-sourced deals).
+        # Extract MT5 enrichment fields when the trade payload includes them.
         enrichment = _extract_mt5_enrichment(deal) if mt5_enriched else {}
 
         was_inserted = account_repo.upsert_closed_trade(
@@ -549,6 +548,12 @@ def sync_account_deals(
     account: TradingAccount,
     lookback_days: int | None = None,
 ) -> SyncResult:
+    if account.sync_provider != SyncProvider.headless_mt5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This account does not support broker sync.",
+        )
+
     if not _try_acquire_account_sync_lock(account.id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -556,65 +561,8 @@ def sync_account_deals(
         )
 
     try:
-        from app.domains.accounts.models import SyncProvider
-        if account.sync_provider == SyncProvider.headless_mt5:
-            import anyio
-            return anyio.run(sync_account_deals_mt5, db, account, lookback_days)
+        import anyio
 
-        effective_lookback_days = lookback_days or settings.INITIAL_SYNC_LOOKBACK_DAYS
-        cleanup_floor = datetime.now(timezone.utc) - timedelta(days=effective_lookback_days)
-        if account.last_synced_at is None:
-            from_dt = cleanup_floor
-        else:
-            from_dt = min(account.last_synced_at, cleanup_floor)
-
-        deals = metaapi_service.get_deals(
-            account.meta_account_id,
-            from_dt=from_dt,
-            to_dt=None,
-        )
-
-        filtered_deals = [deal for deal in deals if _is_trade_deal(deal)]
-        if not filtered_deals:
-            logger.warning(
-                (
-                    "Journal sync fetched no qualifying closed trades | account_id=%s "
-                    "fetched_deals=%s from_dt=%s"
-                ),
-                account.id,
-                len(deals),
-                from_dt.isoformat(),
-            )
-            return ingest_closed_deals(db, account=account, deals=[])
-
-        valid_broker_trade_ids = {
-            broker_trade_id
-            for broker_trade_id in (_extract_broker_trade_id(deal) for deal in filtered_deals)
-            if broker_trade_id
-        }
-
-        deleted_count, deleted_dates = account_repo.delete_trades_outside_valid_broker_ids_in_window(
-            db,
-            account_id=account.id,
-            closed_from_utc=from_dt,
-            closed_to_utc_exclusive=None,
-            account_timezone=account.timezone,
-            valid_broker_trade_ids=valid_broker_trade_ids,
-        )
-
-        if deleted_count:
-            logger.info(
-                "Journal cleanup removed stale trades | account_id=%s deleted=%s affected_dates=%s",
-                account.id,
-                deleted_count,
-                len(deleted_dates),
-            )
-
-        return ingest_closed_deals(
-            db,
-            account=account,
-            deals=filtered_deals,
-            extra_touched_dates=deleted_dates,
-        )
+        return anyio.run(sync_account_deals_mt5, db, account, lookback_days)
     finally:
         _release_account_sync_lock(account.id)

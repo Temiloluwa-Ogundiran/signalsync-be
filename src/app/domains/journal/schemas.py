@@ -38,7 +38,7 @@ class JournalTradeResponse(BaseModel):
     net_roi_percent: Decimal | None = None
     created_at: datetime
 
-    # MT5-enriched fields — None for MetaAPI-sourced trades
+    # MT5-enriched fields — None for trades without MT5 metadata
     sl: Optional[Decimal] = None
     tp: Optional[Decimal] = None
     magic_number: Optional[int] = None

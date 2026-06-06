@@ -68,17 +68,6 @@ class Settings(BaseSettings):
     VOICE_SIGNED_URL_TTL_SECONDS: int = 3600
     IMAGE_SIGNED_URL_TTL_SECONDS: int = 3600
 
-    # MetaAPI
-    METAAPI_TOKEN: str = ""
-    METAAPI_VERIFY_SSL: bool = True
-    METAAPI_PROVISIONING_BASE_URL: str = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai"
-    METAAPI_CLIENT_BASE_URL: str = "https://mt-client-api-v1.london.agiliumtrade.ai"
-    METAAPI_ACCOUNT_ENGINE: str = "cloud-g2"
-    METAAPI_ACCOUNT_MAGIC: int = 10001
-    METAAPI_DEALS_TIMEOUT_SECONDS: float = 45.0
-    METAAPI_DEALS_MAX_RETRIES: int = 3
-    METAAPI_DEALS_RETRY_BACKOFF_SECONDS: float = 1.5
-    METAAPI_DEALS_CHUNK_DAYS: int = 7
     INITIAL_SYNC_LOOKBACK_DAYS: int = 14
 
     # Encryption key for broker credential fields (Fernet base64 key)

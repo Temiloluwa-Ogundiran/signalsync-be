@@ -44,7 +44,7 @@ def create_account(
     timezone: str,
     broker_utc_offset: int,
     display_name: Optional[str],
-    sync_provider: SyncProvider = SyncProvider.metaapi,
+    sync_provider: SyncProvider = SyncProvider.headless_mt5,
     id: Optional[uuid.UUID] = None,
 ) -> TradingAccount:
     account = TradingAccount(
@@ -150,7 +150,7 @@ def reactivate_account(
     timezone: str,
     broker_utc_offset: int,
     display_name: Optional[str],
-    sync_provider: SyncProvider = SyncProvider.metaapi,
+    sync_provider: SyncProvider = SyncProvider.headless_mt5,
 ) -> TradingAccount:
     account.meta_account_id = meta_account_id
     account.broker_name = broker_name
@@ -223,6 +223,7 @@ def list_accounts_for_user(db: Session, user_id: uuid.UUID) -> list[TradingAccou
 def list_syncable_accounts(db: Session) -> list[TradingAccount]:
     stmt = select(TradingAccount).where(
         TradingAccount.is_deleted.is_(False),
+        TradingAccount.sync_provider == SyncProvider.headless_mt5,
         TradingAccount.status.in_(
             [
                 TradingAccountStatus.pending_sync,
@@ -466,7 +467,7 @@ def upsert_closed_trade(
     session: TradeSession,
     opened_at: datetime,
     closed_at: datetime,
-    # MT5-enriched fields (optional — None for MetaAPI-sourced trades)
+    # MT5-enriched fields (optional — None for trades without MT5 metadata)
     sl: Optional[Decimal] = None,
     tp: Optional[Decimal] = None,
     magic_number: Optional[int] = None,
@@ -575,7 +576,7 @@ def update_closed_trade(
     session: TradeSession,
     opened_at: datetime,
     closed_at: datetime,
-    # MT5-enriched fields (optional — None for MetaAPI-sourced trades)
+    # MT5-enriched fields (optional — None for trades without MT5 metadata)
     sl: Optional[Decimal] = None,
     tp: Optional[Decimal] = None,
     magic_number: Optional[int] = None,
@@ -600,7 +601,7 @@ def update_closed_trade(
         closed_at=closed_at,
     )
     # Only overwrite MT5 enrichment fields if non-None values are provided,
-    # so a MetaAPI re-sync won't wipe out existing MT5 enrichment data.
+    # so partial updates do not wipe out existing MT5 enrichment data.
     if sl is not None:
         update_values["sl"] = sl
     if tp is not None:
@@ -906,7 +907,7 @@ def get_latest_account_snapshot_balance(
     *,
     account_id: uuid.UUID,
 ) -> Optional[Decimal]:
-    """Most recent persisted account balance (MT5 sync); used when MetaAPI is unavailable."""
+    """Most recent persisted account balance from synced MT5 snapshots."""
     stmt = (
         select(AccountSnapshot)
         .where(AccountSnapshot.account_id == account_id)

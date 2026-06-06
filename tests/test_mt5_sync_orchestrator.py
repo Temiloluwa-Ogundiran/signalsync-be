@@ -16,7 +16,7 @@ import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts import router as accounts_router
-from app.domains.accounts.models import TradingAccountConnectionState
+from app.domains.accounts.models import SyncProvider, TradingAccountConnectionState
 from app.domains.accounts.schemas import AccountResponse
 from app.domains.accounts.mt5_core_client import Mt5CoreClientRateLimited
 from app.domains.accounts import service as account_service
@@ -109,6 +109,30 @@ def test_list_active_mt5_sync_candidates_returns_repo_rows(
 
     assert rows == expected
     db_session.execute.assert_called_once()
+
+
+def test_create_account_defaults_to_headless_mt5(
+    db_session: MagicMock,
+) -> None:
+    account = account_repo.create_account(
+        db_session,
+        user_id=uuid.uuid4(),
+        meta_account_id="MT5:Server:12345",
+        broker_name="Broker",
+        broker_login="12345",
+        broker_server="Server",
+        encrypted_investor_password="encrypted",
+        encrypted_trader_password=None,
+        account_type="live",
+        platform="MT5",
+        currency="USD",
+        timezone="UTC",
+        broker_utc_offset=0,
+        display_name="Primary",
+    )
+
+    assert account.sync_provider == SyncProvider.headless_mt5
+    db_session.flush.assert_called_once()
 
 
 def test_try_acquire_account_sync_lock_returns_database_result(
