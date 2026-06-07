@@ -49,12 +49,9 @@ class Settings(BaseSettings):
     # Mobile deep link scheme (e.g. "synctrades://")
     DEEP_LINK_SCHEME: Optional[str] = None
 
-    # SMTP Email
-    SMTP_SERVER: Optional[str] = None
-    SMTP_PORT: int = 587
-    SMTP_USERNAME: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
-    EMAIL_FROM: Optional[str] = None
+    # Email
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM: str = ""
     EMAIL_FROM_NAME: str = "SyncTrades"
 
     # Supabase Storage — bucket names

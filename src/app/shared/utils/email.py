@@ -1,31 +1,12 @@
-"""
-Email sending utilities using SMTP via fastapi-mail.
-"""
+"""Email sending utilities backed by Resend."""
 
-import asyncio
 import logging
 
-from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
+import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger("synctrades.email")
-
-
-def _get_mail_config() -> ConnectionConfig:
-    """Build fastapi-mail connection config from settings."""
-    return ConnectionConfig(
-        MAIL_USERNAME=settings.SMTP_USERNAME or "",
-        MAIL_PASSWORD=settings.SMTP_PASSWORD or "",
-        MAIL_FROM=settings.EMAIL_FROM or "noreply@synctrades.com",
-        MAIL_PORT=settings.SMTP_PORT,
-        MAIL_SERVER=settings.SMTP_SERVER or "localhost",
-        MAIL_FROM_NAME=settings.EMAIL_FROM_NAME,
-        MAIL_STARTTLS=True,
-        MAIL_SSL_TLS=False,
-        USE_CREDENTIALS=bool(settings.SMTP_USERNAME and settings.SMTP_PASSWORD),
-        VALIDATE_CERTS=True,
-    )
 
 
 def _verification_link(raw_token: str) -> str:
@@ -33,21 +14,18 @@ def _verification_link(raw_token: str) -> str:
     return f"{settings.FRONTEND_URL}/verify-email?token={raw_token}"
 
 
-def send_verification_email(to_email: str, raw_token: str) -> None:
-    """
-    Send an email verification link to the user.
+def _build_from_header() -> str:
+    if not settings.EMAIL_FROM:
+        raise RuntimeError("EMAIL_FROM is not configured.")
+    if settings.EMAIL_FROM_NAME:
+        return f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM}>"
+    return settings.EMAIL_FROM
 
-    Runs the async fastapi-mail send call synchronously so it can be
-    called from regular (non-async) service functions.
-    If SMTP is not configured the link is logged to stdout as a fallback.
-    """
-    if not settings.SMTP_SERVER:
-        logger.warning(
-            "[EMAIL FALLBACK] SMTP not configured. Verification link for %s → %s",
-            to_email,
-            _verification_link(raw_token),
-        )
-        return
+
+def send_verification_email(to_email: str, raw_token: str) -> None:
+    """Send an email verification link to the user through Resend."""
+    if not settings.RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY is not configured.")
 
     link = _verification_link(raw_token)
     html_body = f"""
@@ -74,15 +52,18 @@ def send_verification_email(to_email: str, raw_token: str) -> None:
     </div>
     """
 
-    message = MessageSchema(
-        subject="Verify your SyncTrades email",
-        recipients=[to_email],
-        body=html_body,
-        subtype=MessageType.html,
+    response = httpx.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": _build_from_header(),
+            "to": [to_email],
+            "subject": "Verify your SyncTrades email",
+            "html": html_body,
+        },
+        timeout=15,
     )
-
-    async def _send() -> None:
-        fm = FastMail(_get_mail_config())
-        await fm.send_message(message)
-
-    asyncio.run(_send())
+    response.raise_for_status()
