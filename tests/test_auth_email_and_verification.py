@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 from fastapi import HTTPException, Response
+from pydantic import ValidationError
 from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/test")
@@ -14,7 +15,11 @@ import app.domains.posts.models  # noqa: F401
 import app.domains.streams.models  # noqa: F401
 
 from app.domains.auth import service as auth_service
-from app.domains.auth.schemas import RegisterRequest, ResendVerificationRequest
+from app.domains.auth.schemas import (
+    PASSWORD_POLICY_MESSAGE,
+    RegisterRequest,
+    ResendVerificationRequest,
+)
 from app.shared.utils.email import send_verification_email
 
 
@@ -71,7 +76,7 @@ def test_register_raises_when_email_delivery_fails() -> None:
                     email="user@example.com",
                     username="trader",
                     display_name="Trader",
-                    password="password123",
+                    password="Password123",
                 ),
             )
 
@@ -112,3 +117,26 @@ def test_login_still_blocks_unverified_user() -> None:
 
     assert exc.value.status_code == 403
     assert exc.value.detail == "Please verify your email before logging in."
+
+
+def test_register_request_rejects_weak_password() -> None:
+    with pytest.raises(ValidationError) as exc:
+        RegisterRequest(
+            email="user@example.com",
+            username="trader",
+            display_name="Trader",
+            password="password",
+        )
+
+    assert PASSWORD_POLICY_MESSAGE in str(exc.value)
+
+
+def test_register_request_accepts_strong_password() -> None:
+    payload = RegisterRequest(
+        email="user@example.com",
+        username="trader",
+        display_name="Trader",
+        password="Password123",
+    )
+
+    assert payload.password == "Password123"
