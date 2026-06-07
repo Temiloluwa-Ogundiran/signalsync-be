@@ -1929,7 +1929,7 @@ def get_analytics_dashboard(
 
     recent_sorted = sorted(trades, key=lambda item: (item.closed_at, item.id), reverse=True)
     recent_models = [
-        _build_trade_response(trade, account_timezone=account.timezone)
+        _build_trade_response(trade, account_timezone=account_timezone)
         for trade in recent_sorted[:recent_limit]
     ]
     recent_trades = JournalTradeListResponse(items=recent_models, next_cursor=None)

@@ -378,6 +378,69 @@ def test_journal_trade_response_includes_backend_trading_date(
     assert items[0].trading_date.isoformat() == "2026-05-20"
 
 
+@patch("app.domains.journal.service.journal_repo")
+@patch("app.domains.journal.service._get_ready_accounts_for_user")
+@patch("app.domains.journal.service._estimate_starting_balance")
+def test_dashboard_recent_trades_works_for_all_accounts_without_single_account_context(
+    mock_estimate_starting_balance,
+    mock_get_ready_accounts_for_user,
+    mock_journal_repo,
+    db_session: MagicMock,
+) -> None:
+    account_one = MagicMock(id=uuid.uuid4(), timezone="Africa/Lagos")
+    account_two = MagicMock(id=uuid.uuid4(), timezone="UTC")
+    mock_get_ready_accounts_for_user.return_value = [account_one, account_two]
+    mock_estimate_starting_balance.side_effect = [Decimal("1000.00"), Decimal("2000.00")]
+
+    trade = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id=account_one.id,
+        broker_trade_id="100",
+        symbol="BTCUSD",
+        direction="buy",
+        open_price=Decimal("61346.05"),
+        close_price=Decimal("61296.05"),
+        volume=Decimal("0.50"),
+        profit=Decimal("-10.33"),
+        commission=Decimal("0.00"),
+        swap=Decimal("0.00"),
+        net_profit=Decimal("-10.33"),
+        duration_seconds=1200,
+        session="london",
+        opened_at=datetime(2026, 6, 7, 1, 20, tzinfo=timezone.utc),
+        closed_at=datetime(2026, 6, 7, 1, 40, tzinfo=timezone.utc),
+        is_manual=False,
+        is_missed=False,
+        balance_before_trade=None,
+        net_roi_percent=None,
+        created_at=datetime(2026, 6, 7, 1, 40, tzinfo=timezone.utc),
+        sl=None,
+        tp=None,
+        magic_number=None,
+        position_id="1001",
+        trade_source=None,
+        mfe=None,
+        mae=None,
+    )
+
+    mock_journal_repo.list_trades_filtered_multi.return_value = [trade]
+
+    dashboard = journal_service.get_analytics_dashboard(
+        db_session,
+        account_id=None,
+        user_id=uuid.uuid4(),
+        from_date=None,
+        to_date=None,
+        recent_limit=8,
+        time_basis="close",
+        include_manual=True,
+    )
+
+    assert len(dashboard.recent_trades.items) == 1
+    assert dashboard.recent_trades.items[0].symbol == "BTCUSD"
+    assert dashboard.recent_trades.items[0].trading_date.isoformat() == "2026-06-07"
+
+
 @pytest.mark.anyio
 @patch("app.shared.utils.encryption.decrypt_secret", return_value="secret")
 @patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
