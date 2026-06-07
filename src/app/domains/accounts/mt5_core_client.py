@@ -211,6 +211,40 @@ class Mt5CoreClient:
         job_id = data["job_id"]
         return await self._poll_job(job_id)
 
+    async def get_open_positions(
+        self,
+        *,
+        credentials: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = {
+            "login": str(credentials["login"]),
+            "password": str(credentials["password"]),
+            "server": str(credentials["server"]),
+            "broker": credentials.get("broker"),
+        }
+
+        async with self._new_client() as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/account/positions",
+                    json=payload,
+                )
+                if response.is_error:
+                    self._raise_submit_error(response)
+                data = response.json()
+            except Mt5CoreClientHttpError:
+                raise
+            except Exception as e:
+                raise Mt5CoreClientError(
+                    f"Failed to submit open positions read job: {e}"
+                ) from e
+
+        job_id = data["job_id"]
+        result = await self._poll_job(job_id)
+        if isinstance(result, dict) and isinstance(result.get("data"), dict):
+            return result["data"]
+        return result
+
     async def _poll_job(self, job_id: str) -> dict[str, Any]:
         """Poll the status of a job until succeeded or failed.
 

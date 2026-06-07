@@ -70,6 +70,26 @@ class JournalTradeListResponse(BaseModel):
     next_cursor: Optional[uuid.UUID] = None
 
 
+class JournalOpenPositionResponse(BaseModel):
+    position_id: str
+    symbol: str
+    side: str
+    volume: float
+    floating_profit: float
+    opened_at: Optional[datetime] = None
+    open_price: float
+    current_price: float
+    sl: Optional[float] = None
+    tp: Optional[float] = None
+    magic: Optional[int] = None
+    comment: Optional[str] = None
+
+
+class JournalOpenPositionListResponse(BaseModel):
+    as_of: Optional[datetime] = None
+    items: list[JournalOpenPositionResponse]
+
+
 # ---------------------------------------------------------------------------
 # Message / Attachment schemas
 # ---------------------------------------------------------------------------

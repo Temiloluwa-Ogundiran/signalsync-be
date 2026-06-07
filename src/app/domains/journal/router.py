@@ -28,6 +28,7 @@ from app.domains.journal.schemas import (
     DailyJournalResponse,
     JournalMessageResponse,
     JournalMessageUpdateRequest,
+    JournalOpenPositionListResponse,
     JournalReviewedAtResponse,
     JournalTemplateCreateRequest,
     JournalTemplateResponse,
@@ -84,6 +85,21 @@ def list_journal_trades(
     return JournalTradeListResponse(
         items=trades,
         next_cursor=trades[-1].id if has_more else None,
+    )
+
+
+@trades_router.get("/positions", response_model=JournalOpenPositionListResponse)
+async def list_journal_open_positions(
+    account_id: uuid.UUID = Query(...),
+    limit: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> JournalOpenPositionListResponse:
+    return await journal_service.list_account_open_positions(
+        db,
+        current_user=current_user,
+        account_id=account_id,
+        limit=limit,
     )
 
 

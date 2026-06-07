@@ -42,6 +42,8 @@ from app.domains.journal.schemas import (
     JournalAttachmentResponse,
     JournalReviewedAtResponse,
     JournalMessageResponse,
+    JournalOpenPositionListResponse,
+    JournalOpenPositionResponse,
     JournalTemplateCreateRequest,
     JournalTradeListResponse,
     JournalTradeResponse,
@@ -699,6 +701,33 @@ def _build_trade_response(trade, *, account_timezone: str) -> JournalTradeRespon
     return model
 
 
+def _parse_optional_iso_datetime(value) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return None
+
+
+def _build_open_position_response(position: dict) -> JournalOpenPositionResponse:
+    return JournalOpenPositionResponse(
+        position_id=str(position.get("position_id") or ""),
+        symbol=str(position.get("symbol") or ""),
+        side=str(position.get("side") or "buy"),
+        volume=float(position.get("volume") or 0.0),
+        floating_profit=float(position.get("profit") or 0.0),
+        opened_at=_parse_optional_iso_datetime(position.get("opened_at")),
+        open_price=float(position.get("price_open") or 0.0),
+        current_price=float(position.get("price_current") or 0.0),
+        sl=float(position["sl"]) if position.get("sl") not in (None, "") else None,
+        tp=float(position["tp"]) if position.get("tp") not in (None, "") else None,
+        magic=int(position["magic"]) if position.get("magic") not in (None, "") else None,
+        comment=str(position.get("comment") or "") or None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Trade list
 # ---------------------------------------------------------------------------
@@ -801,6 +830,90 @@ def list_account_trades(
         model.net_roi_percent = roi
 
     return base_models
+
+
+async def list_account_open_positions(
+    db: Session,
+    *,
+    current_user: User,
+    account_id: uuid.UUID,
+    limit: int = 50,
+) -> JournalOpenPositionListResponse:
+    account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
+        )
+
+    if account.sync_provider != SyncProvider.headless_mt5:
+        return JournalOpenPositionListResponse(as_of=None, items=[])
+
+    from app.domains.accounts.mt5_core_client import (
+        Mt5CoreClient,
+        Mt5CoreClientBackpressure,
+        Mt5CoreClientError,
+        Mt5CoreClientRateLimited,
+        Mt5CoreClientTimeout,
+    )
+    from app.shared.utils.encryption import decrypt_secret
+
+    try:
+        investor_password = decrypt_secret(account.encrypted_investor_password)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to decrypt account credentials.",
+        ) from exc
+
+    client = Mt5CoreClient()
+    try:
+        snapshot = await client.get_open_positions(
+            credentials={
+                "login": account.broker_login,
+                "password": investor_password,
+                "server": account.broker_server,
+                "broker": account.broker_name,
+            }
+        )
+    except Mt5CoreClientRateLimited as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": exc.code, "message": str(exc)},
+            headers={"Retry-After": str(exc.retry_after_seconds)}
+            if exc.retry_after_seconds is not None
+            else None,
+        ) from exc
+    except Mt5CoreClientBackpressure as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": exc.code, "message": str(exc)},
+            headers={"Retry-After": str(exc.retry_after_seconds)}
+            if exc.retry_after_seconds is not None
+            else None,
+        ) from exc
+    except Mt5CoreClientTimeout as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "MT5_CORE_TIMEOUT", "message": str(exc)},
+        ) from exc
+    except Mt5CoreClientError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "MT5_CORE_ERROR", "message": str(exc)},
+        ) from exc
+
+    positions = [
+        _build_open_position_response(item)
+        for item in (snapshot.get("positions") or [])
+        if str(item.get("position_id") or "").strip()
+    ]
+    positions.sort(
+        key=lambda item: (item.opened_at or datetime.min.replace(tzinfo=timezone.utc), item.position_id),
+        reverse=True,
+    )
+
+    as_of = _parse_optional_iso_datetime(snapshot.get("as_of"))
+    return JournalOpenPositionListResponse(as_of=as_of, items=positions[:limit])
 
 
 def _estimate_starting_balance(db: Session, *, account: TradingAccount) -> Decimal:

@@ -167,3 +167,42 @@ async def test_submit_history_sync_raises_rate_limited_error(client: Mt5CoreClie
         )
 
     assert exc.value.retry_after_seconds == 3
+
+
+@pytest.mark.anyio
+async def test_get_open_positions_success(client: Mt5CoreClient, httpx_mock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/account/positions",
+        json={"job_id": "positions-123", "status": "queued"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/positions-123",
+        json={
+            "job_id": "positions-123",
+            "job_type": "refresh_positions_snapshot",
+            "status": "succeeded",
+            "result": {
+                "operation": "refresh_positions_snapshot",
+                "data": {
+                    "as_of": "2026-06-07T02:00:00Z",
+                    "positions": [
+                        {
+                            "position_id": "1001",
+                            "symbol": "BTCUSD",
+                            "side": "buy",
+                            "profit": -10.33,
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    result = await client.get_open_positions(
+        credentials={"login": "10001", "password": "p", "server": "s"},
+    )
+
+    assert result["as_of"] == "2026-06-07T02:00:00Z"
+    assert result["positions"][0]["position_id"] == "1001"

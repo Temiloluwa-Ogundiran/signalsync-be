@@ -376,3 +376,59 @@ def test_journal_trade_response_includes_backend_trading_date(
     )
 
     assert items[0].trading_date.isoformat() == "2026-05-20"
+
+
+@pytest.mark.anyio
+@patch("app.shared.utils.encryption.decrypt_secret", return_value="secret")
+@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
+@patch("app.domains.journal.service.account_repo")
+async def test_list_account_open_positions_returns_live_mt5_snapshot(
+    mock_account_repo,
+    mock_mt5_client_cls,
+    _mock_decrypt_secret,
+    db_session: MagicMock,
+) -> None:
+    current_user = MagicMock(id=uuid.uuid4())
+    account = MagicMock(
+        id=uuid.uuid4(),
+        broker_login="123456",
+        broker_server="Demo-Server",
+        broker_name="XM",
+        encrypted_investor_password="encrypted",
+        sync_provider=SyncProvider.headless_mt5,
+    )
+    mock_account_repo.get_account_by_id_for_user.return_value = account
+    mock_mt5_client = mock_mt5_client_cls.return_value
+    mock_mt5_client.get_open_positions = AsyncMock(
+        return_value={
+            "as_of": "2026-06-07T03:00:00Z",
+            "positions": [
+                {
+                    "position_id": "1001",
+                    "symbol": "BTCUSD",
+                    "side": "buy",
+                    "volume": 0.5,
+                    "profit": -10.33,
+                    "opened_at": "2026-06-07T01:20:00Z",
+                    "price_open": 61346.05,
+                    "price_current": 61296.05,
+                    "sl": 0.0,
+                    "tp": 0.0,
+                    "magic": 123,
+                    "comment": "demo",
+                }
+            ],
+        }
+    )
+
+    result = await journal_service.list_account_open_positions(
+        db_session,
+        current_user=current_user,
+        account_id=account.id,
+        limit=10,
+    )
+
+    assert result.as_of.isoformat() == "2026-06-07T03:00:00+00:00"
+    assert result.items[0].position_id == "1001"
+    assert result.items[0].floating_profit == -10.33
+    assert result.items[0].opened_at.isoformat() == "2026-06-07T01:20:00+00:00"
