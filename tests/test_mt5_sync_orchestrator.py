@@ -217,7 +217,11 @@ async def test_orchestrate_mt5_sync_keeps_account_connected_when_rate_limited(
     from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
 
     account = MagicMock()
+    account.id = uuid.uuid4()
+    account.user_id = uuid.uuid4()
     account.connection_state = TradingAccountConnectionState.ready
+    account.next_sync_not_before = None
+    mock_account_repo.list_recent_sync_attempts_for_user.return_value = []
     mock_sync_account_deals_mt5.side_effect = Mt5CoreClientRateLimited(
         "RATE_LIMITED",
         "Submission rate limit exceeded. Please retry shortly.",
@@ -298,6 +302,145 @@ async def test_manual_sync_uses_shared_orchestrator(
     assert result["status"] == "rate_limited"
     assert result["retry_after_seconds"] == 60
     mock_orchestrate_mt5_sync.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.sync_orchestrator.is_account_sync_active", return_value=True)
+@patch("app.domains.accounts.sync_orchestrator.account_repo")
+async def test_orchestrate_mt5_sync_returns_in_progress_when_account_lock_is_active(
+    mock_account_repo,
+    _mock_is_account_sync_active,
+    db_session: MagicMock,
+) -> None:
+    from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
+
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    account.user_id = uuid.uuid4()
+    account.next_sync_not_before = None
+
+    result = await orchestrate_mt5_sync(
+        db_session,
+        account=account,
+        trigger="manual",
+    )
+
+    assert result.outcome == "in_progress"
+    assert result.retry_after_seconds == 10
+    mock_account_repo.set_sync_attempt_started.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.sync_orchestrator.is_account_sync_active", return_value=False)
+@patch("app.domains.accounts.sync_orchestrator.account_repo")
+async def test_orchestrate_mt5_sync_returns_cooldown_for_manual_sync_during_account_cooldown(
+    mock_account_repo,
+    _mock_is_account_sync_active,
+    db_session: MagicMock,
+) -> None:
+    from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
+
+    attempted_at = datetime(2026, 6, 7, 8, 0, tzinfo=timezone.utc)
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    account.user_id = uuid.uuid4()
+    account.next_sync_not_before = datetime(2026, 6, 7, 8, 4, tzinfo=timezone.utc)
+
+    with patch(
+        "app.domains.accounts.sync_orchestrator.datetime",
+        wraps=datetime,
+    ) as mock_datetime:
+        mock_datetime.now.return_value = attempted_at
+        result = await orchestrate_mt5_sync(
+            db_session,
+            account=account,
+            trigger="manual",
+        )
+
+    assert result.outcome == "cooldown"
+    assert result.retry_after_seconds == 240
+    mock_account_repo.list_recent_sync_attempts_for_user.assert_not_called()
+    mock_account_repo.set_sync_attempt_started.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.sync_orchestrator.is_account_sync_active", return_value=False)
+@patch("app.domains.accounts.sync_orchestrator.account_repo")
+async def test_orchestrate_mt5_sync_returns_user_burst_rate_limit_before_mt5_call(
+    mock_account_repo,
+    _mock_is_account_sync_active,
+    db_session: MagicMock,
+) -> None:
+    from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
+
+    attempted_at = datetime(2026, 6, 7, 8, 0, 50, tzinfo=timezone.utc)
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    account.user_id = uuid.uuid4()
+    account.next_sync_not_before = None
+    mock_account_repo.list_recent_sync_attempts_for_user.return_value = [
+        datetime(2026, 6, 7, 8, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 6, 7, 8, 0, 10, tzinfo=timezone.utc),
+        datetime(2026, 6, 7, 8, 0, 20, tzinfo=timezone.utc),
+        datetime(2026, 6, 7, 8, 0, 30, tzinfo=timezone.utc),
+        datetime(2026, 6, 7, 8, 0, 40, tzinfo=timezone.utc),
+    ]
+
+    with patch(
+        "app.domains.accounts.sync_orchestrator.datetime",
+        wraps=datetime,
+    ) as mock_datetime:
+        mock_datetime.now.return_value = attempted_at
+        result = await orchestrate_mt5_sync(
+            db_session,
+            account=account,
+            trigger="manual",
+        )
+
+    assert result.outcome == "rate_limited"
+    assert result.retry_after_seconds == 10
+    mock_account_repo.set_sync_attempt_started.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.sync_orchestrator.is_account_sync_active", return_value=False)
+@patch("app.domains.accounts.sync_orchestrator.account_repo")
+@patch("app.domains.accounts.sync_orchestrator.sync_account_deals_mt5")
+async def test_orchestrate_mt5_sync_sets_manual_cooldown_after_success(
+    mock_sync_account_deals_mt5,
+    mock_account_repo,
+    _mock_is_account_sync_active,
+    db_session: MagicMock,
+) -> None:
+    from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
+
+    attempted_at = datetime(2026, 6, 7, 8, 0, 0, tzinfo=timezone.utc)
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    account.user_id = uuid.uuid4()
+    account.next_sync_not_before = None
+    mock_account_repo.list_recent_sync_attempts_for_user.return_value = []
+    mock_sync_account_deals_mt5.return_value = SimpleNamespace(
+        inserted_trades=1,
+        touched_trading_dates=1,
+    )
+
+    with patch(
+        "app.domains.accounts.sync_orchestrator.datetime",
+        wraps=datetime,
+    ) as mock_datetime:
+        mock_datetime.now.return_value = attempted_at
+        result = await orchestrate_mt5_sync(
+            db_session,
+            account=account,
+            trigger="manual",
+        )
+
+    assert result.outcome == "success"
+    mark_kwargs = mock_account_repo.mark_sync_success.call_args.kwargs
+    assert mark_kwargs["next_sync_not_before"] == datetime(
+        2026, 6, 7, 8, 5, 0, tzinfo=timezone.utc
+    )
 
 
 @patch("app.domains.accounts.service.account_repo")

@@ -63,6 +63,11 @@ def _release_account_sync_lock(account_id) -> None:
         _active_sync_accounts.discard(account_id)
 
 
+def is_account_sync_active(account_id) -> bool:
+    with _sync_guard:
+        return account_id in _active_sync_accounts
+
+
 def _as_decimal(value: Any) -> Decimal:
     if value is None:
         return Decimal("0")

@@ -299,10 +299,11 @@ def mark_sync_success(
     *,
     account: TradingAccount,
     synced_at: datetime,
+    next_sync_not_before: Optional[datetime] = None,
 ) -> None:
     account.last_synced_at = synced_at
     account.last_sync_attempted_at = synced_at
-    account.next_sync_not_before = None
+    account.next_sync_not_before = next_sync_not_before
     account.last_sync_outcome = "success"
     account.consecutive_sync_failures = 0
     account.status = TradingAccountStatus.synced
@@ -348,6 +349,29 @@ def set_account_sync_error(
     account.status = TradingAccountStatus.error
     account.sync_error_message = message
     db.flush()
+
+
+def list_recent_sync_attempts_for_user(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    since: datetime,
+) -> list[datetime]:
+    stmt = (
+        select(TradingAccount.last_sync_attempted_at)
+        .where(
+            TradingAccount.user_id == user_id,
+            TradingAccount.is_deleted.is_(False),
+            TradingAccount.last_sync_attempted_at.is_not(None),
+            TradingAccount.last_sync_attempted_at >= since,
+        )
+        .order_by(TradingAccount.last_sync_attempted_at.asc())
+    )
+    return [
+        attempted_at
+        for attempted_at in db.execute(stmt).scalars().all()
+        if attempted_at is not None
+    ]
 
 
 def set_account_sync_warning(
