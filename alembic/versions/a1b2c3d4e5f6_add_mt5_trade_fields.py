@@ -24,6 +24,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Add MT5-specific fields to trades and trading_accounts tables."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    trade_columns = {
+        column["name"] for column in inspector.get_columns("trades")
+    }
+    account_columns = {
+        column["name"] for column in inspector.get_columns("trading_accounts")
+    }
+    trade_indexes = {
+        index["name"] for index in inspector.get_indexes("trades")
+    }
 
     # Create new enum types safely (idempotent).
     op.execute("""
@@ -43,68 +54,78 @@ def upgrade() -> None:
     """)
 
     # --- trades table ---
-    op.add_column(
-        "trades",
-        sa.Column("sl", sa.Numeric(18, 5), nullable=True, comment="Initial stop-loss price level"),
-    )
-    op.add_column(
-        "trades",
-        sa.Column("tp", sa.Numeric(18, 5), nullable=True, comment="Take-profit price level"),
-    )
-    op.add_column(
-        "trades",
-        sa.Column("magic_number", sa.Integer(), nullable=True, comment="MT5 magic number (0=manual, >0=EA)"),
-    )
-    op.add_column(
-        "trades",
-        sa.Column(
-            "position_id",
-            sa.String(64),
-            nullable=True,
-            comment="Broker position ID for grouping partial closes",
-        ),
-    )
-    op.add_column(
-        "trades",
-        sa.Column(
-            "trade_source",
-            sa.Enum("personal", "copied", name="tradesourceenum", create_type=False),
-            nullable=True,
-            comment="Trade origin: personal or copied",
-        ),
-    )
-    op.add_column(
-        "trades",
-        sa.Column("mfe", sa.Numeric(18, 5), nullable=True, comment="Maximum Favorable Excursion (highest high)"),
-    )
-    op.add_column(
-        "trades",
-        sa.Column("mae", sa.Numeric(18, 5), nullable=True, comment="Maximum Adverse Excursion (lowest low)"),
-    )
+    if "sl" not in trade_columns:
+        op.add_column(
+            "trades",
+            sa.Column("sl", sa.Numeric(18, 5), nullable=True, comment="Initial stop-loss price level"),
+        )
+    if "tp" not in trade_columns:
+        op.add_column(
+            "trades",
+            sa.Column("tp", sa.Numeric(18, 5), nullable=True, comment="Take-profit price level"),
+        )
+    if "magic_number" not in trade_columns:
+        op.add_column(
+            "trades",
+            sa.Column("magic_number", sa.Integer(), nullable=True, comment="MT5 magic number (0=manual, >0=EA)"),
+        )
+    if "position_id" not in trade_columns:
+        op.add_column(
+            "trades",
+            sa.Column(
+                "position_id",
+                sa.String(64),
+                nullable=True,
+                comment="Broker position ID for grouping partial closes",
+            ),
+        )
+    if "trade_source" not in trade_columns:
+        op.add_column(
+            "trades",
+            sa.Column(
+                "trade_source",
+                sa.Enum("personal", "copied", name="tradesourceenum", create_type=False),
+                nullable=True,
+                comment="Trade origin: personal or copied",
+            ),
+        )
+    if "mfe" not in trade_columns:
+        op.add_column(
+            "trades",
+            sa.Column("mfe", sa.Numeric(18, 5), nullable=True, comment="Maximum Favorable Excursion (highest high)"),
+        )
+    if "mae" not in trade_columns:
+        op.add_column(
+            "trades",
+            sa.Column("mae", sa.Numeric(18, 5), nullable=True, comment="Maximum Adverse Excursion (lowest low)"),
+        )
 
     # Index on position_id for grouping queries.
-    op.create_index("ix_trades_position_id", "trades", ["position_id"], unique=False)
+    if "ix_trades_position_id" not in trade_indexes:
+        op.create_index("ix_trades_position_id", "trades", ["position_id"], unique=False)
 
     # --- trading_accounts table ---
-    op.add_column(
-        "trading_accounts",
-        sa.Column(
-            "sync_provider",
-            sa.Enum("metaapi", "headless_mt5", name="syncproviderenum", create_type=False),
-            nullable=False,
-            server_default="metaapi",
-            comment="Sync provider: metaapi (default) or headless_mt5",
-        ),
-    )
-    op.add_column(
-        "trading_accounts",
-        sa.Column(
-            "copy_magic_numbers",
-            postgresql.ARRAY(sa.Integer()),
-            nullable=True,
-            comment="MT5 magic numbers belonging to copy-trading subscriptions",
-        ),
-    )
+    if "sync_provider" not in account_columns:
+        op.add_column(
+            "trading_accounts",
+            sa.Column(
+                "sync_provider",
+                sa.Enum("metaapi", "headless_mt5", name="syncproviderenum", create_type=False),
+                nullable=False,
+                server_default="metaapi",
+                comment="Sync provider: metaapi (default) or headless_mt5",
+            ),
+        )
+    if "copy_magic_numbers" not in account_columns:
+        op.add_column(
+            "trading_accounts",
+            sa.Column(
+                "copy_magic_numbers",
+                postgresql.ARRAY(sa.Integer()),
+                nullable=True,
+                comment="MT5 magic numbers belonging to copy-trading subscriptions",
+            ),
+        )
 
 
 def downgrade() -> None:
