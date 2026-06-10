@@ -19,6 +19,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    account_columns = {
+        column["name"] for column in inspector.get_columns("trading_accounts")
+    }
+
     op.execute(
         """
         DO $$ BEGIN
@@ -35,40 +41,44 @@ def upgrade() -> None:
         """
     )
 
-    op.add_column(
-        "trading_accounts",
-        sa.Column(
-            "connection_state",
-            postgresql.ENUM(
-                "pending_verification",
-                "verification_failed",
-                "bootstrapping",
-                "ready",
-                "bootstrap_failed",
-                name="tradingaccountconnectionstateenum",
-                create_type=False,
+    if "connection_state" not in account_columns:
+        op.add_column(
+            "trading_accounts",
+            sa.Column(
+                "connection_state",
+                postgresql.ENUM(
+                    "pending_verification",
+                    "verification_failed",
+                    "bootstrapping",
+                    "ready",
+                    "bootstrap_failed",
+                    name="tradingaccountconnectionstateenum",
+                    create_type=False,
+                ),
+                nullable=False,
+                server_default="ready",
             ),
-            nullable=False,
-            server_default="ready",
-        ),
-    )
-    op.add_column(
-        "trading_accounts",
-        sa.Column(
-            "is_data_ready_for_stats",
-            sa.Boolean(),
-            nullable=False,
-            server_default=sa.text("true"),
-        ),
-    )
-    op.add_column(
-        "trading_accounts",
-        sa.Column("last_bootstrap_synced_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "trading_accounts",
-        sa.Column("bootstrap_error_message", sa.String(), nullable=True),
-    )
+        )
+    if "is_data_ready_for_stats" not in account_columns:
+        op.add_column(
+            "trading_accounts",
+            sa.Column(
+                "is_data_ready_for_stats",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.text("true"),
+            ),
+        )
+    if "last_bootstrap_synced_at" not in account_columns:
+        op.add_column(
+            "trading_accounts",
+            sa.Column("last_bootstrap_synced_at", sa.DateTime(timezone=True), nullable=True),
+        )
+    if "bootstrap_error_message" not in account_columns:
+        op.add_column(
+            "trading_accounts",
+            sa.Column("bootstrap_error_message", sa.String(), nullable=True),
+        )
 
     op.alter_column("trading_accounts", "connection_state", server_default=None)
     op.alter_column("trading_accounts", "is_data_ready_for_stats", server_default=None)
