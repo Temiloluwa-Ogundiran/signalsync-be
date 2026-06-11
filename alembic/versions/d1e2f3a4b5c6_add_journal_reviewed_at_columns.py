@@ -18,14 +18,25 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "daily_journals",
-        sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "trade_journals",
-        sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    daily_journal_columns = {
+        column["name"] for column in inspector.get_columns("daily_journals")
+    }
+    trade_journal_columns = {
+        column["name"] for column in inspector.get_columns("trade_journals")
+    }
+
+    if "reviewed_at" not in daily_journal_columns:
+        op.add_column(
+            "daily_journals",
+            sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
+        )
+    if "reviewed_at" not in trade_journal_columns:
+        op.add_column(
+            "trade_journals",
+            sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
+        )
 
 
 def downgrade() -> None:
