@@ -140,3 +140,87 @@ def test_register_request_accepts_strong_password() -> None:
     )
 
     assert payload.password == "Password123"
+
+
+def test_verify_email_success() -> None:
+    from datetime import datetime, timezone, timedelta
+    db = MagicMock()
+    token = MagicMock()
+    token.user_id = uuid.uuid4()
+    token.is_revoked = False
+    token.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    
+    user = MagicMock()
+    user.is_email_verified = False
+    
+    db.execute.return_value.scalar_one_or_none.return_value = token
+    
+    with (
+        patch("app.domains.auth.service.user_repo.get_by_id", return_value=user),
+        patch("app.domains.auth.service.token_repo.revoke") as revoke_mock,
+    ):
+        res = auth_service.verify_email(db, "raw-token")
+        
+    assert res.message == "Email verified successfully."
+    assert user.is_email_verified is True
+    revoke_mock.assert_called_once_with(db, token)
+    db.commit.assert_called_once()
+
+
+def test_verify_email_idempotent_success() -> None:
+    from datetime import datetime, timezone, timedelta
+    db = MagicMock()
+    token = MagicMock()
+    token.user_id = uuid.uuid4()
+    token.is_revoked = True
+    token.expires_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    
+    user = MagicMock()
+    user.is_email_verified = True
+    
+    db.execute.return_value.scalar_one_or_none.return_value = token
+    
+    with (
+        patch("app.domains.auth.service.user_repo.get_by_id", return_value=user),
+        patch("app.domains.auth.service.token_repo.revoke") as revoke_mock,
+    ):
+        res = auth_service.verify_email(db, "raw-token")
+        
+    assert res.message == "Email is already verified."
+    revoke_mock.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_verify_email_token_expired_fails() -> None:
+    from datetime import datetime, timezone, timedelta
+    db = MagicMock()
+    token = MagicMock()
+    token.user_id = uuid.uuid4()
+    token.is_revoked = False
+    token.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    
+    user = MagicMock()
+    user.is_email_verified = False
+    
+    db.execute.return_value.scalar_one_or_none.return_value = token
+    
+    with (
+        patch("app.domains.auth.service.user_repo.get_by_id", return_value=user),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            auth_service.verify_email(db, "raw-token")
+            
+    assert exc.value.status_code == 400
+    assert "expired" in exc.value.detail
+
+
+def test_verify_email_token_not_found_fails() -> None:
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = None
+    
+    with pytest.raises(HTTPException) as exc:
+        auth_service.verify_email(db, "non-existent-token")
+        
+    assert exc.value.status_code == 400
+    assert "Invalid or expired" in exc.value.detail
+
