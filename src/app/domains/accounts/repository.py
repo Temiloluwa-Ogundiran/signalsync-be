@@ -21,7 +21,6 @@ from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingAccountStatus,
 )
-from app.domains.users.models import User
 from app.shared.utils.timezone import classify_session
 
 # ---------------------------------------------------------------------------
@@ -220,61 +219,6 @@ def list_accounts_for_user(db: Session, user_id: uuid.UUID) -> list[TradingAccou
     return list(db.execute(stmt).scalars().all())
 
 
-def list_syncable_accounts(db: Session) -> list[TradingAccount]:
-    stmt = select(TradingAccount).where(
-        TradingAccount.is_deleted.is_(False),
-        TradingAccount.sync_provider == SyncProvider.headless_mt5,
-        TradingAccount.status.in_(
-            [
-                TradingAccountStatus.pending_sync,
-                TradingAccountStatus.synced,
-                TradingAccountStatus.error,
-            ]
-        ),
-    )
-    return list(db.execute(stmt).scalars().all())
-
-
-def list_active_mt5_sync_candidates(
-    db: Session,
-    *,
-    active_after: datetime,
-    now: datetime,
-) -> list[TradingAccount]:
-    stmt = (
-        select(TradingAccount)
-        .join(User, User.id == TradingAccount.user_id)
-        .where(
-            TradingAccount.is_deleted.is_(False),
-            TradingAccount.sync_provider == SyncProvider.headless_mt5,
-            TradingAccount.connection_state.in_(
-                [
-                    TradingAccountConnectionState.ready,
-                    TradingAccountConnectionState.bootstrap_failed,
-                ]
-            ),
-            TradingAccount.status.in_(
-                [
-                    TradingAccountStatus.pending_sync,
-                    TradingAccountStatus.synced,
-                    TradingAccountStatus.error,
-                ]
-            ),
-            User.last_active_at.is_not(None),
-            User.last_active_at >= active_after,
-            (
-                TradingAccount.next_sync_not_before.is_(None)
-                | (TradingAccount.next_sync_not_before <= now)
-            ),
-        )
-        .order_by(
-            TradingAccount.last_synced_at.asc().nullsfirst(),
-            TradingAccount.created_at.asc(),
-        )
-    )
-    return list(db.execute(stmt).scalars().all())
-
-
 def set_account_last_synced_at(
     db: Session, account: TradingAccount, synced_at: datetime
 ) -> None:
@@ -430,20 +374,8 @@ def soft_disconnect_account(db: Session, account: TradingAccount) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sync lock (advisory lock to prevent overlapping sync cycles)
+# Sync lock (per-account advisory lock to prevent overlapping syncs)
 # ---------------------------------------------------------------------------
-
-_JOURNAL_SYNC_CYCLE_LOCK_KEY = 91324051
-
-
-def try_acquire_cycle_lock(db: Session) -> bool:
-    stmt = text("SELECT pg_try_advisory_lock(:lock_key)")
-    return bool(db.execute(stmt, {"lock_key": _JOURNAL_SYNC_CYCLE_LOCK_KEY}).scalar())
-
-
-def release_cycle_lock(db: Session) -> None:
-    stmt = text("SELECT pg_advisory_unlock(:lock_key)")
-    db.execute(stmt, {"lock_key": _JOURNAL_SYNC_CYCLE_LOCK_KEY})
 
 
 def try_acquire_account_sync_lock(db: Session, account_id: uuid.UUID) -> bool:
@@ -949,18 +881,26 @@ def get_latest_snapshots_for_accounts(
     *,
     account_ids: list[uuid.UUID],
 ) -> dict[uuid.UUID, AccountSnapshot]:
-    snapshots: dict[uuid.UUID, AccountSnapshot] = {}
-    for account_id in account_ids:
-        stmt = (
-            select(AccountSnapshot)
-            .where(AccountSnapshot.account_id == account_id)
-            .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
-            .limit(1)
+    if not account_ids:
+        return {}
+
+    # Single query using Postgres DISTINCT ON to fetch the latest snapshot per
+    # account, instead of one query per account (N+1). The leading ORDER BY column
+    # must match the DISTINCT ON expression.
+    stmt = (
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id.in_(account_ids))
+        .order_by(
+            AccountSnapshot.account_id,
+            AccountSnapshot.snapshot_date.desc(),
+            AccountSnapshot.id.desc(),
         )
-        snapshot = db.execute(stmt).scalar_one_or_none()
-        if snapshot is not None:
-            snapshots[account_id] = snapshot
-    return snapshots
+        .distinct(AccountSnapshot.account_id)
+    )
+    return {
+        snapshot.account_id: snapshot
+        for snapshot in db.execute(stmt).scalars().all()
+    }
 
 
 # ---------------------------------------------------------------------------

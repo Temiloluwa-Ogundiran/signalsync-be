@@ -8,12 +8,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
+    environment: &api_env
       APP_NAME: ${APP_NAME:-SyncTrades API}
       DEBUG: ${DEBUG:-false}
       IS_PRODUCTION: ${IS_PRODUCTION:-true}
       PORT: ${PORT:-8000}
-      AUTO_SEED_ON_STARTUP: ${AUTO_SEED_ON_STARTUP:-true}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-}
+      AUTO_SEED_ON_STARTUP: ${AUTO_SEED_ON_STARTUP:-false}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       DATABASE_URL: ${DATABASE_URL:-postgresql://synctrades:synctrades@postgres:5432/synctrades}
       SECRET_KEY: ${SECRET_KEY:-change-me}
       ALGORITHM: ${ALGORITHM:-HS256}
@@ -59,6 +62,29 @@ services:
       start_period: 30s
     expose:
       - "8000"
+    restart: unless-stopped
+
+  # Celery worker: executes on-demand sync jobs enqueued by the API.
+  # Worker concurrency is the throttle that protects the mt5-core headless service —
+  # cap CELERY_CONCURRENCY at mt5-core's safe ceiling for concurrent jobs.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *api_env
+    command:
+      - celery
+      - -A
+      - app.worker.celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=${CELERY_CONCURRENCY:-8}
     restart: unless-stopped
 
   postgres:

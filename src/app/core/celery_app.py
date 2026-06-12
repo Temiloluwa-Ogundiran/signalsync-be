@@ -18,9 +18,6 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
 )
 
-celery_app.conf.beat_schedule = {}
-
-
 @celery_app.task(name="health.ping")
 def ping() -> str:
     return "pong"

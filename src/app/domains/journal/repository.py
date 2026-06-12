@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import AccountSnapshot, Trade
@@ -13,7 +13,10 @@ from app.domains.journal.models import (
     JournalMessageType,
     JournalTemplate,
     JournalTemplateType,
+    TagCategory,
+    TagOption,
     TradeJournal,
+    TradeTagSelection,
 )
 
 
@@ -723,3 +726,143 @@ def list_trade_setups(
             },
         ).all()
     )
+
+
+# ---------------------------------------------------------------------------
+# Tag repository (merged from repository_tags.py)
+# ---------------------------------------------------------------------------
+
+def seed_system_tags(db: Session) -> tuple[int, int]:
+    """Seeds system-wide default categories and options. Returns (categories_created, options_created)."""
+    categories_created = 0
+    options_created = 0
+
+    defaults = {
+        "Strategy": [
+            ("Breakout", "#3b82f6"),
+            ("Trend Following", "#10b981"),
+            ("Mean Reversion", "#8b5cf6"),
+            ("Scalping", "#f59e0b"),
+            ("Momentum", "#ec4899"),
+        ],
+        "Mistakes": [
+            ("FOMO", "#ef4444"),
+            ("Overleveraging", "#b91c1c"),
+            ("Early Exit", "#f59e0b"),
+            ("Chasing Market", "#ec4899"),
+            ("No SL", "#7f1d1d"),
+        ],
+    }
+
+    for cat_title, opts in defaults.items():
+        stmt = select(TagCategory).where(
+            and_(TagCategory.title == cat_title, TagCategory.is_system.is_(True))
+        )
+        category = db.execute(stmt).scalar_one_or_none()
+        if not category:
+            category = TagCategory(title=cat_title, is_system=True, user_id=None)
+            db.add(category)
+            db.flush()
+            categories_created += 1
+
+        for opt_val, opt_color in opts:
+            opt_stmt = select(TagOption).where(
+                and_(
+                    TagOption.category_id == category.id,
+                    TagOption.value == opt_val,
+                    TagOption.user_id.is_(None),
+                )
+            )
+            if not db.execute(opt_stmt).scalar_one_or_none():
+                db.add(TagOption(category_id=category.id, value=opt_val, color=opt_color, user_id=None))
+                db.flush()
+                options_created += 1
+
+    return categories_created, options_created
+
+
+def list_categories_with_options(db: Session, user_id: uuid.UUID) -> list[TagCategory]:
+    stmt = (
+        select(TagCategory)
+        .where(or_(TagCategory.is_system.is_(True), TagCategory.user_id == user_id))
+        .order_by(TagCategory.is_system.desc(), TagCategory.created_at.asc())
+    )
+    categories = list(db.execute(stmt).scalars())
+
+    opt_stmt = (
+        select(TagOption)
+        .where(or_(TagOption.user_id.is_(None), TagOption.user_id == user_id))
+        .order_by(TagOption.created_at.asc())
+    )
+    options_by_cat: dict[uuid.UUID, list[TagOption]] = {}
+    for opt in db.execute(opt_stmt).scalars():
+        options_by_cat.setdefault(opt.category_id, []).append(opt)
+
+    for cat in categories:
+        cat.options = options_by_cat.get(cat.id, [])
+    return categories
+
+
+def get_category_by_id(db: Session, category_id: uuid.UUID) -> TagCategory | None:
+    return db.execute(select(TagCategory).where(TagCategory.id == category_id)).scalar_one_or_none()
+
+
+def create_category(db: Session, user_id: uuid.UUID, title: str) -> TagCategory:
+    category = TagCategory(user_id=user_id, title=title, is_system=False)
+    db.add(category)
+    db.flush()
+    return category
+
+
+def delete_category(db: Session, user_id: uuid.UUID, category_id: uuid.UUID) -> bool:
+    stmt = select(TagCategory).where(and_(TagCategory.id == category_id, TagCategory.user_id == user_id))
+    category = db.execute(stmt).scalar_one_or_none()
+    if not category:
+        return False
+    db.delete(category)
+    db.flush()
+    return True
+
+
+def get_option_by_id(db: Session, option_id: uuid.UUID) -> TagOption | None:
+    return db.execute(select(TagOption).where(TagOption.id == option_id)).scalar_one_or_none()
+
+
+def create_option(
+    db: Session,
+    user_id: uuid.UUID,
+    category_id: uuid.UUID,
+    value: str,
+    color: str | None = None,
+) -> TagOption:
+    option = TagOption(category_id=category_id, user_id=user_id, value=value, color=color)
+    db.add(option)
+    db.flush()
+    return option
+
+
+def delete_option(db: Session, user_id: uuid.UUID, option_id: uuid.UUID) -> bool:
+    stmt = select(TagOption).where(and_(TagOption.id == option_id, TagOption.user_id == user_id))
+    option = db.execute(stmt).scalar_one_or_none()
+    if not option:
+        return False
+    db.delete(option)
+    db.flush()
+    return True
+
+
+def get_trade_tag_options(db: Session, trade_id: uuid.UUID) -> list[TagOption]:
+    stmt = (
+        select(TagOption)
+        .join(TradeTagSelection, TradeTagSelection.option_id == TagOption.id)
+        .where(TradeTagSelection.trade_id == trade_id)
+        .order_by(TagOption.value.asc())
+    )
+    return list(db.execute(stmt).scalars())
+
+
+def update_trade_tags(db: Session, trade_id: uuid.UUID, option_ids: list[uuid.UUID]) -> None:
+    db.execute(delete(TradeTagSelection).where(TradeTagSelection.trade_id == trade_id))
+    for opt_id in option_ids:
+        db.add(TradeTagSelection(trade_id=trade_id, option_id=opt_id))
+    db.flush()

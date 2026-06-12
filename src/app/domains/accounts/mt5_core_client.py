@@ -157,7 +157,7 @@ class Mt5CoreClient:
                 data = response.json()
             except Mt5CoreClientHttpError:
                 raise
-            except Exception as e:
+            except (httpx.HTTPError, ValueError) as e:
                 raise Mt5CoreClientError(f"Failed to submit account verification job: {e}") from e
 
         job_id = data["job_id"]
@@ -205,7 +205,7 @@ class Mt5CoreClient:
                 data = response.json()
             except Mt5CoreClientHttpError:
                 raise
-            except Exception as e:
+            except (httpx.HTTPError, ValueError) as e:
                 raise Mt5CoreClientError(f"Failed to submit history sync job: {e}") from e
 
         job_id = data["job_id"]
@@ -234,7 +234,7 @@ class Mt5CoreClient:
                 data = response.json()
             except Mt5CoreClientHttpError:
                 raise
-            except Exception as e:
+            except (httpx.HTTPError, ValueError) as e:
                 raise Mt5CoreClientError(
                     f"Failed to submit open positions read job: {e}"
                 ) from e
@@ -267,7 +267,7 @@ class Mt5CoreClient:
                 # Server closed the connection before responding — transient,
                 # will retry after poll_interval.
                 pass
-            except Exception as e:
+            except (httpx.HTTPError, ValueError) as e:
                 raise Mt5CoreClientError(f"Failed to fetch job status for {job_id}: {e}") from e
             else:
                 status = job_status_resp.get("status")

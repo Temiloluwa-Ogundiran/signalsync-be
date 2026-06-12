@@ -20,6 +20,10 @@ def wait_for(name: str, host: str, port: int, timeout: float = 60.0) -> None:
     sys.exit(1)
 
 
+def _default_workers() -> str:
+    return str(2 * (os.cpu_count() or 1) + 1)
+
+
 def main() -> None:
     database_url = os.environ["DATABASE_URL"]
     parsed = urlparse(database_url)
@@ -27,17 +31,41 @@ def main() -> None:
     wait_for("postgres", parsed.hostname or "postgres", parsed.port or 5432)
     wait_for("redis", "redis", 6379)
 
+    # Run migrations once before forking workers. In a multi-replica deploy this
+    # should ideally be a dedicated init/pre-deploy step so only one process migrates.
     subprocess.run(["alembic", "upgrade", "head"], check=True)
-    subprocess.run(
+
+    workers = os.environ.get("WEB_CONCURRENCY", _default_workers())
+    port = os.environ.get("PORT", "8000")
+
+    # Replace this process with Gunicorn managing N Uvicorn workers so the API can
+    # serve concurrent requests across CPU cores instead of a single event loop.
+    os.execvp(
+        "gunicorn",
         [
-            "uvicorn",
+            "gunicorn",
             "main:app",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            os.environ.get("PORT", "8000"),
+            "--worker-class",
+            "uvicorn.workers.UvicornWorker",
+            "--workers",
+            workers,
+            "--bind",
+            f"0.0.0.0:{port}",
+            "--timeout",
+            os.environ.get("GUNICORN_TIMEOUT", "60"),
+            "--graceful-timeout",
+            os.environ.get("GUNICORN_GRACEFUL_TIMEOUT", "30"),
+            "--max-requests",
+            os.environ.get("GUNICORN_MAX_REQUESTS", "2000"),
+            "--max-requests-jitter",
+            os.environ.get("GUNICORN_MAX_REQUESTS_JITTER", "200"),
+            # Trust the proxy/LB so X-Forwarded-For yields the real client IP
+            # (used for rate limiting). Restrict to the LB subnet in production.
+            "--forwarded-allow-ips",
+            os.environ.get("FORWARDED_ALLOW_IPS", "*"),
+            "--access-logfile",
+            "-",
         ],
-        check=True,
     )
 
 

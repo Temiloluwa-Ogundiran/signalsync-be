@@ -3,30 +3,25 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import update as sa_update
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.domains.users.models import User
 
 
 def get_by_id(db: Session, user_id: UUID) -> Optional[User]:
-    return db.query(User).filter(User.id == user_id, User.is_deleted == False).first()  # noqa: E712
+    stmt = select(User).where(User.id == user_id, User.is_deleted.is_(False))
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def get_by_email(db: Session, email: str) -> Optional[User]:
-    return (
-        db.query(User)
-        .filter(User.email == email.lower(), User.is_deleted == False)  # noqa: E712
-        .first()
-    )
+    stmt = select(User).where(User.email == email.lower(), User.is_deleted.is_(False))
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def get_by_username(db: Session, username: str) -> Optional[User]:
-    return (
-        db.query(User)
-        .filter(User.username == username, User.is_deleted == False)  # noqa: E712
-        .first()
-    )
+    stmt = select(User).where(User.username == username, User.is_deleted.is_(False))
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def create(

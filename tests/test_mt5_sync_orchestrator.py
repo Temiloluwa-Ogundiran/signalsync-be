@@ -71,12 +71,6 @@ def test_account_response_exposes_sync_state_fields() -> None:
     assert response.latest_equity == Decimal("10050.00")
 
 
-def test_mt5_recurring_sync_is_not_scheduled() -> None:
-    from app.core.celery_app import celery_app
-
-    assert "journal-sync-active-mt5-accounts" not in celery_app.conf.beat_schedule
-
-
 def test_touch_last_active_at_if_stale_returns_true_when_row_updated(
     db_session: MagicMock,
 ) -> None:
@@ -92,22 +86,6 @@ def test_touch_last_active_at_if_stale_returns_true_when_row_updated(
     )
 
     assert updated is True
-    db_session.execute.assert_called_once()
-
-
-def test_list_active_mt5_sync_candidates_returns_repo_rows(
-    db_session: MagicMock,
-) -> None:
-    expected = [MagicMock(id=uuid.uuid4())]
-    db_session.execute.return_value.scalars.return_value.all.return_value = expected
-
-    rows = account_repo.list_active_mt5_sync_candidates(
-        db_session,
-        active_after=datetime.now(timezone.utc),
-        now=datetime.now(timezone.utc),
-    )
-
-    assert rows == expected
     db_session.execute.assert_called_once()
 
 
@@ -242,52 +220,24 @@ async def test_orchestrate_mt5_sync_keeps_account_connected_when_rate_limited(
     db_session.commit.assert_called_once()
 
 
-@patch("app.tasks.journal_sync_tasks.account_repo")
-@patch("app.tasks.journal_sync_tasks.orchestrate_mt5_sync")
-@patch("app.tasks.journal_sync_tasks.SessionLocal")
-def test_sync_all_mt5_accounts_only_runs_for_recently_active_users(
-    mock_session_local,
-    mock_orchestrate_mt5_sync,
-    mock_account_repo,
-) -> None:
-    from app.domains.accounts.sync_orchestrator import Mt5SyncExecutionResult
-    from app.tasks.journal_sync_tasks import sync_all_mt5_accounts
-
-    active_account = MagicMock(id=uuid.uuid4())
-    db_for_candidates = MagicMock()
-    db_for_candidates.__enter__.return_value = db_for_candidates
-    db_for_candidates.__exit__.return_value = None
-    db_for_account = MagicMock()
-    db_for_account.__enter__.return_value = db_for_account
-    db_for_account.__exit__.return_value = None
-    mock_session_local.side_effect = [db_for_candidates, db_for_account]
-
-    mock_account_repo.list_active_mt5_sync_candidates.return_value = [active_account]
-    mock_account_repo.get_account_by_id.return_value = active_account
-    mock_orchestrate_mt5_sync.return_value = Mt5SyncExecutionResult(outcome="success")
-
-    result = sync_all_mt5_accounts()
-
-    assert result["triggered"] == 1
-    mock_account_repo.list_active_mt5_sync_candidates.assert_called_once()
-
-
 @pytest.mark.anyio
+@patch("app.domains.accounts.router.sync_account_task")
+@patch("app.domains.accounts.router.account_repo")
+@patch("app.domains.accounts.router.check_manual_sync_admission")
 @patch("app.domains.accounts.router.account_service")
-@patch("app.domains.accounts.router.orchestrate_mt5_sync")
-async def test_manual_sync_uses_shared_orchestrator(
-    mock_orchestrate_mt5_sync,
+async def test_manual_sync_returns_admission_guard_without_enqueue(
     mock_account_service,
+    mock_check_admission,
+    mock_account_repo,
+    mock_sync_account_task,
     db_session: MagicMock,
 ) -> None:
     from app.domains.accounts.sync_orchestrator import Mt5SyncExecutionResult
 
     current_user = MagicMock(id=uuid.uuid4())
-    account = MagicMock()
-    account.id = uuid.uuid4()
-    account.sync_provider = "headless_mt5"
+    account = MagicMock(id=uuid.uuid4(), sync_provider=SyncProvider.headless_mt5)
     mock_account_service.get_account.return_value = account
-    mock_orchestrate_mt5_sync.return_value = Mt5SyncExecutionResult(
+    mock_check_admission.return_value = Mt5SyncExecutionResult(
         outcome="rate_limited",
         retry_after_seconds=60,
         message="Submission rate limit exceeded. Please retry shortly.",
@@ -301,7 +251,37 @@ async def test_manual_sync_uses_shared_orchestrator(
 
     assert result["status"] == "rate_limited"
     assert result["retry_after_seconds"] == 60
-    mock_orchestrate_mt5_sync.assert_called_once()
+    mock_sync_account_task.delay.assert_not_called()
+    mock_account_repo.set_sync_attempt_started.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.router.sync_account_task")
+@patch("app.domains.accounts.router.account_repo")
+@patch("app.domains.accounts.router.check_manual_sync_admission")
+@patch("app.domains.accounts.router.account_service")
+async def test_manual_sync_enqueues_when_admitted(
+    mock_account_service,
+    mock_check_admission,
+    mock_account_repo,
+    mock_sync_account_task,
+    db_session: MagicMock,
+) -> None:
+    current_user = MagicMock(id=uuid.uuid4())
+    account = MagicMock(id=uuid.uuid4(), sync_provider=SyncProvider.headless_mt5)
+    mock_account_service.get_account.return_value = account
+    mock_check_admission.return_value = None
+
+    result = await accounts_router.manual_sync(
+        account_id=account.id,
+        db=db_session,
+        current_user=current_user,
+    )
+
+    assert result["status"] == "queued"
+    mock_account_repo.set_sync_attempt_started.assert_called_once()
+    db_session.commit.assert_called_once()
+    mock_sync_account_task.delay.assert_called_once_with(str(account.id))
 
 
 @pytest.mark.anyio

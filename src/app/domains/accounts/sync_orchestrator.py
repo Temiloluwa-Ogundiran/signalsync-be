@@ -95,15 +95,42 @@ def _check_manual_sync_admission(
     return None
 
 
+def check_manual_sync_admission(
+    db: Session,
+    *,
+    account: TradingAccount,
+    attempted_at: datetime,
+) -> Mt5SyncExecutionResult | None:
+    """Public admission check for the API boundary (cooldown / burst limit).
+
+    Returns a guard result to surface to the client, or None when the sync is
+    admitted and may be enqueued.
+    """
+    return _check_manual_sync_admission(
+        db,
+        account=account,
+        attempted_at=attempted_at,
+    )
+
+
 async def orchestrate_mt5_sync(
     db: Session,
     *,
     account: TradingAccount,
     trigger: Literal["bootstrap", "manual", "recurring"],
     lookback_days: int | None = None,
+    enforce_admission: bool = True,
 ) -> Mt5SyncExecutionResult:
+    """
+    Run a sync for ``account``.
+
+    When ``enforce_admission`` is False the caller is expected to have already
+    run admission control (cooldown / burst limit) and recorded the attempt via
+    :func:`check_manual_sync_admission` + ``set_sync_attempt_started`` — this is
+    how the API hands work to the Celery worker without double-counting attempts.
+    """
     attempted_at = datetime.now(timezone.utc)
-    if trigger == "manual":
+    if enforce_admission and trigger == "manual":
         admission_result = _check_manual_sync_admission(
             db,
             account=account,
@@ -112,11 +139,12 @@ async def orchestrate_mt5_sync(
         if admission_result is not None:
             return admission_result
 
-    account_repo.set_sync_attempt_started(
-        db,
-        account=account,
-        attempted_at=attempted_at,
-    )
+    if enforce_admission:
+        account_repo.set_sync_attempt_started(
+            db,
+            account=account,
+            attempted_at=attempted_at,
+        )
 
     try:
         result = await sync_account_deals_mt5(

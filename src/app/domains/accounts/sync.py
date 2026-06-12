@@ -50,19 +50,6 @@ _CLOSE_TIMESTAMP_KEYS = (
 )
 
 
-def _try_acquire_account_sync_lock(account_id) -> bool:
-    with _sync_guard:
-        if account_id in _active_sync_accounts:
-            return False
-        _active_sync_accounts.add(account_id)
-        return True
-
-
-def _release_account_sync_lock(account_id) -> None:
-    with _sync_guard:
-        _active_sync_accounts.discard(account_id)
-
-
 def is_account_sync_active(account_id) -> bool:
     with _sync_guard:
         return account_id in _active_sync_accounts
@@ -507,7 +494,7 @@ async def sync_account_deals_mt5(
     try:
         try:
             investor_password = decrypt_secret(account.encrypted_investor_password)
-        except Exception as exc:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to decrypt account credentials.",
@@ -547,27 +534,3 @@ async def sync_account_deals_mt5(
         account_repo.release_account_sync_lock(db, account.id)
 
 
-def sync_account_deals(
-    db: Session,
-    *,
-    account: TradingAccount,
-    lookback_days: int | None = None,
-) -> SyncResult:
-    if account.sync_provider != SyncProvider.headless_mt5:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This account does not support broker sync.",
-        )
-
-    if not _try_acquire_account_sync_lock(account.id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Sync already in progress for this account.",
-        )
-
-    try:
-        import anyio
-
-        return anyio.run(sync_account_deals_mt5, db, account, lookback_days)
-    finally:
-        _release_account_sync_lock(account.id)

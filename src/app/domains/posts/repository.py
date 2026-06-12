@@ -221,11 +221,10 @@ def delete_media(db: Session, post_media: PostMedia) -> None:
 # ── PostUpvote ───────────────────────────────────────────────────────────────
 
 def get_upvote(db: Session, *, user_id: uuid.UUID, post_id: uuid.UUID) -> Optional[PostUpvote]:
-    return (
-        db.query(PostUpvote)
-        .filter(PostUpvote.user_id == user_id, PostUpvote.post_id == post_id)
-        .first()
+    stmt = select(PostUpvote).where(
+        PostUpvote.user_id == user_id, PostUpvote.post_id == post_id
     )
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def create_upvote(db: Session, *, user_id: uuid.UUID, post_id: uuid.UUID) -> PostUpvote:
@@ -239,4 +238,5 @@ def delete_upvote(db: Session, upvote: PostUpvote) -> None:
 
 
 def count_upvotes(db: Session, post_id: uuid.UUID) -> int:
-    return db.query(PostUpvote).filter(PostUpvote.post_id == post_id).count()
+    stmt = select(func.count(PostUpvote.post_id)).where(PostUpvote.post_id == post_id)
+    return db.execute(stmt).scalar_one()

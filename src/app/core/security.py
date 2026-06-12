@@ -56,18 +56,16 @@ def create_uuid_token(db: Session, user_id: UUID, token_type: Any) -> str:
     Revokes any existing active token of the same type first.
     Import Token and TokenType inside callers to avoid circular imports.
     """
+    from sqlalchemy import select  # noqa: PLC0415
     from app.domains.auth.models import Token, TokenType  # noqa: PLC0415
 
-    existing = (
-        db.query(Token)
-        .filter(
-            Token.user_id == user_id,
-            Token.type == token_type,
-            Token.is_revoked == False,  # noqa: E712
-            Token.expires_at > datetime.now(timezone.utc),
-        )
-        .first()
+    stmt = select(Token).where(
+        Token.user_id == user_id,
+        Token.type == token_type,
+        Token.is_revoked.is_(False),
+        Token.expires_at > datetime.now(timezone.utc),
     )
+    existing = db.execute(stmt).scalar_one_or_none()
     if existing:
         existing.is_revoked = True
         db.flush()
