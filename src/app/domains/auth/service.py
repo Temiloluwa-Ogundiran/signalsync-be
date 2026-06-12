@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Response, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -145,18 +146,19 @@ def verify_email(db: Session, raw_token: str) -> VerifyEmailResponse:
     """Verify the email token and mark the user as verified."""
     hashed = hash_token(raw_token)
 
-    token = token_repo.get_active(
-        db,
-        hashed_token=hashed,
-        token_type=TokenType.VERIFY_EMAIL,
+    # 1. Lookup the token regardless of status to support idempotency/double-calls
+    stmt = select(Token).where(
+        Token.token == hashed,
+        Token.type == TokenType.VERIFY_EMAIL,
     )
+    token = db.execute(stmt).scalar_one_or_none()
+
     if not token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired verification token.",
         )
 
-    # ── mark user as verified ────────────────────────────────────────────────
     user = user_repo.get_by_id(db, token.user_id)
     if not user:
         raise HTTPException(
@@ -164,10 +166,16 @@ def verify_email(db: Session, raw_token: str) -> VerifyEmailResponse:
             detail="User not found.",
         )
 
+    # If the user is already verified, return success.
+    # This prevents StrictMode double-renders or client double-submissions from showing error states.
     if user.is_email_verified:
+        return VerifyEmailResponse(message="Email is already verified.")
+
+    # 2. Check if the token has expired or is revoked for an unverified user
+    if token.is_revoked or token.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email is already verified.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token.",
         )
 
     user.is_email_verified = True
@@ -190,12 +198,12 @@ def resend_verification(
         )
 
     # Revoke any existing VERIFY_EMAIL tokens for this user, then create a new one.
-    existing_tokens = (
-        db.query(Token)
-        .filter_by(user_id=user.id, type=TokenType.VERIFY_EMAIL, is_revoked=False)
-        .all()
+    stmt = select(Token).where(
+        Token.user_id == user.id,
+        Token.type == TokenType.VERIFY_EMAIL,
+        Token.is_revoked.is_(False),
     )
-    for t in existing_tokens:
+    for t in db.execute(stmt).scalars():
         token_repo.revoke(db, t)
 
     raw_token = str(uuid.uuid4())
