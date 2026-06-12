@@ -11,6 +11,8 @@ from app.domains.streams.schemas import (
     ForumToggleRequest,
     JoinRequestResponse,
     MemberListResponse,
+    PaginatedJoinRequestResponse,
+    PaginatedMemberListResponse,
     StreamCreateRequest,
     StreamDetailResponse,
     StreamDiscoverResponse,
@@ -147,39 +149,44 @@ def get_stream(
 
 @router.get(
     "/{stream_id}/join-requests",
-    response_model=list[JoinRequestResponse],
+    response_model=PaginatedJoinRequestResponse,
     status_code=status.HTTP_200_OK,
     summary="List pending join requests (owner only)",
 )
 def list_join_requests(
     stream_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+    cursor: UUID | None = Query(None, description="user_id of the last item from the previous page"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[JoinRequestResponse]:
+) -> PaginatedJoinRequestResponse:
     return stream_service.list_join_requests(
-        db, stream_id=stream_id, current_user=current_user
+        db, stream_id=stream_id, current_user=current_user, limit=limit, cursor_user_id=cursor
     )
 
 
 @router.get(
     "/{stream_id}/members",
-    response_model=list[MemberListResponse],
+    response_model=PaginatedMemberListResponse,
     status_code=status.HTTP_200_OK,
     summary="List active stream members",
     description=(
         "Returns `user_id`, `username`, `avatar_url` for all callers. "
         "Stream owners additionally receive `status` and `joined_at` per member. "
         "Public streams: any authenticated user can call this. "
-        "Private/paid streams: owner or active members only."
+        "Private/paid streams: owner or active members only. "
+        "Paginate with `limit` and `cursor` (user_id of the last item)."
     ),
 )
 def get_stream_members(
     stream_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+    cursor: UUID | None = Query(None, description="user_id of the last item from the previous page"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> list[MemberListResponse]:
+) -> PaginatedMemberListResponse:
     return stream_service.get_stream_members(
-        db, stream_id=stream_id, current_user=current_user
+        db, stream_id=stream_id, current_user=current_user, limit=limit, cursor_user_id=cursor
     )
 
 

@@ -62,6 +62,12 @@ class Token(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
 
     # Relationships
     user: Mapped[Optional["User"]] = relationship(back_populates="tokens")  # noqa: F821

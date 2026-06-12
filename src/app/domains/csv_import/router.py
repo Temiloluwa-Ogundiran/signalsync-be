@@ -1,7 +1,7 @@
 from typing import Optional
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -42,6 +42,7 @@ def get_supported_platforms() -> list[PlatformInfo]:
 @limiter.limit(settings.RATE_LIMIT_UPLOADS)
 async def preview_csv_import(
     request: Request,
+    response: Response,
     file: UploadFile = File(...),
     platform_id: str = Form(...),
     timezone: str = Form(...),
@@ -65,6 +66,7 @@ async def preview_csv_import(
 @limiter.limit(settings.RATE_LIMIT_UPLOADS)
 async def confirm_csv_import(
     request: Request,
+    response: Response,
     file: UploadFile = File(...),
     platform_id: str = Form(...),
     timezone: str = Form(...),

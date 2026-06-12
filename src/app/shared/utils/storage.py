@@ -17,6 +17,9 @@ from app.shared.utils.storage_service_client import (
     storage_service_enabled,
     upload_via_storage_service,
 )
+from app.shared.utils.uploads import validate_audio_magic_bytes, validate_image_magic_bytes
+
+_MAGIC_PEEK_BYTES = 16
 
 _ALLOWED_MIME_PREFIXES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 
@@ -72,8 +75,12 @@ def upload_image(
             detail=f"Invalid file type '{content_type}'. Allowed: JPEG, PNG, WebP, GIF.",
         )
 
+    file.file.seek(0)
+    header = file.file.read(_MAGIC_PEEK_BYTES)
+    validate_image_magic_bytes(header)
+    file.file.seek(0)
+
     if storage_service_enabled():
-        file.file.seek(0)
         object_key = upload_via_storage_service(file)
         return gateway_url_for_object_key(object_key)
 
@@ -119,6 +126,14 @@ def upload_media(
             detail=f"Unsupported media type '{content_type}'. Allowed: {allowed}.",
         )
 
+    # Validate magic bytes for image uploads (skip video/PDF — less predictable headers)
+    _, media_type_check = _MEDIA_MIME_MAP[content_type]
+    if media_type_check == PostMediaType.image:
+        file.file.seek(0)
+        header = file.file.read(_MAGIC_PEEK_BYTES)
+        validate_image_magic_bytes(header)
+        file.file.seek(0)
+
     if storage_service_enabled():
         object_key = upload_via_storage_service(file)
         _, media_type = _MEDIA_MIME_MAP[content_type]
@@ -162,8 +177,12 @@ def upload_journal_voice_note(file: UploadFile, *, user_prefix: str) -> tuple[st
             detail="Unsupported audio format for voice message.",
         )
 
+    file.file.seek(0)
+    header = file.file.read(_MAGIC_PEEK_BYTES)
+    validate_audio_magic_bytes(header)
+    file.file.seek(0)
+
     if storage_service_enabled():
-        file.file.seek(0)
         object_key = upload_via_storage_service(file)
         return object_key, content_type
 

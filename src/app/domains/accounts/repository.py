@@ -8,7 +8,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.domains.accounts.models import (
     AccountSnapshot,
@@ -759,48 +759,50 @@ def update_manual_trade(
     user_id: uuid.UUID,
     payload,  # ManualTradeUpdateRequest
 ) -> Trade:
-    stmt = select(Trade).where(Trade.id == trade_id)
-    trade = db.execute(stmt).scalar_one_or_none()
+    stmt = (
+        select(Trade)
+        .options(joinedload(Trade.account))
+        .where(Trade.id == trade_id)
+    )
+    trade = db.execute(stmt).unique().scalar_one_or_none()
     if not trade:
         raise ValueError("Trade not found")
-        
+
     if not trade.is_manual:
         raise ValueError("Cannot modify non-manual trades")
-        
-    # Validate ownership
+
+    # Validate ownership — account is eagerly loaded above to avoid a lazy query
     if trade.account.user_id != user_id:
         raise ValueError("Access denied")
 
-    # Update fields if provided
-    update_data = payload.model_dump(exclude_unset=True)
-    
+    _MANUAL_TRADE_UPDATABLE_FIELDS = frozenset({
+        "symbol", "direction", "opened_at", "closed_at",
+        "open_price", "close_price", "volume",
+        "net_profit", "commission", "swap",
+        "sl", "tp", "is_missed", "notes",
+    })
+
+    # Update only whitelisted fields — prevent mass-assignment of internal columns
+    update_data = {
+        k: v for k, v in payload.model_dump(exclude_unset=True).items()
+        if k in _MANUAL_TRADE_UPDATABLE_FIELDS
+    }
+
     for key, value in update_data.items():
         setattr(trade, key, value)
         
-    # Recalculate derived fields if relevant
-    if "is_missed" in update_data or trade.is_missed:
-        if trade.is_missed:
+    # Recalculate derived fields without clobbering explicitly-provided payload values.
+    if trade.is_missed:
+        # For missed trades: duration is always 0, closed_at == opened_at.
+        # close_price / net_profit / volume etc. keep whatever the payload set (or
+        # the existing DB values) — we do NOT zero them out here.
+        if "closed_at" not in update_data:
             trade.closed_at = trade.opened_at
-            trade.duration_seconds = 0
-            trade.close_price = trade.tp or trade.open_price
-            trade.net_profit = Decimal("0")
-            trade.commission = Decimal("0")
-            trade.swap = Decimal("0")
-            trade.profit = Decimal("0")
-            trade.volume = Decimal("0.01")
-        else:
-            if not trade.volume or trade.volume == Decimal("0.01"):
-                trade.volume = Decimal("0.1")
-            if trade.commission is None:
-                trade.commission = Decimal("0")
-            if trade.swap is None:
-                trade.swap = Decimal("0")
-            trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
-            if trade.opened_at and trade.closed_at:
-                trade.duration_seconds = max(0, int((trade.closed_at - trade.opened_at).total_seconds()))
-
+        trade.duration_seconds = 0
+        trade.commission = trade.commission or Decimal("0")
+        trade.swap = trade.swap or Decimal("0")
+        trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
     else:
-        # Normal executed trade updates
         if "opened_at" in update_data or "closed_at" in update_data:
             opened_at_utc = trade.opened_at if trade.opened_at.tzinfo else trade.opened_at.replace(tzinfo=timezone.utc)
             closed_at_utc = trade.closed_at if trade.closed_at.tzinfo else trade.closed_at.replace(tzinfo=timezone.utc)
@@ -808,7 +810,7 @@ def update_manual_trade(
             trade.closed_at = closed_at_utc
             trade.duration_seconds = max(0, int((closed_at_utc - opened_at_utc).total_seconds()))
             trade.session = TradeSession(classify_session(opened_at_utc))
-            
+
         if "net_profit" in update_data or "commission" in update_data or "swap" in update_data:
             trade.commission = trade.commission or Decimal("0")
             trade.swap = trade.swap or Decimal("0")
@@ -824,8 +826,12 @@ def delete_manual_trade(
     trade_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> None:
-    stmt = select(Trade).where(Trade.id == trade_id)
-    trade = db.execute(stmt).scalar_one_or_none()
+    stmt = (
+        select(Trade)
+        .options(joinedload(Trade.account))
+        .where(Trade.id == trade_id)
+    )
+    trade = db.execute(stmt).unique().scalar_one_or_none()
     if not trade:
         raise ValueError("Trade not found")
         

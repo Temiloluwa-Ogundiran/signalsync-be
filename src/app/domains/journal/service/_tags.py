@@ -103,9 +103,7 @@ def update_trade_tags(db: Session, user: User, trade_id: uuid.UUID, option_ids: 
 
 def update_trade_rating(db: Session, user: User, trade_id: uuid.UUID, rating: int) -> int:
     _validate_trade_ownership(db, user_id=user.id, trade_id=trade_id)
-    tj = journal_repo.get_trade_journal_by_trade_id(db, trade_id=trade_id)
-    if not tj:
-        tj = journal_repo.create_trade_journal(db, trade_id=trade_id, daily_journal_id=None)
+    tj, _ = journal_repo.get_or_create_trade_journal_by_trade_id(db, trade_id=trade_id, daily_journal_id=None)
     tj.rating = rating
     db.commit()
     return rating
@@ -120,9 +118,7 @@ def update_trade_assessment(
     discipline_score: Optional[int] = None,
 ) -> dict:
     _validate_trade_ownership(db, user_id=user.id, trade_id=trade_id)
-    tj = journal_repo.get_trade_journal_by_trade_id(db, trade_id=trade_id)
-    if not tj:
-        tj = journal_repo.create_trade_journal(db, trade_id=trade_id, daily_journal_id=None)
+    tj, _ = journal_repo.get_or_create_trade_journal_by_trade_id(db, trade_id=trade_id, daily_journal_id=None)
     if execution_quality is not None:
         tj.execution_quality = execution_quality
     if setup_quality is not None:

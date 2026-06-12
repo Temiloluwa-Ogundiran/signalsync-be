@@ -241,6 +241,77 @@ def list_active_members(db: Session, *, stream_id: UUID) -> list[StreamMember]:
     return list(db.execute(stmt).unique().scalars())
 
 
+def list_active_members_page(
+    db: Session,
+    *,
+    stream_id: UUID,
+    limit: int,
+    cursor_user_id: UUID | None,
+) -> list[StreamMember]:
+    """Cursor-based page of active members, ordered by (joined_at ASC, user_id ASC)."""
+    stmt = (
+        select(StreamMember)
+        .options(joinedload(StreamMember.user))
+        .where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.status == MemberStatus.active,
+        )
+        .order_by(StreamMember.joined_at.asc(), StreamMember.user_id.asc())
+        .limit(limit)
+    )
+    if cursor_user_id is not None:
+        cursor_stmt = select(StreamMember.joined_at, StreamMember.user_id).where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.user_id == cursor_user_id,
+        )
+        row = db.execute(cursor_stmt).one_or_none()
+        if row is not None:
+            cursor_joined_at, cursor_uid = row
+            stmt = stmt.where(
+                (StreamMember.joined_at > cursor_joined_at)
+                | (
+                    (StreamMember.joined_at == cursor_joined_at)
+                    & (StreamMember.user_id > cursor_uid)
+                )
+            )
+    return list(db.execute(stmt).unique().scalars())
+
+
+def list_pending_members_page(
+    db: Session,
+    *,
+    stream_id: UUID,
+    limit: int,
+    cursor_user_id: UUID | None,
+) -> list[StreamMember]:
+    """Cursor-based page of pending join requests, ordered by (joined_at ASC, user_id ASC)."""
+    stmt = (
+        select(StreamMember)
+        .where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.status == MemberStatus.pending,
+        )
+        .order_by(StreamMember.joined_at.asc(), StreamMember.user_id.asc())
+        .limit(limit)
+    )
+    if cursor_user_id is not None:
+        cursor_stmt = select(StreamMember.joined_at, StreamMember.user_id).where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.user_id == cursor_user_id,
+        )
+        row = db.execute(cursor_stmt).one_or_none()
+        if row is not None:
+            cursor_joined_at, cursor_uid = row
+            stmt = stmt.where(
+                (StreamMember.joined_at > cursor_joined_at)
+                | (
+                    (StreamMember.joined_at == cursor_joined_at)
+                    & (StreamMember.user_id > cursor_uid)
+                )
+            )
+    return list(db.execute(stmt).scalars())
+
+
 def count_active_members(db: Session, *, stream_id: UUID) -> int:
     stmt = select(func.count(StreamMember.user_id)).where(
         StreamMember.stream_id == stream_id,

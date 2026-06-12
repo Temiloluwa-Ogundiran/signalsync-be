@@ -37,6 +37,26 @@ class ResendVerificationRequest(BaseModel):
     email: EmailStr
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        if (
+            not PASSWORD_UPPERCASE_PATTERN.search(value)
+            or not PASSWORD_LOWERCASE_PATTERN.search(value)
+            or not PASSWORD_NUMBER_PATTERN.search(value)
+        ):
+            raise ValueError(PASSWORD_POLICY_MESSAGE)
+        return value
+
+
 # ── Response schemas ─────────────────────────────────────────────────────────
 
 class RegisterResponse(BaseModel):
@@ -49,6 +69,14 @@ class VerifyEmailResponse(BaseModel):
 
 
 class ResendVerificationResponse(BaseModel):
+    message: str
+
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+
+
+class ResetPasswordResponse(BaseModel):
     message: str
 
 

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response as FastAPIResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi import _rate_limit_exceeded_handler
@@ -66,12 +66,32 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_cors_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
 )
 from fastapi.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(RequestIdMiddleware)
+
+
+MAX_JSON_BODY = 1 * 1024 * 1024  # 1 MiB
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH") and not request.url.path.startswith("/uploads"):
+        cl = request.headers.get("content-length")
+        if cl and int(cl) > MAX_JSON_BODY:
+            return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
 
 
 @app.exception_handler(Exception)

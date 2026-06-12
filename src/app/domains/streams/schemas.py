@@ -108,3 +108,13 @@ class MemberListResponse(BaseModel):
     # Owner-only fields — None for regular callers
     status: Optional[MemberStatus] = None
     joined_at: Optional[datetime] = None
+
+
+class PaginatedMemberListResponse(BaseModel):
+    items: list[MemberListResponse]
+    next_cursor: Optional[uuid.UUID] = None
+
+
+class PaginatedJoinRequestResponse(BaseModel):
+    items: list[JoinRequestResponse]
+    next_cursor: Optional[uuid.UUID] = None

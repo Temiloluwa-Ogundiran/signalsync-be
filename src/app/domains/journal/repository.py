@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import AccountSnapshot, Trade
@@ -45,16 +46,25 @@ def get_daily_journal_by_account_and_date(
     return db.execute(stmt).scalar_one_or_none()
 
 
-def create_daily_journal(
+def get_or_create_daily_journal(
     db: Session,
     *,
     account_id: uuid.UUID,
     trading_date: date,
 ) -> DailyJournal:
-    daily_journal = DailyJournal(account_id=account_id, trading_date=trading_date)
-    db.add(daily_journal)
-    db.flush()
-    return daily_journal
+    """Race-safe upsert: INSERT ... ON CONFLICT DO NOTHING, then SELECT."""
+    stmt = (
+        pg_insert(DailyJournal)
+        .values(account_id=account_id, trading_date=trading_date)
+        .on_conflict_do_nothing(index_elements=["account_id", "trading_date"])
+    )
+    db.execute(stmt)
+    return db.execute(
+        select(DailyJournal).where(
+            DailyJournal.account_id == account_id,
+            DailyJournal.trading_date == trading_date,
+        )
+    ).scalar_one()
 
 
 def list_daily_journal_feed(
@@ -105,16 +115,29 @@ def get_trade_journal_by_trade_id(
     return db.execute(stmt).scalar_one_or_none()
 
 
-def create_trade_journal(
+def get_or_create_trade_journal_by_trade_id(
     db: Session,
     *,
     trade_id: uuid.UUID,
     daily_journal_id: Optional[uuid.UUID],
-) -> TradeJournal:
-    trade_journal = TradeJournal(trade_id=trade_id, daily_journal_id=daily_journal_id)
-    db.add(trade_journal)
-    db.flush()
-    return trade_journal
+) -> tuple["TradeJournal", bool]:
+    """Race-safe upsert. Returns (trade_journal, is_new).
+
+    Uses RETURNING id to detect whether the INSERT actually fired — rowcount
+    is unreliable for ON CONFLICT DO NOTHING across driver versions.
+    """
+    stmt = (
+        pg_insert(TradeJournal)
+        .values(trade_id=trade_id, daily_journal_id=daily_journal_id)
+        .on_conflict_do_nothing(index_elements=["trade_id"])
+        .returning(TradeJournal.id)
+    )
+    returning_row = db.execute(stmt).scalar_one_or_none()
+    is_new = returning_row is not None
+    trade_journal = db.execute(
+        select(TradeJournal).where(TradeJournal.trade_id == trade_id)
+    ).scalar_one()
+    return trade_journal, is_new
 
 
 def map_trade_reviewed_at_by_trade_ids(

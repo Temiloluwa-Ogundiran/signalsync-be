@@ -37,24 +37,16 @@ from ._helpers import (
 def get_or_create_trade_journal(db: Session, *, trade_id: uuid.UUID, current_user: User):
     trade, account = _get_trade_owned_by_user(db, trade_id=trade_id, current_user=current_user)
 
-    trade_journal = journal_repo.get_trade_journal_by_trade_id(db, trade_id)
-    is_new = False
+    local_trade_date = to_account_local_date(trade.closed_at, account.timezone)
+    daily_journal = journal_repo.get_or_create_daily_journal(
+        db, account_id=account.id, trading_date=local_trade_date,
+    )
 
-    if trade_journal is None:
-        local_trade_date = to_account_local_date(trade.closed_at, account.timezone)
-        daily_journal = journal_repo.get_daily_journal_by_account_and_date(
-            db, account_id=account.id, trading_date=local_trade_date,
-        )
-        if daily_journal is None:
-            daily_journal = journal_repo.create_daily_journal(
-                db, account_id=account.id, trading_date=local_trade_date,
-            )
+    trade_journal, is_new = journal_repo.get_or_create_trade_journal_by_trade_id(
+        db, trade_id=trade.id, daily_journal_id=daily_journal.id,
+    )
 
-        trade_journal = journal_repo.create_trade_journal(
-            db, trade_id=trade.id, daily_journal_id=daily_journal.id,
-        )
-        is_new = True
-
+    if is_new:
         journal_repo.create_message(
             db,
             daily_journal_id=None,
@@ -76,8 +68,6 @@ def get_or_create_trade_journal(db: Session, *, trade_id: uuid.UUID, current_use
                 "closed_at": trade.closed_at.isoformat(),
             },
         )
-
-    if is_new:
         db.commit()
         db.refresh(trade_journal)
 
@@ -191,15 +181,11 @@ def get_or_create_daily_journal(
             status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
         )
 
-    daily_journal = journal_repo.get_daily_journal_by_account_and_date(
+    daily_journal = journal_repo.get_or_create_daily_journal(
         db, account_id=account_id, trading_date=trading_date,
     )
-    if daily_journal is None:
-        daily_journal = journal_repo.create_daily_journal(
-            db, account_id=account_id, trading_date=trading_date,
-        )
-        db.commit()
-        db.refresh(daily_journal)
+    db.commit()
+    db.refresh(daily_journal)
 
     trades = account_repo.list_trades_by_account_local_date(
         db,

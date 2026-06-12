@@ -198,6 +198,12 @@ class TradingAccount(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
 
     user: Mapped["User"] = relationship(back_populates="trading_accounts")  # noqa: F821
     trades: Mapped[List["Trade"]] = relationship(
