@@ -547,7 +547,8 @@ def test_dashboard_recent_trades_works_for_all_accounts_without_single_account_c
         mae=None,
     )
 
-    mock_journal_repo.list_trades_filtered_multi.return_value = [trade]
+    mock_journal_repo.list_trade_rows_for_analytics.return_value = [trade]
+    mock_journal_repo.list_recent_trades_for_dashboard.return_value = [trade]
 
     dashboard = journal_service.get_analytics_dashboard(
         db_session,

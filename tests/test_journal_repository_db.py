@@ -13,7 +13,7 @@ import app.domains.auth.models  # noqa: F401
 import app.domains.users.models  # noqa: F401
 
 from app.domains.users.models import User
-from app.domains.accounts.models import TradingAccount, Trade, TradeDirection, TradeSession, TradingAccountType, TradingPlatform
+from app.domains.accounts.models import TradingAccount, Trade, TradeDirection, TradeSession, TradingAccountType, TradingPlatform, TradingAccountConnectionState
 from app.domains.journal.models import TagCategory, TagOption, TradeTagSelection
 from app.domains.journal.repository import list_trade_setups
 
@@ -695,6 +695,253 @@ def test_delete_trades_outside_valid_broker_ids_in_window_returning_db() -> None
         
         assert deleted_count == 1
         assert len(affected_dates) == 1
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_list_trade_rows_for_analytics_db() -> None:
+    from app.domains.journal.repository import list_trade_rows_for_analytics
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        t1 = Trade(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            broker_trade_id="B1",
+            symbol="EURUSD",
+            direction=TradeDirection.buy,
+            open_price=Decimal("1.0"),
+            close_price=Decimal("1.1"),
+            volume=Decimal("0.1"),
+            profit=Decimal("10.0"),
+            commission=Decimal("0.0"),
+            swap=Decimal("0.0"),
+            net_profit=Decimal("10.0"),
+            duration_seconds=60,
+            session=TradeSession.london,
+            opened_at=datetime.now(timezone.utc),
+            closed_at=datetime.now(timezone.utc),
+            is_missed=False,
+            is_manual=False,
+        )
+        db.add(t1)
+        db.flush()
+        
+        rows = list_trade_rows_for_analytics(
+            db,
+            account_ids=[account.id],
+            closed_from_utc=None,
+            closed_to_utc_exclusive=None,
+            include_manual=True,
+        )
+        
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.id == t1.id
+        assert row.net_profit == Decimal("10.0")
+        assert row.symbol == "EURUSD"
+        assert row.account_id == account.id
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_list_recent_trades_for_dashboard_db() -> None:
+    from app.domains.journal.repository import list_recent_trades_for_dashboard
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        t1 = Trade(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            broker_trade_id="B1",
+            symbol="EURUSD",
+            direction=TradeDirection.buy,
+            open_price=Decimal("1.0"),
+            close_price=Decimal("1.1"),
+            volume=Decimal("0.1"),
+            profit=Decimal("10.0"),
+            commission=Decimal("0.0"),
+            swap=Decimal("0.0"),
+            net_profit=Decimal("10.0"),
+            duration_seconds=60,
+            session=TradeSession.london,
+            opened_at=datetime.now(timezone.utc),
+            closed_at=datetime.now(timezone.utc),
+            is_missed=False,
+            is_manual=False,
+        )
+        db.add(t1)
+        db.flush()
+        
+        recent = list_recent_trades_for_dashboard(
+            db,
+            account_ids=[account.id],
+            closed_from_utc=None,
+            closed_to_utc_exclusive=None,
+            include_manual=True,
+            limit=5,
+        )
+        
+        assert len(recent) == 1
+        assert isinstance(recent[0], Trade)
+        assert recent[0].id == t1.id
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_multi_account_timezone_dashboard_analytics_db() -> None:
+    from app.domains.journal.service._analytics import get_analytics_dashboard
+    from datetime import date
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account1 = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+            timezone="America/New_York",
+            connection_state=TradingAccountConnectionState.ready,
+            is_data_ready_for_stats=True,
+        )
+        account2 = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker 2",
+            broker_login="654321",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+            timezone="UTC",
+            connection_state=TradingAccountConnectionState.ready,
+            is_data_ready_for_stats=True,
+        )
+        db.add_all([account1, account2])
+        db.flush()
+        
+        close_time = datetime(2026, 6, 12, 1, 0, tzinfo=timezone.utc)
+        
+        t1 = Trade(
+            id=uuid.uuid4(),
+            account_id=account1.id,
+            broker_trade_id="B1",
+            symbol="EURUSD",
+            direction=TradeDirection.buy,
+            open_price=Decimal("1.0"),
+            close_price=Decimal("1.1"),
+            volume=Decimal("0.1"),
+            profit=Decimal("10.0"),
+            commission=Decimal("0.0"),
+            swap=Decimal("0.0"),
+            net_profit=Decimal("10.0"),
+            duration_seconds=60,
+            session=TradeSession.london,
+            opened_at=close_time,
+            closed_at=close_time,
+            is_missed=False,
+            is_manual=False,
+        )
+        db.add(t1)
+        db.flush()
+        
+        dashboard = get_analytics_dashboard(
+            db,
+            account_id=None,
+            user_id=user.id,
+            from_date=None,
+            to_date=None,
+            recent_limit=8,
+            time_basis="close",
+            include_manual=True,
+        )
+        
+        calendar_days = dashboard.calendar.days
+        assert len(calendar_days) == 1
+        assert calendar_days[0].date == date(2026, 6, 11)
+        assert calendar_days[0].total_pnl == 10.0
         
     finally:
         db.close()

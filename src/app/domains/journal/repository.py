@@ -475,55 +475,63 @@ def delete_user_template(
 # Analytics queries
 # ---------------------------------------------------------------------------
 
-def list_trades_filtered(
-    db: Session,
-    *,
-    account_id: uuid.UUID,
-    closed_from_utc,
-    closed_to_utc_exclusive,
-    include_manual: bool = True,
-) -> list[Trade]:
-    stmt = select(Trade).where(
-        Trade.account_id == account_id,
-        Trade.is_missed.is_(False),
-    )
+ANALYTICS_COLUMNS = (
+    Trade.id,
+    Trade.net_profit,
+    Trade.duration_seconds,
+    Trade.session,
+    Trade.symbol,
+    Trade.trade_source,
+    Trade.mfe,
+    Trade.mae,
+    Trade.opened_at,
+    Trade.closed_at,
+    Trade.account_id,
+)
 
-    if not include_manual:
-        stmt = stmt.where(Trade.is_manual.is_(False))
-    if closed_from_utc is not None:
-        stmt = stmt.where(Trade.closed_at >= closed_from_utc)
-    if closed_to_utc_exclusive is not None:
-        stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
-
-    stmt = stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())
-    return list(db.execute(stmt).scalars().all())
-
-
-def list_trades_filtered_multi(
+def list_trade_rows_for_analytics(
     db: Session,
     *,
     account_ids: list[uuid.UUID],
     closed_from_utc,
     closed_to_utc_exclusive,
     include_manual: bool = True,
-) -> list[Trade]:
-    if not account_ids:
-        return []
-
-    stmt = select(Trade).where(
+) -> list[tuple]:
+    stmt = select(*ANALYTICS_COLUMNS).where(
         Trade.account_id.in_(account_ids),
         Trade.is_missed.is_(False),
     )
-
     if not include_manual:
         stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
         stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
+    return list(db.execute(stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())).all())
 
-    stmt = stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())
+
+def list_recent_trades_for_dashboard(
+    db: Session,
+    *,
+    account_ids: list[uuid.UUID],
+    closed_from_utc,
+    closed_to_utc_exclusive,
+    include_manual: bool = True,
+    limit: int = 8,
+) -> list[Trade]:
+    stmt = select(Trade).where(
+        Trade.account_id.in_(account_ids),
+        Trade.is_missed.is_(False),
+    )
+    if not include_manual:
+        stmt = stmt.where(Trade.is_manual.is_(False))
+    if closed_from_utc is not None:
+        stmt = stmt.where(Trade.closed_at >= closed_from_utc)
+    if closed_to_utc_exclusive is not None:
+        stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
+    stmt = stmt.order_by(Trade.closed_at.desc(), Trade.id.desc()).limit(limit)
     return list(db.execute(stmt).scalars().all())
+
 
 
 def list_daily_pnl(

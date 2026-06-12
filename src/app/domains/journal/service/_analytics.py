@@ -57,8 +57,8 @@ def get_analytics_summary(
 ) -> AnalyticsSummaryResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-    trades = journal_repo.list_trades_filtered(
-        db, account_id=account_id, closed_from_utc=start_utc,
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc, include_manual=include_manual,
     )
     return _compute_summary(trades=trades, starting_balance=_estimate_starting_balance(db, account=account))
@@ -186,10 +186,14 @@ def get_analytics_sessions(
 ) -> AnalyticsSessionsResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-    trades = journal_repo.list_trades_filtered(
-        db, account_id=account_id, closed_from_utc=start_utc,
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc, include_manual=include_manual,
     )
+    return _compute_sessions(trades)
+
+
+def _compute_sessions(trades) -> AnalyticsSessionsResponse:
     grouped: dict = defaultdict(list)
     for t in trades:
         grouped[t.session.value].append(t)
@@ -222,10 +226,14 @@ def get_analytics_instruments(
 ) -> AnalyticsInstrumentsResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-    trades = journal_repo.list_trades_filtered(
-        db, account_id=account_id, closed_from_utc=start_utc,
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc, include_manual=include_manual,
     )
+    return _compute_instruments(trades)
+
+
+def _compute_instruments(trades) -> AnalyticsInstrumentsResponse:
     grouped: dict = defaultdict(list)
     for t in trades:
         grouped[t.symbol].append(t)
@@ -263,8 +271,8 @@ def get_analytics_time_performance(
 ) -> AnalyticsTimePerformanceResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-    trades = journal_repo.list_trades_filtered(
-        db, account_id=account_id, closed_from_utc=start_utc,
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc, include_manual=include_manual,
     )
     return _compute_time_performance(trades=trades, account_timezone=account.timezone, time_basis=time_basis)
@@ -334,8 +342,8 @@ def _balance_history_points_from_trade_closes(
     include_manual: bool = True,
 ) -> list[AnalyticsBalanceHistoryPointResponse]:
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-    trades = journal_repo.list_trades_filtered(
-        db, account_id=account_id, closed_from_utc=start_utc,
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc, include_manual=include_manual,
     )
     if not trades:
@@ -507,10 +515,14 @@ def get_analytics_trade_sources(
 ) -> AnalyticsTradeSourceResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-    trades = journal_repo.list_trades_filtered(
-        db, account_id=account_id, closed_from_utc=start_utc,
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc, include_manual=include_manual,
     )
+    return _compute_trade_sources(trades)
+
+
+def _compute_trade_sources(trades) -> AnalyticsTradeSourceResponse:
     grouped: dict = defaultdict(list)
     for t in trades:
         grouped[t.trade_source.value if t.trade_source else "unknown"].append(t)
@@ -541,12 +553,21 @@ def get_analytics_report(
     to_date: date | None,
     include_manual: bool = True,
 ) -> AnalyticsReportResponse:
+    account = _get_account_or_404(db, account_id, user_id)
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    rows = journal_repo.list_trade_rows_for_analytics(
+        db,
+        account_ids=[account_id],
+        closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
+    )
     return AnalyticsReportResponse(
-        summary=get_analytics_summary(db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual),
-        sessions=get_analytics_sessions(db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual),
-        instruments=get_analytics_instruments(db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual),
+        summary=_compute_summary(trades=rows, starting_balance=_estimate_starting_balance(db, account=account)),
+        sessions=_compute_sessions(rows),
+        instruments=_compute_instruments(rows),
         setups=get_analytics_setups(db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual),
-        trade_sources=get_analytics_trade_sources(db, account_id=account_id, user_id=user_id, from_date=from_date, to_date=to_date, include_manual=include_manual),
+        trade_sources=_compute_trade_sources(rows),
     )
 
 
@@ -566,8 +587,8 @@ def get_analytics_dashboard(
         selected_accounts = [account]
         account_timezone = account.timezone
         start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
-        trades = journal_repo.list_trades_filtered(
-            db, account_id=account_id, closed_from_utc=start_utc,
+        trades = journal_repo.list_trade_rows_for_analytics(
+            db, account_ids=[account_id], closed_from_utc=start_utc,
             closed_to_utc_exclusive=end_utc, include_manual=include_manual,
         )
         starting_balance = _estimate_starting_balance(db, account=account)
@@ -575,7 +596,7 @@ def get_analytics_dashboard(
         selected_accounts = _get_ready_accounts_for_user(db, user_id)
         account_ids = [a.id for a in selected_accounts]
         start_utc, end_utc = _resolve_multi_account_date_window(from_date, to_date)
-        trades = journal_repo.list_trades_filtered_multi(
+        trades = journal_repo.list_trade_rows_for_analytics(
             db, account_ids=account_ids, closed_from_utc=start_utc,
             closed_to_utc_exclusive=end_utc, include_manual=include_manual,
         )
@@ -588,11 +609,12 @@ def get_analytics_dashboard(
     summary = _compute_summary(trades=trades, starting_balance=starting_balance)
 
     calendar_map: dict[date, dict] = {}
+    tz_by_account = {a.id: a.timezone for a in selected_accounts} if account_id is None else {}
     for trade in trades:
         local_day = (
             to_account_local_date(trade.closed_at, account_timezone)
             if account_id is not None
-            else (trade.closed_at.astimezone(timezone.utc).date() if trade.closed_at.tzinfo is not None else trade.closed_at.date())
+            else to_account_local_date(trade.closed_at, tz_by_account.get(trade.account_id, "UTC"))
         )
         if local_day not in calendar_map:
             calendar_map[local_day] = {"trade_count": 0, "total_pnl": Decimal("0"), "win_count": 0, "loss_count": 0}
@@ -659,9 +681,18 @@ def get_analytics_dashboard(
         trades=trades, account_timezone=account_timezone, time_basis=time_basis
     )
 
+    account_ids_to_fetch = [account_id] if account_id is not None else [a.id for a in selected_accounts]
+    recent_db_trades = journal_repo.list_recent_trades_for_dashboard(
+        db,
+        account_ids=account_ids_to_fetch,
+        closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc,
+        include_manual=include_manual,
+        limit=recent_limit,
+    )
     recent_models = [
         _build_trade_response(trade, account_timezone=account_timezone)
-        for trade in sorted(trades, key=lambda item: (item.closed_at, item.id), reverse=True)[:recent_limit]
+        for trade in recent_db_trades
     ]
 
     return AnalyticsDashboardResponse(
