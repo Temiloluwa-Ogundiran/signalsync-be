@@ -52,8 +52,6 @@ def test_account_response_exposes_sync_state_fields() -> None:
         "bootstrap_error_message": None,
         "last_sync_attempted_at": datetime.now(timezone.utc),
         "next_sync_not_before": datetime.now(timezone.utc),
-        "last_sync_outcome": "success",
-        "consecutive_sync_failures": 0,
         "latest_balance": Decimal("10000.00"),
         "latest_equity": Decimal("10050.00"),
         "is_deleted": False,
@@ -65,8 +63,6 @@ def test_account_response_exposes_sync_state_fields() -> None:
 
     assert response.last_sync_attempted_at == payload["last_sync_attempted_at"]
     assert response.next_sync_not_before == payload["next_sync_not_before"]
-    assert response.last_sync_outcome == "success"
-    assert response.consecutive_sync_failures == 0
     assert response.latest_balance == Decimal("10000.00")
     assert response.latest_equity == Decimal("10050.00")
 

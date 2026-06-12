@@ -50,8 +50,6 @@ class AccountResponse(BaseModel):
     bootstrap_error_message: Optional[str]
     last_sync_attempted_at: Optional[datetime] = None
     next_sync_not_before: Optional[datetime] = None
-    last_sync_outcome: Optional[str] = None
-    consecutive_sync_failures: int = 0
     latest_balance: Optional[Decimal] = None
     latest_equity: Optional[Decimal] = None
     is_deleted: bool
