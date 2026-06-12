@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import logging
+import uuid
 from typing import Any, Optional
 
 from fastapi import HTTPException, status
@@ -177,6 +178,8 @@ def ingest_closed_deals(
     skipped_missing_open_timestamp = 0
     skipped_missing_close_timestamp = 0
 
+    rows_to_upsert = []
+
     for deal in deals:
         if not _is_trade_deal(deal):
             skipped_non_trade += 1
@@ -237,59 +240,35 @@ def ingest_closed_deals(
         # Extract MT5 enrichment fields when the trade payload includes them.
         enrichment = _extract_mt5_enrichment(deal) if mt5_enriched else {}
 
-        was_inserted = account_repo.upsert_closed_trade(
-            db,
-            account_id=account.id,
-            broker_trade_id=broker_trade_id,
-            symbol=symbol,
-            direction=direction,
-            open_price=open_price,
-            close_price=close_price,
-            volume=volume,
-            profit=profit,
-            commission=commission,
-            swap=swap,
-            net_profit=net_profit,
-            duration_seconds=max(0, _as_int((closed_at_utc - opened_at_utc).total_seconds())),
-            session=session_value,
-            opened_at=opened_at_utc,
-            closed_at=closed_at_utc,
+        row = {
+            "id": uuid.uuid4(),
+            "account_id": account.id,
+            "broker_trade_id": broker_trade_id,
+            "symbol": symbol,
+            "direction": direction,
+            "open_price": open_price,
+            "close_price": close_price,
+            "volume": volume,
+            "profit": profit,
+            "commission": commission,
+            "swap": swap,
+            "net_profit": net_profit,
+            "duration_seconds": max(0, _as_int((closed_at_utc - opened_at_utc).total_seconds())),
+            "session": session_value,
+            "opened_at": opened_at_utc,
+            "closed_at": closed_at_utc,
+            "is_manual": False,
+            "is_missed": False,
+            "created_at": datetime.now(timezone.utc),
             **enrichment,
-        )
+        }
+        rows_to_upsert.append(row)
 
-        if was_inserted:
-            inserted += 1
-            touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
-        else:
-            was_updated = account_repo.update_closed_trade(
-                db,
-                account_id=account.id,
-                broker_trade_id=broker_trade_id,
-                symbol=symbol,
-                direction=direction,
-                open_price=open_price,
-                close_price=close_price,
-                volume=volume,
-                profit=profit,
-                commission=commission,
-                swap=swap,
-                net_profit=net_profit,
-                duration_seconds=max(0, _as_int((closed_at_utc - opened_at_utc).total_seconds())),
-                session=session_value,
-                opened_at=opened_at_utc,
-                closed_at=closed_at_utc,
-                **enrichment,
-            )
-            if was_updated:
-                updated += 1
-                touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
+    inserted, updated, affected_closed_ats = account_repo.bulk_upsert_closed_trades(db, rows=rows_to_upsert)
+    for closed_at_utc in affected_closed_ats:
+        touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
 
     for trading_date in touched_dates:
-        account_repo.delete_daily_stats_for_date(
-            db,
-            account_id=account.id,
-            trading_date=trading_date,
-        )
         account_repo.rebuild_daily_stats_for_date(
             db,
             account_id=account.id,

@@ -1,4 +1,5 @@
 import uuid
+from collections import defaultdict
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -329,6 +330,22 @@ def list_attachments_by_message(
     return list(db.execute(stmt).scalars().all())
 
 
+def map_attachments_by_message_ids(
+    db: Session, message_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[JournalAttachment]]:
+    if not message_ids:
+        return {}
+    stmt = (
+        select(JournalAttachment)
+        .where(JournalAttachment.message_id.in_(message_ids))
+        .order_by(JournalAttachment.created_at.asc(), JournalAttachment.id.asc())
+    )
+    out: dict[uuid.UUID, list[JournalAttachment]] = defaultdict(list)
+    for a in db.execute(stmt).scalars():
+        out[a.message_id].append(a)
+    return dict(out)
+
+
 # ---------------------------------------------------------------------------
 # JournalTemplate
 # ---------------------------------------------------------------------------
@@ -613,20 +630,8 @@ def list_trading_dates_with_journal_activity(
         .distinct()
     )
 
-    dates: set[date] = set()
-    for (d,) in db.execute(stmt_daily).all():
-        if d is not None:
-            dates.add(d)
-    for (d,) in db.execute(stmt_trade).all():
-        if d is not None:
-            dates.add(d)
-    for (d,) in db.execute(stmt_daily_reviewed).all():
-        if d is not None:
-            dates.add(d)
-    for (d,) in db.execute(stmt_trade_reviewed).all():
-        if d is not None:
-            dates.add(d)
-    return dates
+    combined = stmt_daily.union(stmt_trade, stmt_daily_reviewed, stmt_trade_reviewed)
+    return {d for (d,) in db.execute(combined).all() if d is not None}
 
 
 def list_account_snapshots(
@@ -647,22 +652,7 @@ def list_account_snapshots(
     return list(db.execute(stmt).scalars().all())
 
 
-def get_latest_account_snapshot_on_or_before(
-    db: Session,
-    *,
-    account_id: uuid.UUID,
-    snapshot_date: date,
-) -> AccountSnapshot | None:
-    stmt = (
-        select(AccountSnapshot)
-        .where(
-            AccountSnapshot.account_id == account_id,
-            AccountSnapshot.snapshot_date <= snapshot_date,
-        )
-        .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
-        .limit(1)
-    )
-    return db.execute(stmt).scalar_one_or_none()
+
 
 
 def list_trade_setups(

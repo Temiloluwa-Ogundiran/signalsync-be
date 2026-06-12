@@ -72,6 +72,7 @@ class Mt5CoreClient:
         return httpx.AsyncClient(
             headers=self._headers(),
             timeout=10.0,
+            limits=httpx.Limits(max_keepalive_connections=0),
         )
 
     @staticmethod
@@ -160,8 +161,8 @@ class Mt5CoreClient:
             except (httpx.HTTPError, ValueError) as e:
                 raise Mt5CoreClientError(f"Failed to submit account verification job: {e}") from e
 
-        job_id = data["job_id"]
-        return await self._poll_job(job_id)
+            job_id = data["job_id"]
+            return await self._poll_job(client, job_id)
 
     async def submit_history_sync(
         self,
@@ -208,8 +209,8 @@ class Mt5CoreClient:
             except (httpx.HTTPError, ValueError) as e:
                 raise Mt5CoreClientError(f"Failed to submit history sync job: {e}") from e
 
-        job_id = data["job_id"]
-        return await self._poll_job(job_id)
+            job_id = data["job_id"]
+            return await self._poll_job(client, job_id)
 
     async def get_open_positions(
         self,
@@ -239,13 +240,13 @@ class Mt5CoreClient:
                     f"Failed to submit open positions read job: {e}"
                 ) from e
 
-        job_id = data["job_id"]
-        result = await self._poll_job(job_id)
-        if isinstance(result, dict) and isinstance(result.get("data"), dict):
-            return result["data"]
-        return result
+            job_id = data["job_id"]
+            result = await self._poll_job(client, job_id)
+            if isinstance(result, dict) and isinstance(result.get("data"), dict):
+                return result["data"]
+            return result
 
-    async def _poll_job(self, job_id: str) -> dict[str, Any]:
+    async def _poll_job(self, client: httpx.AsyncClient, job_id: str) -> dict[str, Any]:
         """Poll the status of a job until succeeded or failed.
 
         Each poll opens a fresh HTTP connection to avoid RemoteProtocolError
@@ -256,13 +257,11 @@ class Mt5CoreClient:
         
         while True:
             try:
-                # Fresh client per poll — avoids reusing a stale keep-alive conn.
-                async with self._new_client() as client:
-                    response = await client.get(
-                        f"{self.base_url}/jobs/{job_id}",
-                    )
-                    response.raise_for_status()
-                    job_status_resp = response.json()
+                response = await client.get(
+                    f"{self.base_url}/jobs/{job_id}",
+                )
+                response.raise_for_status()
+                job_status_resp = response.json()
             except httpx.RemoteProtocolError:
                 # Server closed the connection before responding — transient,
                 # will retry after poll_interval.

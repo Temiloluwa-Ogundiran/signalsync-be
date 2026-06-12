@@ -213,3 +213,490 @@ def test_refresh_token_grace_window() -> None:
         db.close()
         transaction.rollback()
         connection.close()
+
+
+def test_bulk_upsert_closed_trades_db() -> None:
+    from app.domains.accounts.repository import bulk_upsert_closed_trades
+    from app.domains.accounts.models import AccountSnapshot
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        # Define trade rows to upsert
+        rows = [
+            {
+                "id": uuid.uuid4(),
+                "account_id": account.id,
+                "broker_trade_id": "T1",
+                "symbol": "EURUSD",
+                "direction": TradeDirection.buy,
+                "open_price": Decimal("1.0"),
+                "close_price": Decimal("1.1"),
+                "volume": Decimal("0.1"),
+                "profit": Decimal("10.0"),
+                "commission": Decimal("0.0"),
+                "swap": Decimal("0.0"),
+                "net_profit": Decimal("10.0"),
+                "duration_seconds": 60,
+                "session": TradeSession.london,
+                "opened_at": datetime.now(timezone.utc),
+                "closed_at": datetime.now(timezone.utc),
+                "is_manual": False,
+                "is_missed": False,
+                "created_at": datetime.now(timezone.utc),
+            }
+        ]
+        
+        # 1. First bulk upsert: Insert new trade
+        ins, upd, dates = bulk_upsert_closed_trades(db, rows=rows)
+        assert ins == 1
+        assert upd == 0
+        assert len(dates) == 1
+        
+        # 2. Second bulk upsert: Update trade, and insert a new one
+        rows[0]["net_profit"] = Decimal("12.0")  # updated value
+        rows.append({
+            "id": uuid.uuid4(),
+            "account_id": account.id,
+            "broker_trade_id": "T2",
+            "symbol": "GBPUSD",
+            "direction": TradeDirection.sell,
+            "open_price": Decimal("1.2"),
+            "close_price": Decimal("1.1"),
+            "volume": Decimal("0.2"),
+            "profit": Decimal("20.0"),
+            "commission": Decimal("-1.0"),
+            "swap": Decimal("0.0"),
+            "net_profit": Decimal("19.0"),
+            "duration_seconds": 120,
+            "session": TradeSession.new_york,
+            "opened_at": datetime.now(timezone.utc),
+            "closed_at": datetime.now(timezone.utc),
+            "is_manual": False,
+            "is_missed": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+        
+        ins, upd, dates = bulk_upsert_closed_trades(db, rows=rows)
+        assert ins == 1
+        assert upd == 1
+        assert len(dates) == 2
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_earliest_snapshot_db() -> None:
+    from app.domains.accounts.repository import get_earliest_snapshot
+    from app.domains.accounts.models import AccountSnapshot
+    from datetime import date
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        # Add snapshots
+        snap1 = AccountSnapshot(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            snapshot_date=date(2026, 5, 20),
+            balance=Decimal("10000.00"),
+            equity=Decimal("10050.00"),
+            floating_pnl=Decimal("50.00"),
+        )
+        snap2 = AccountSnapshot(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            snapshot_date=date(2026, 5, 19),
+            balance=Decimal("9900.00"),
+            equity=Decimal("9950.00"),
+            floating_pnl=Decimal("50.00"),
+        )
+        db.add_all([snap1, snap2])
+        db.flush()
+        
+        earliest = get_earliest_snapshot(db, account.id)
+        assert earliest is not None
+        assert earliest.snapshot_date == date(2026, 5, 19)
+        assert earliest.balance == Decimal("9900.00")
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_snapshot_lookup_bisect_db() -> None:
+    from app.domains.journal.service._helpers import build_snapshot_lookup, latest_balance_on_or_before
+    from app.domains.accounts.models import AccountSnapshot
+    from datetime import date
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        # Add snapshots
+        snap1 = AccountSnapshot(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            snapshot_date=date(2026, 5, 10),
+            balance=Decimal("1000.00"),
+            equity=Decimal("1000.00"),
+            floating_pnl=Decimal("0.00"),
+        )
+        snap2 = AccountSnapshot(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            snapshot_date=date(2026, 5, 15),
+            balance=Decimal("1200.00"),
+            equity=Decimal("1200.00"),
+            floating_pnl=Decimal("0.00"),
+        )
+        db.add_all([snap1, snap2])
+        db.flush()
+        
+        lookup = build_snapshot_lookup(db, account_id=account.id)
+        assert lookup == ([date(2026, 5, 10), date(2026, 5, 15)], [Decimal("1000.00"), Decimal("1200.00")])
+        
+        # Test lookups
+        assert latest_balance_on_or_before(lookup, date(2026, 5, 9)) is None
+        assert latest_balance_on_or_before(lookup, date(2026, 5, 10)) == Decimal("1000.00")
+        assert latest_balance_on_or_before(lookup, date(2026, 5, 14)) == Decimal("1000.00")
+        assert latest_balance_on_or_before(lookup, date(2026, 5, 15)) == Decimal("1200.00")
+        assert latest_balance_on_or_before(lookup, date(2026, 5, 20)) == Decimal("1200.00")
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_map_attachments_by_message_ids_db() -> None:
+    from app.domains.journal.repository import map_attachments_by_message_ids, create_message, create_attachment
+    from app.domains.journal.models import DailyJournal, JournalMessageType
+    from datetime import date
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        dj = DailyJournal(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            trading_date=date(2026, 5, 20),
+        )
+        db.add(dj)
+        db.flush()
+        
+        m1 = create_message(
+            db,
+            daily_journal_id=dj.id,
+            trade_journal_id=None,
+            author_id=user.id,
+            message_type=JournalMessageType.text,
+            content="Message 1",
+            tags=[],
+        )
+        m2 = create_message(
+            db,
+            daily_journal_id=dj.id,
+            trade_journal_id=None,
+            author_id=user.id,
+            message_type=JournalMessageType.image,
+            content="Message 2",
+            tags=[],
+        )
+        
+        att1 = create_attachment(
+            db,
+            message_id=m2.id,
+            storage_path="path/1.png",
+            media_type="image",
+            mime_type="image/png",
+            original_filename="1.png",
+            caption="Cap 1",
+        )
+        
+        att_map = map_attachments_by_message_ids(db, [m1.id, m2.id])
+        assert m1.id not in att_map
+        assert m2.id in att_map
+        assert len(att_map[m2.id]) == 1
+        assert att_map[m2.id][0].id == att1.id
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_list_trading_dates_with_journal_activity_union_db() -> None:
+    from app.domains.journal.repository import list_trading_dates_with_journal_activity, create_message
+    from app.domains.journal.models import DailyJournal, JournalMessageType
+    from datetime import date
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        dj1 = DailyJournal(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            trading_date=date(2026, 5, 20),
+        )
+        dj2 = DailyJournal(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            trading_date=date(2026, 5, 21),
+            reviewed_at=datetime.now(timezone.utc),
+        )
+        db.add_all([dj1, dj2])
+        db.flush()
+        
+        create_message(
+            db,
+            daily_journal_id=dj1.id,
+            trade_journal_id=None,
+            author_id=user.id,
+            message_type=JournalMessageType.text,
+            content="Active message",
+            tags=[],
+        )
+        
+        dates = list_trading_dates_with_journal_activity(
+            db,
+            account_id=account.id,
+            account_timezone="UTC",
+            from_date=date(2026, 5, 19),
+            to_date=date(2026, 5, 22),
+        )
+        
+        assert dates == {date(2026, 5, 20), date(2026, 5, 21)}
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()
+
+
+def test_delete_trades_outside_valid_broker_ids_in_window_returning_db() -> None:
+    from app.domains.accounts.repository import delete_trades_outside_valid_broker_ids_in_window
+    from datetime import date
+    
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+        
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+        )
+        db.add(account)
+        db.flush()
+        
+        # Create trades
+        t1 = Trade(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            broker_trade_id="B1",
+            symbol="EURUSD",
+            direction=TradeDirection.buy,
+            open_price=Decimal("1.0"),
+            close_price=Decimal("1.1"),
+            volume=Decimal("0.1"),
+            profit=Decimal("10.0"),
+            commission=Decimal("0.0"),
+            swap=Decimal("0.0"),
+            net_profit=Decimal("10.0"),
+            duration_seconds=60,
+            session=TradeSession.london,
+            opened_at=datetime.now(timezone.utc),
+            closed_at=datetime.now(timezone.utc),
+            is_missed=False,
+            is_manual=False,
+        )
+        t2 = Trade(
+            id=uuid.uuid4(),
+            account_id=account.id,
+            broker_trade_id="B2",
+            symbol="EURUSD",
+            direction=TradeDirection.buy,
+            open_price=Decimal("1.0"),
+            close_price=Decimal("1.1"),
+            volume=Decimal("0.1"),
+            profit=Decimal("10.0"),
+            commission=Decimal("0.0"),
+            swap=Decimal("0.0"),
+            net_profit=Decimal("10.0"),
+            duration_seconds=60,
+            session=TradeSession.london,
+            opened_at=datetime.now(timezone.utc),
+            closed_at=datetime.now(timezone.utc),
+            is_missed=False,
+            is_manual=False,
+        )
+        db.add_all([t1, t2])
+        db.flush()
+        
+        # Delete trades outside valid set ("B1")
+        deleted_count, affected_dates = delete_trades_outside_valid_broker_ids_in_window(
+            db,
+            account_id=account.id,
+            closed_from_utc=None,
+            closed_to_utc_exclusive=None,
+            account_timezone="UTC",
+            valid_broker_trade_ids={"B1"},
+        )
+        
+        assert deleted_count == 1
+        assert len(affected_dates) == 1
+        
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()

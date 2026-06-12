@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+import time
+import threading
+import asyncio
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -16,6 +19,22 @@ from app.core.security import decode_token
 from app.domains.users import repository as user_repo
 
 logger = logging.getLogger(__name__)
+
+# module level
+_last_touch_by_user: dict[uuid.UUID, float] = {}
+_touch_lock = threading.Lock()
+
+
+def _should_touch(user_id: uuid.UUID, now_monotonic: float) -> bool:
+    min_interval = settings.USER_ACTIVITY_TOUCH_MIN_INTERVAL_SECONDS
+    with _touch_lock:
+        last = _last_touch_by_user.get(user_id)
+        if last is not None and (now_monotonic - last) < min_interval:
+            return False
+        if len(_last_touch_by_user) > 50_000:   # heuristic cache; clearing is harmless
+            _last_touch_by_user.clear()
+        _last_touch_by_user[user_id] = now_monotonic
+        return True
 
 
 def _touch_last_active(user_id: uuid.UUID, observed_at: datetime) -> None:
@@ -57,9 +76,10 @@ class AuthActivityMiddleware(BaseHTTPMiddleware):
         except ValueError:
             return response
 
-        # Offload the synchronous DB write to a worker thread so it never blocks
-        # the event loop (which would serialize every other request on this worker).
-        observed_at = datetime.now(timezone.utc)
-        await anyio.to_thread.run_sync(_touch_last_active, user_id, observed_at)
+        # Gate with in-process cooldown cache and offload database write
+        if _should_touch(user_id, time.monotonic()):
+            observed_at = datetime.now(timezone.utc)
+            asyncio.get_running_loop().run_in_executor(None, _touch_last_active, user_id, observed_at)
 
         return response
+

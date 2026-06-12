@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from bisect import bisect_right
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.journal import repository as journal_repo
@@ -29,13 +30,25 @@ from app.shared.utils.timezone import local_date_to_utc_range, to_account_local_
 _HASHTAG_PATTERN = r"#([A-Za-z][A-Za-z0-9_-]*)"
 
 
+def build_snapshot_lookup(db: Session, *, account_id: uuid.UUID) -> tuple[list[date], list[Decimal]]:
+    snaps = journal_repo.list_account_snapshots(db, account_id=account_id, from_date=None, to_date=None)
+    return [s.snapshot_date for s in snaps], [s.balance for s in snaps]
+
+
+def latest_balance_on_or_before(lookup: tuple[list[date], list[Decimal]], target: date) -> Decimal | None:
+    dates, balances = lookup
+    idx = bisect_right(dates, target)
+    return balances[idx - 1] if idx else None
+
+
 def extract_tags(content: str | None) -> list[str]:
     if not content:
         return []
     return [match.lower() for match in re.findall(_HASHTAG_PATTERN, content)]
 
 
-def _serialize_message(db: Session, message) -> JournalMessageResponse:
+
+def _serialize_message(message, *, attachments: list) -> JournalMessageResponse:
     audio_url = None
     audio_url_expires_at = None
 
@@ -47,7 +60,7 @@ def _serialize_message(db: Session, message) -> JournalMessageResponse:
         )
 
     attachments_payload: list[JournalAttachmentResponse] = []
-    for attachment in journal_repo.list_attachments_by_message(db, message.id):
+    for attachment in attachments:
         signed_url, signed_url_expires_at = generate_signed_url(
             bucket=settings.JOURNAL_IMAGES_BUCKET,
             storage_path=attachment.storage_path,
@@ -84,6 +97,11 @@ def _serialize_message(db: Session, message) -> JournalMessageResponse:
         edited_at=message.edited_at,
         created_at=message.created_at,
     )
+
+
+def _serialize_message_single(db: Session, message) -> JournalMessageResponse:
+    attachments = journal_repo.list_attachments_by_message(db, message.id)
+    return _serialize_message(message, attachments=attachments)
 
 
 def _get_trade_owned_by_user(db: Session, *, trade_id: uuid.UUID, current_user: User):
@@ -164,14 +182,7 @@ def _estimate_starting_balance(db: Session, *, account: TradingAccount) -> Decim
     all_time_realized = account_repo.sum_trade_net_profit(db, account_id=account_id)
 
     if account.sync_provider == SyncProvider.csv_import:
-        from sqlalchemy import select  # noqa: PLC0415
-        from app.domains.accounts.models import AccountSnapshot  # noqa: PLC0415
-        earliest_snapshot = db.execute(
-            select(AccountSnapshot)
-            .where(AccountSnapshot.account_id == account_id)
-            .order_by(AccountSnapshot.snapshot_date.asc())
-            .limit(1)
-        ).scalar_one_or_none()
+        earliest_snapshot = account_repo.get_earliest_snapshot(db, account_id)
         if earliest_snapshot is not None:
             return earliest_snapshot.balance
         return Decimal("0")
@@ -189,10 +200,10 @@ def _resolve_day_balances(
     trading_date: date,
 ) -> tuple[Decimal | None, Decimal | None]:
     prev_day = trading_date - timedelta(days=1)
-    start_snapshot = journal_repo.get_latest_account_snapshot_on_or_before(
+    start_snapshot = account_repo.get_latest_snapshot_on_or_before_date(
         db, account_id=account_id, snapshot_date=prev_day
     )
-    end_snapshot = journal_repo.get_latest_account_snapshot_on_or_before(
+    end_snapshot = account_repo.get_latest_snapshot_on_or_before_date(
         db, account_id=account_id, snapshot_date=trading_date
     )
     return (

@@ -32,6 +32,7 @@ from app.domains.journal.schemas import (
     JournalTradeListResponse,
 )
 from app.shared.utils.timezone import local_date_to_utc_range, to_account_local_date
+from datetime import timedelta
 
 from ._helpers import (
     _build_trade_response,
@@ -39,8 +40,9 @@ from ._helpers import (
     _get_account_or_404,
     _get_ready_accounts_for_user,
     _resolve_date_window,
-    _resolve_day_balances,
     _resolve_multi_account_date_window,
+    build_snapshot_lookup,
+    latest_balance_on_or_before,
 )
 
 
@@ -355,12 +357,14 @@ def _balance_history_points_from_trade_closes(
     last_local_date: date | None = None
     running: Decimal | None = None
 
+    lookup = build_snapshot_lookup(db, account_id=account_id)
+
     for trade in sorted_trades:
         ld = to_account_local_date(trade.closed_at, account.timezone)
         if ld < from_date or ld > to_date:
             continue
         if ld != last_local_date:
-            ds, _ = _resolve_day_balances(db, account_id=account_id, trading_date=ld)
+            ds = latest_balance_on_or_before(lookup, ld - timedelta(days=1))
             if ds is not None:
                 running = ds
             elif last_local_date is None:
@@ -409,7 +413,8 @@ def get_analytics_balance_history(
             db, account_id=account_id, trading_date=from_date,
             account_timezone=account.timezone, include_manual=include_manual,
         )
-        day_start_balance, _ = _resolve_day_balances(db, account_id=account_id, trading_date=from_date)
+        lookup = build_snapshot_lookup(db, account_id=account_id)
+        day_start_balance = latest_balance_on_or_before(lookup, from_date - timedelta(days=1))
         if day_start_balance is not None:
             running = day_start_balance
         else:

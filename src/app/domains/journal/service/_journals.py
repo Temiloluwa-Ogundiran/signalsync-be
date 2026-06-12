@@ -29,6 +29,7 @@ from ._helpers import (
     _get_trade_owned_by_user,
     _resolve_day_balances,
     _serialize_message,
+    _serialize_message_single,
     extract_tags,
 )
 
@@ -81,7 +82,9 @@ def get_or_create_trade_journal(db: Session, *, trade_id: uuid.UUID, current_use
         db.refresh(trade_journal)
 
     messages = journal_repo.list_messages_by_trade_journal(db, trade_journal.id)
-    return trade_journal, [_serialize_message(db, m) for m in messages]
+    message_ids = [m.id for m in messages]
+    attachments_map = journal_repo.map_attachments_by_message_ids(db, message_ids)
+    return trade_journal, [_serialize_message(m, attachments=attachments_map.get(m.id, [])) for m in messages]
 
 
 def create_trade_journal_message(
@@ -170,7 +173,7 @@ def create_trade_journal_message(
 
     db.commit()
     db.refresh(message)
-    return _serialize_message(db, message)
+    return _serialize_message_single(db, message)
 
 
 def get_or_create_daily_journal(
@@ -234,7 +237,9 @@ def get_or_create_daily_journal(
     messages: list[JournalMessageResponse] = []
     if include_messages:
         daily_messages = journal_repo.list_messages_by_daily_journal(db, daily_journal.id)
-        messages = [_serialize_message(db, m) for m in daily_messages]
+        message_ids = [m.id for m in daily_messages]
+        attachments_map = journal_repo.map_attachments_by_message_ids(db, message_ids)
+        messages = [_serialize_message(m, attachments=attachments_map.get(m.id, [])) for m in daily_messages]
 
     gross_pnl = sum((trade.net_profit for trade in trades), Decimal("0"))
     day_start_balance, day_end_balance = _resolve_day_balances(
@@ -422,7 +427,7 @@ def create_daily_journal_message(
 
     db.commit()
     db.refresh(message)
-    return _serialize_message(db, message)
+    return _serialize_message_single(db, message)
 
 
 def update_message(
@@ -446,7 +451,7 @@ def update_message(
     )
     db.commit()
     db.refresh(updated)
-    return _serialize_message(db, updated)
+    return _serialize_message_single(db, updated)
 
 
 def delete_message(db: Session, *, message_id: uuid.UUID, current_user: User) -> None:

@@ -416,6 +416,39 @@ def get_trade_by_id(db: Session, trade_id: uuid.UUID) -> Optional[Trade]:
     return db.execute(stmt).scalar_one_or_none()
 
 
+def bulk_upsert_closed_trades(db: Session, *, rows: list[dict]) -> tuple[int, int, list[datetime]]:
+    """rows: dicts with the exact Trade column names.
+    Returns (inserted_count, updated_count, affected_closed_ats)."""
+    if not rows:
+        return 0, 0, []
+    inserted = 0
+    updated = 0
+    affected_closed_ats = []
+    CHUNK = 500
+    for i in range(0, len(rows), CHUNK):
+        chunk = rows[i : i + CHUNK]
+        stmt = pg_insert(Trade).values(chunk)
+        update_cols = {
+            c: stmt.excluded[c]
+            for c in ("symbol", "direction", "open_price", "close_price", "volume",
+                      "profit", "commission", "swap", "net_profit", "duration_seconds",
+                      "session", "opened_at", "closed_at")
+        }
+        # Preserve existing enrichment when the incoming value is NULL
+        for c in ("sl", "tp", "magic_number", "position_id", "trade_source", "mfe", "mae"):
+            update_cols[c] = func.coalesce(stmt.excluded[c], getattr(Trade, c))
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["account_id", "broker_trade_id"], set_=update_cols
+        ).returning(Trade.closed_at, text("(xmax = 0) AS was_inserted"))
+        for closed_at, was_inserted in db.execute(stmt).all():
+            affected_closed_ats.append(closed_at)
+            if was_inserted:
+                inserted += 1
+            else:
+                updated += 1
+    return inserted, updated, affected_closed_ats
+
+
 def upsert_closed_trade(
     db: Session,
     *,
@@ -644,26 +677,16 @@ def delete_trades_outside_valid_broker_ids_in_window(
     account_timezone: str,
     valid_broker_trade_ids: set[str],
 ) -> tuple[int, set[date]]:
-    local_date_expr = cast(func.timezone(account_timezone, Trade.closed_at), Date)
-
-    id_stmt = select(Trade.id).where(Trade.account_id == account_id)
+    stmt = sa_delete(Trade).where(Trade.account_id == account_id)
     if closed_from_utc is not None:
-        id_stmt = id_stmt.where(Trade.closed_at >= closed_from_utc)
+        stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
-        id_stmt = id_stmt.where(Trade.closed_at < closed_to_utc_exclusive)
-
+        stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
     if valid_broker_trade_ids:
-        id_stmt = id_stmt.where(Trade.broker_trade_id.not_in(sorted(valid_broker_trade_ids)))
-
-    ids_to_delete = list(db.execute(id_stmt).scalars().all())
-    if not ids_to_delete:
-        return 0, set()
-
-    dates_stmt = select(local_date_expr).where(Trade.id.in_(ids_to_delete)).distinct()
-    affected_dates = {row[0] for row in db.execute(dates_stmt).all() if row[0] is not None}
-
-    deleted = db.execute(sa_delete(Trade).where(Trade.id.in_(ids_to_delete)))
-    return int(deleted.rowcount or 0), affected_dates
+        stmt = stmt.where(Trade.broker_trade_id.not_in(sorted(valid_broker_trade_ids)))
+    stmt = stmt.returning(cast(func.timezone(account_timezone, Trade.closed_at), Date))
+    rows = db.execute(stmt).all()
+    return len(rows), {r[0] for r in rows if r[0] is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +910,16 @@ def get_latest_account_snapshot_balance(
     return row.balance
 
 
+def get_earliest_snapshot(db: Session, account_id: uuid.UUID) -> Optional[AccountSnapshot]:
+    stmt = (
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id == account_id)
+        .order_by(AccountSnapshot.snapshot_date.asc(), AccountSnapshot.id.asc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def get_latest_snapshots_for_accounts(
     db: Session,
     *,
@@ -1014,6 +1047,27 @@ def rebuild_daily_stats_for_date(
     )
     db.execute(
         stmt,
+        {
+            "account_id": str(account_id),
+            "trading_date": trading_date,
+            "account_timezone": account_timezone,
+        },
+    )
+
+    # Delete from daily_stats if no trades exist for this day (redundant row removal)
+    delete_stmt = text(
+        """
+        DELETE FROM daily_stats
+        WHERE account_id = :account_id AND trading_date = :trading_date
+          AND NOT EXISTS (
+              SELECT 1 FROM trades t
+              WHERE t.account_id = :account_id AND t.is_missed = FALSE
+                AND DATE(timezone(:account_timezone, t.closed_at)) = :trading_date
+          )
+        """
+    )
+    db.execute(
+        delete_stmt,
         {
             "account_id": str(account_id),
             "trading_date": trading_date,
