@@ -1,8 +1,10 @@
 import uuid
+from collections import defaultdict
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import AccountSnapshot, Trade
@@ -13,7 +15,10 @@ from app.domains.journal.models import (
     JournalMessageType,
     JournalTemplate,
     JournalTemplateType,
+    TagCategory,
+    TagOption,
     TradeJournal,
+    TradeTagSelection,
 )
 
 
@@ -41,16 +46,25 @@ def get_daily_journal_by_account_and_date(
     return db.execute(stmt).scalar_one_or_none()
 
 
-def create_daily_journal(
+def get_or_create_daily_journal(
     db: Session,
     *,
     account_id: uuid.UUID,
     trading_date: date,
 ) -> DailyJournal:
-    daily_journal = DailyJournal(account_id=account_id, trading_date=trading_date)
-    db.add(daily_journal)
-    db.flush()
-    return daily_journal
+    """Race-safe upsert: INSERT ... ON CONFLICT DO NOTHING, then SELECT."""
+    stmt = (
+        pg_insert(DailyJournal)
+        .values(account_id=account_id, trading_date=trading_date)
+        .on_conflict_do_nothing(index_elements=["account_id", "trading_date"])
+    )
+    db.execute(stmt)
+    return db.execute(
+        select(DailyJournal).where(
+            DailyJournal.account_id == account_id,
+            DailyJournal.trading_date == trading_date,
+        )
+    ).scalar_one()
 
 
 def list_daily_journal_feed(
@@ -101,16 +115,29 @@ def get_trade_journal_by_trade_id(
     return db.execute(stmt).scalar_one_or_none()
 
 
-def create_trade_journal(
+def get_or_create_trade_journal_by_trade_id(
     db: Session,
     *,
     trade_id: uuid.UUID,
     daily_journal_id: Optional[uuid.UUID],
-) -> TradeJournal:
-    trade_journal = TradeJournal(trade_id=trade_id, daily_journal_id=daily_journal_id)
-    db.add(trade_journal)
-    db.flush()
-    return trade_journal
+) -> tuple["TradeJournal", bool]:
+    """Race-safe upsert. Returns (trade_journal, is_new).
+
+    Uses RETURNING id to detect whether the INSERT actually fired — rowcount
+    is unreliable for ON CONFLICT DO NOTHING across driver versions.
+    """
+    stmt = (
+        pg_insert(TradeJournal)
+        .values(trade_id=trade_id, daily_journal_id=daily_journal_id)
+        .on_conflict_do_nothing(index_elements=["trade_id"])
+        .returning(TradeJournal.id)
+    )
+    returning_row = db.execute(stmt).scalar_one_or_none()
+    is_new = returning_row is not None
+    trade_journal = db.execute(
+        select(TradeJournal).where(TradeJournal.trade_id == trade_id)
+    ).scalar_one()
+    return trade_journal, is_new
 
 
 def map_trade_reviewed_at_by_trade_ids(
@@ -326,6 +353,22 @@ def list_attachments_by_message(
     return list(db.execute(stmt).scalars().all())
 
 
+def map_attachments_by_message_ids(
+    db: Session, message_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[JournalAttachment]]:
+    if not message_ids:
+        return {}
+    stmt = (
+        select(JournalAttachment)
+        .where(JournalAttachment.message_id.in_(message_ids))
+        .order_by(JournalAttachment.created_at.asc(), JournalAttachment.id.asc())
+    )
+    out: dict[uuid.UUID, list[JournalAttachment]] = defaultdict(list)
+    for a in db.execute(stmt).scalars():
+        out[a.message_id].append(a)
+    return dict(out)
+
+
 # ---------------------------------------------------------------------------
 # JournalTemplate
 # ---------------------------------------------------------------------------
@@ -455,55 +498,63 @@ def delete_user_template(
 # Analytics queries
 # ---------------------------------------------------------------------------
 
-def list_trades_filtered(
-    db: Session,
-    *,
-    account_id: uuid.UUID,
-    closed_from_utc,
-    closed_to_utc_exclusive,
-    include_manual: bool = True,
-) -> list[Trade]:
-    stmt = select(Trade).where(
-        Trade.account_id == account_id,
-        Trade.is_missed.is_(False),
-    )
+ANALYTICS_COLUMNS = (
+    Trade.id,
+    Trade.net_profit,
+    Trade.duration_seconds,
+    Trade.session,
+    Trade.symbol,
+    Trade.trade_source,
+    Trade.mfe,
+    Trade.mae,
+    Trade.opened_at,
+    Trade.closed_at,
+    Trade.account_id,
+)
 
-    if not include_manual:
-        stmt = stmt.where(Trade.is_manual.is_(False))
-    if closed_from_utc is not None:
-        stmt = stmt.where(Trade.closed_at >= closed_from_utc)
-    if closed_to_utc_exclusive is not None:
-        stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
-
-    stmt = stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())
-    return list(db.execute(stmt).scalars().all())
-
-
-def list_trades_filtered_multi(
+def list_trade_rows_for_analytics(
     db: Session,
     *,
     account_ids: list[uuid.UUID],
     closed_from_utc,
     closed_to_utc_exclusive,
     include_manual: bool = True,
-) -> list[Trade]:
-    if not account_ids:
-        return []
-
-    stmt = select(Trade).where(
+) -> list[tuple]:
+    stmt = select(*ANALYTICS_COLUMNS).where(
         Trade.account_id.in_(account_ids),
         Trade.is_missed.is_(False),
     )
-
     if not include_manual:
         stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
         stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
+    return list(db.execute(stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())).all())
 
-    stmt = stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())
+
+def list_recent_trades_for_dashboard(
+    db: Session,
+    *,
+    account_ids: list[uuid.UUID],
+    closed_from_utc,
+    closed_to_utc_exclusive,
+    include_manual: bool = True,
+    limit: int = 8,
+) -> list[Trade]:
+    stmt = select(Trade).where(
+        Trade.account_id.in_(account_ids),
+        Trade.is_missed.is_(False),
+    )
+    if not include_manual:
+        stmt = stmt.where(Trade.is_manual.is_(False))
+    if closed_from_utc is not None:
+        stmt = stmt.where(Trade.closed_at >= closed_from_utc)
+    if closed_to_utc_exclusive is not None:
+        stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
+    stmt = stmt.order_by(Trade.closed_at.desc(), Trade.id.desc()).limit(limit)
     return list(db.execute(stmt).scalars().all())
+
 
 
 def list_daily_pnl(
@@ -610,20 +661,8 @@ def list_trading_dates_with_journal_activity(
         .distinct()
     )
 
-    dates: set[date] = set()
-    for (d,) in db.execute(stmt_daily).all():
-        if d is not None:
-            dates.add(d)
-    for (d,) in db.execute(stmt_trade).all():
-        if d is not None:
-            dates.add(d)
-    for (d,) in db.execute(stmt_daily_reviewed).all():
-        if d is not None:
-            dates.add(d)
-    for (d,) in db.execute(stmt_trade_reviewed).all():
-        if d is not None:
-            dates.add(d)
-    return dates
+    combined = stmt_daily.union(stmt_trade, stmt_daily_reviewed, stmt_trade_reviewed)
+    return {d for (d,) in db.execute(combined).all() if d is not None}
 
 
 def list_account_snapshots(
@@ -644,22 +683,7 @@ def list_account_snapshots(
     return list(db.execute(stmt).scalars().all())
 
 
-def get_latest_account_snapshot_on_or_before(
-    db: Session,
-    *,
-    account_id: uuid.UUID,
-    snapshot_date: date,
-) -> AccountSnapshot | None:
-    stmt = (
-        select(AccountSnapshot)
-        .where(
-            AccountSnapshot.account_id == account_id,
-            AccountSnapshot.snapshot_date <= snapshot_date,
-        )
-        .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
-        .limit(1)
-    )
-    return db.execute(stmt).scalar_one_or_none()
+
 
 
 def list_trade_setups(
@@ -688,13 +712,13 @@ def list_trade_setups(
           AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
         UNION
         SELECT
-            lower(to.value) AS tag,
+            lower(topt.value) AS tag,
             t.id AS trade_id,
             t.net_profit AS net_profit
         FROM trades t
         JOIN trade_tag_selections tts ON tts.trade_id = t.id
-        JOIN tag_options to ON to.id = tts.option_id
-        JOIN tag_categories tc ON tc.id = to.category_id
+        JOIN tag_options topt ON topt.id = tts.option_id
+        JOIN tag_categories tc ON tc.id = topt.category_id
         WHERE t.account_id = :account_id
           AND tc.title = 'Strategy'
           AND t.is_missed = FALSE
@@ -723,3 +747,143 @@ def list_trade_setups(
             },
         ).all()
     )
+
+
+# ---------------------------------------------------------------------------
+# Tag repository (merged from repository_tags.py)
+# ---------------------------------------------------------------------------
+
+def seed_system_tags(db: Session) -> tuple[int, int]:
+    """Seeds system-wide default categories and options. Returns (categories_created, options_created)."""
+    categories_created = 0
+    options_created = 0
+
+    defaults = {
+        "Strategy": [
+            ("Breakout", "#3b82f6"),
+            ("Trend Following", "#10b981"),
+            ("Mean Reversion", "#8b5cf6"),
+            ("Scalping", "#f59e0b"),
+            ("Momentum", "#ec4899"),
+        ],
+        "Mistakes": [
+            ("FOMO", "#ef4444"),
+            ("Overleveraging", "#b91c1c"),
+            ("Early Exit", "#f59e0b"),
+            ("Chasing Market", "#ec4899"),
+            ("No SL", "#7f1d1d"),
+        ],
+    }
+
+    for cat_title, opts in defaults.items():
+        stmt = select(TagCategory).where(
+            and_(TagCategory.title == cat_title, TagCategory.is_system.is_(True))
+        )
+        category = db.execute(stmt).scalar_one_or_none()
+        if not category:
+            category = TagCategory(title=cat_title, is_system=True, user_id=None)
+            db.add(category)
+            db.flush()
+            categories_created += 1
+
+        for opt_val, opt_color in opts:
+            opt_stmt = select(TagOption).where(
+                and_(
+                    TagOption.category_id == category.id,
+                    TagOption.value == opt_val,
+                    TagOption.user_id.is_(None),
+                )
+            )
+            if not db.execute(opt_stmt).scalar_one_or_none():
+                db.add(TagOption(category_id=category.id, value=opt_val, color=opt_color, user_id=None))
+                db.flush()
+                options_created += 1
+
+    return categories_created, options_created
+
+
+def list_categories_with_options(db: Session, user_id: uuid.UUID) -> list[TagCategory]:
+    stmt = (
+        select(TagCategory)
+        .where(or_(TagCategory.is_system.is_(True), TagCategory.user_id == user_id))
+        .order_by(TagCategory.is_system.desc(), TagCategory.created_at.asc())
+    )
+    categories = list(db.execute(stmt).scalars())
+
+    opt_stmt = (
+        select(TagOption)
+        .where(or_(TagOption.user_id.is_(None), TagOption.user_id == user_id))
+        .order_by(TagOption.created_at.asc())
+    )
+    options_by_cat: dict[uuid.UUID, list[TagOption]] = {}
+    for opt in db.execute(opt_stmt).scalars():
+        options_by_cat.setdefault(opt.category_id, []).append(opt)
+
+    for cat in categories:
+        cat.options = options_by_cat.get(cat.id, [])
+    return categories
+
+
+def get_category_by_id(db: Session, category_id: uuid.UUID) -> TagCategory | None:
+    return db.execute(select(TagCategory).where(TagCategory.id == category_id)).scalar_one_or_none()
+
+
+def create_category(db: Session, user_id: uuid.UUID, title: str) -> TagCategory:
+    category = TagCategory(user_id=user_id, title=title, is_system=False)
+    db.add(category)
+    db.flush()
+    return category
+
+
+def delete_category(db: Session, user_id: uuid.UUID, category_id: uuid.UUID) -> bool:
+    stmt = select(TagCategory).where(and_(TagCategory.id == category_id, TagCategory.user_id == user_id))
+    category = db.execute(stmt).scalar_one_or_none()
+    if not category:
+        return False
+    db.delete(category)
+    db.flush()
+    return True
+
+
+def get_option_by_id(db: Session, option_id: uuid.UUID) -> TagOption | None:
+    return db.execute(select(TagOption).where(TagOption.id == option_id)).scalar_one_or_none()
+
+
+def create_option(
+    db: Session,
+    user_id: uuid.UUID,
+    category_id: uuid.UUID,
+    value: str,
+    color: str | None = None,
+) -> TagOption:
+    option = TagOption(category_id=category_id, user_id=user_id, value=value, color=color)
+    db.add(option)
+    db.flush()
+    return option
+
+
+def delete_option(db: Session, user_id: uuid.UUID, option_id: uuid.UUID) -> bool:
+    stmt = select(TagOption).where(and_(TagOption.id == option_id, TagOption.user_id == user_id))
+    option = db.execute(stmt).scalar_one_or_none()
+    if not option:
+        return False
+    db.delete(option)
+    db.flush()
+    return True
+
+
+def get_trade_tag_options(db: Session, trade_id: uuid.UUID) -> list[TagOption]:
+    stmt = (
+        select(TagOption)
+        .join(TradeTagSelection, TradeTagSelection.option_id == TagOption.id)
+        .where(TradeTagSelection.trade_id == trade_id)
+        .order_by(TagOption.value.asc())
+    )
+    return list(db.execute(stmt).scalars())
+
+
+def update_trade_tags(db: Session, trade_id: uuid.UUID, option_ids: list[uuid.UUID]) -> None:
+    db.execute(delete(TradeTagSelection).where(TradeTagSelection.trade_id == trade_id))
+    for opt_id in option_ids:
+        db.add(TradeTagSelection(trade_id=trade_id, option_id=opt_id))
+    db.flush()

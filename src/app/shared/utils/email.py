@@ -10,8 +10,11 @@ logger = logging.getLogger("synctrades.email")
 
 
 def _verification_link(raw_token: str) -> str:
-    """Build the frontend verify-email URL embedded in the email."""
     return f"{settings.FRONTEND_URL}/verify-email?token={raw_token}"
+
+
+def _reset_password_link(raw_token: str) -> str:
+    return f"{settings.FRONTEND_URL}/reset-password?token={raw_token}"
 
 
 def _build_from_header() -> str:
@@ -62,6 +65,53 @@ def send_verification_email(to_email: str, raw_token: str) -> None:
             "from": _build_from_header(),
             "to": [to_email],
             "subject": "Verify your SyncTrades email",
+            "html": html_body,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+
+
+def send_password_reset_email(to_email: str, raw_token: str) -> None:
+    """Send a password reset link to the user through Resend."""
+    if not settings.RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY is not configured.")
+
+    link = _reset_password_link(raw_token)
+    html_body = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;">
+        <h2 style="color:#1a1a1a;">Reset your SyncTrades password</h2>
+        <p style="color:#444;line-height:1.6;">
+            We received a request to reset your password. Click the button below to set a new one.
+            This link expires in <strong>{settings.PASSWORD_RESET_EXPIRY_MINUTES} minutes</strong>.
+        </p>
+        <a href="{link}"
+           style="display:inline-block;margin-top:16px;padding:12px 24px;
+                  background:#2563eb;color:#fff;border-radius:6px;
+                  text-decoration:none;font-weight:600;">
+            Reset Password
+        </a>
+        <p style="margin-top:24px;font-size:13px;color:#888;">
+            If you didn't request a password reset, you can safely ignore this email.
+        </p>
+        <hr style="margin-top:32px;border:none;border-top:1px solid #eee;">
+        <p style="font-size:12px;color:#aaa;">
+            Or copy this link into your browser:<br>
+            <span style="word-break:break-all;">{link}</span>
+        </p>
+    </div>
+    """
+
+    response = httpx.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": _build_from_header(),
+            "to": [to_email],
+            "subject": "Reset your SyncTrades password",
             "html": html_body,
         },
         timeout=15,

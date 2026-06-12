@@ -7,9 +7,35 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     APP_NAME: str = "SyncTrades API"
     DEBUG: bool = False
+    # Emit structured JSON logs (recommended in production for log aggregation).
+    LOG_JSON: bool = True
 
-    
+
     DATABASE_URL: str
+
+    # -------------------------------------------------------------------
+    # Database connection pool (per worker process).
+    # Total cluster connections = web/worker processes * (POOL_SIZE + MAX_OVERFLOW).
+    # Keep that product below Postgres max_connections (front with PgBouncer at scale).
+    # -------------------------------------------------------------------
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 300
+
+    # Max accepted upload size (bytes) for CSV/XLSX import. Default 25 MiB.
+    MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
+
+    # -------------------------------------------------------------------
+    # Rate limiting (per client IP). RATE_LIMIT_DEFAULT is a global safety net;
+    # the upload/sync limits are tighter caps on expensive endpoints.
+    # Behind a proxy, set FORWARDED_ALLOW_IPS so the real client IP is used.
+    # -------------------------------------------------------------------
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_DEFAULT: str = "300/minute"
+    RATE_LIMIT_UPLOADS: str = "20/minute"
+    RATE_LIMIT_SYNC: str = "12/minute"
+    RATE_LIMIT_REDIS_URL: str = "redis://localhost:6379/2"
 
     # -------------------------------------------------------------------
     # Supabase (Storage legacy paths — optional when unused)
@@ -44,7 +70,9 @@ class Settings(BaseSettings):
     CORS_ALLOWED_ORIGINS: str = "http://localhost:3000"
     BACKEND_URL: str = "http://localhost:8000"
     PORT: int = 8000
-    AUTO_SEED_ON_STARTUP: bool = True
+    # Seeding runs on app startup; keep off in production and seed via an explicit
+    # one-shot command so it doesn't run on every worker/replica boot.
+    AUTO_SEED_ON_STARTUP: bool = False
 
     # Mobile deep link scheme (e.g. "synctrades://")
     DEEP_LINK_SCHEME: Optional[str] = None
@@ -70,9 +98,7 @@ class Settings(BaseSettings):
     # Encryption key for broker credential fields (Fernet base64 key)
     ENCRYPTION_KEY: str = ""
 
-    # Sync
-    SYNC_INTERVAL_MINUTES: int = 5
-    ACTIVE_USER_WINDOW_MINUTES: int = 10
+    # Sync (on-demand only; there is no scheduled/periodic sync)
     USER_ACTIVITY_TOUCH_MIN_INTERVAL_SECONDS: int = 60
     MANUAL_SYNC_COOLDOWN_SECONDS: int = 300
     MANUAL_SYNC_BURST_WINDOW_SECONDS: int = 60

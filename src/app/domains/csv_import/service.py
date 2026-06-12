@@ -210,7 +210,6 @@ async def confirm_import(
 
     # 3. Rebuild DailyStats for all touched dates
     for trading_date in touched_dates:
-        account_repo.delete_daily_stats_for_date(db, account_id=account.id, trading_date=trading_date)
         account_repo.rebuild_daily_stats_for_date(
             db,
             account_id=account.id,

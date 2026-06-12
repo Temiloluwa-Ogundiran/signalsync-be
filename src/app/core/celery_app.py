@@ -6,7 +6,7 @@ celery_app = Celery(
     "synctrades",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["app.tasks.journal_sync_tasks"],
+    include=["app.tasks.journal_sync_tasks", "app.tasks.auth_tasks"],
 )
 
 celery_app.conf.update(
@@ -17,9 +17,6 @@ celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
-
-celery_app.conf.beat_schedule = {}
-
 
 @celery_app.task(name="health.ping")
 def ping() -> str:

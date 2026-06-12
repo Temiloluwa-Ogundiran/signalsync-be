@@ -1,9 +1,12 @@
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.core.security import (
@@ -17,17 +20,21 @@ from app.domains.auth import repository as token_repo
 from app.domains.users import repository as user_repo
 from app.domains.users.schemas import UserResponse
 from app.domains.auth.schemas import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginResponse,
     RefreshResponse,
     RegisterRequest,
     RegisterResponse,
     ResendVerificationRequest,
     ResendVerificationResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     VerifyEmailResponse,
 )
 from app.domains.streams.models import StreamPrivacy
 from app.domains.streams import repository as stream_repo
-from app.shared.utils.email import send_verification_email
+from app.tasks.auth_tasks import send_verification_email_task, send_password_reset_email_task
 
 
 def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
@@ -84,8 +91,13 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
     db.commit()
     db.refresh(user)
 
-    # ── send email (stubbed) ─────────────────────────────────────────────────
-    send_verification_email(user.email, raw_token)
+    # ── enqueue verification email (non-fatal — user can use resend flow) ─────
+    try:
+        send_verification_email_task.delay(user.email, raw_token)
+    except Exception:
+        logger.exception(
+            "Failed to enqueue verification email for user %s — user must use resend flow", user.id
+        )
 
     return RegisterResponse(
         message="Account created. Please check your email to verify your address.",
@@ -219,7 +231,12 @@ def resend_verification(
     )
     db.commit()
 
-    send_verification_email(user.email, raw_token)
+    try:
+        send_verification_email_task.delay(user.email, raw_token)
+    except Exception:
+        logger.exception(
+            "Failed to enqueue resend verification email for user %s", user.id
+        )
 
     return ResendVerificationResponse(
         message="If that email is registered and unverified, a new link has been sent."
@@ -246,9 +263,25 @@ def refresh_access_token(
         token_type=TokenType.REFRESH,
     )
     if not token_record:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token.",
+        grace_record = token_repo.get_recently_revoked(
+            db, hashed_token=hashed, token_type=TokenType.REFRESH
+        )
+        if grace_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token.",
+            )
+        # Concurrent-rotation race: token was just rotated by a parallel request.
+        # Issue a fresh ACCESS token only — no new refresh token, no new cookie.
+        user = user_repo.get_by_id(db, grace_record.user_id)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found.",
+            )
+        return RefreshResponse(
+            access_token=create_access_token(str(user.id)),
+            access_token_expiry_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
         )
 
     user = user_repo.get_by_id(db, token_record.user_id)
@@ -317,3 +350,57 @@ def logout(db: Session, raw_refresh: str | None, response: Response) -> dict:
     )
 
     return {"message": "Logged out successfully."}
+
+
+def forgot_password(db: Session, payload: ForgotPasswordRequest) -> ForgotPasswordResponse:
+    """Request a password reset. Always 200 — never leaks whether the email exists."""
+    user = user_repo.get_by_email(db, payload.email)
+    if user and user.is_email_verified and not user.is_deleted:
+        # Revoke any existing reset tokens
+        token_repo.revoke_all_by_user_and_type(
+            db, user_id=user.id, token_type=TokenType.RESET_PASSWORD
+        )
+        raw_token = str(uuid.uuid4())
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.PASSWORD_RESET_EXPIRY_MINUTES
+        )
+        token_repo.create(
+            db,
+            user_id=user.id,
+            hashed_token=hash_token(raw_token),
+            token_type=TokenType.RESET_PASSWORD,
+            expires_at=expires_at,
+        )
+        db.commit()
+        try:
+            send_password_reset_email_task.delay(user.email, raw_token)
+        except Exception:
+            logger.exception("Failed to enqueue password reset email for user %s", user.id)
+    return ForgotPasswordResponse(
+        message="If that email is registered, a password reset link has been sent."
+    )
+
+
+def reset_password(db: Session, payload: ResetPasswordRequest) -> ResetPasswordResponse:
+    """Consume the reset token and set a new password."""
+    hashed = hash_token(payload.token)
+    token_record = token_repo.get_active(
+        db, hashed_token=hashed, token_type=TokenType.RESET_PASSWORD
+    )
+    if not token_record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token.",
+        )
+    user = user_repo.get_by_id(db, token_record.user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found.")
+
+    user.hashed_password = get_password_hash(payload.new_password)
+    token_repo.revoke(db, token_record)
+    # Revoke all refresh tokens — force re-login everywhere
+    token_repo.revoke_all_by_user_and_type(
+        db, user_id=user.id, token_type=TokenType.REFRESH
+    )
+    db.commit()
+    return ResetPasswordResponse(message="Password reset successfully. Please log in.")

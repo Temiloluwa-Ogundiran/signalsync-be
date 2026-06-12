@@ -1,16 +1,21 @@
-from fastapi import APIRouter, Cookie, Depends, Query, Response, status
+from fastapi import APIRouter, Cookie, Depends, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.core.database import get_db
+from app.core.rate_limit import limiter
 from app.domains.auth.schemas import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginResponse,
     RefreshResponse,
     RegisterRequest,
     RegisterResponse,
     ResendVerificationRequest,
     ResendVerificationResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
     VerifyEmailResponse,
 )
 from app.domains.auth import service as auth_service
@@ -24,7 +29,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
 )
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("3/minute")
+def register(request: Request, response: Response, payload: RegisterRequest, db: Session = Depends(get_db)):
     return auth_service.register(db, payload)
 
 
@@ -53,8 +59,12 @@ def verify_email(
     summary="Resend email verification link",
     description="Sends a fresh verification link. Always returns 200 to avoid leaking registered emails.",
 )
+@limiter.limit("3/minute")
 def resend_verification(
-    payload: ResendVerificationRequest, db: Session = Depends(get_db)
+    request: Request,
+    response: Response,
+    payload: ResendVerificationRequest,
+    db: Session = Depends(get_db),
 ):
     return auth_service.resend_verification(db, payload)
 
@@ -65,7 +75,9 @@ def resend_verification(
     status_code=status.HTTP_200_OK,
     summary="Log in and receive an access token",
 )
+@limiter.limit("5/minute")
 def login(
+    request: Request,
     response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
@@ -85,7 +97,9 @@ def login(
         "(rotation), and returns a fresh access token."
     ),
 )
+@limiter.limit("20/minute")
 def refresh_token(
+    request: Request,
     response: Response,
     refresh_token: Optional[str] = Cookie(default=None),
     db: Session = Depends(get_db),
@@ -105,3 +119,36 @@ def logout(
     db: Session = Depends(get_db),
 ):
     return auth_service.logout(db, refresh_token, response)
+
+
+@router.post(
+    "/forgot-password",
+    response_model=ForgotPasswordResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Request a password reset email",
+    description="Always returns 200 to prevent email enumeration.",
+)
+@limiter.limit("3/minute")
+def forgot_password(
+    request: Request,
+    response: Response,
+    payload: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    return auth_service.forgot_password(db, payload)
+
+
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reset password using a valid reset token",
+)
+@limiter.limit("3/minute")
+def reset_password(
+    request: Request,
+    response: Response,
+    payload: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    return auth_service.reset_password(db, payload)

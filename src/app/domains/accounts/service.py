@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.accounts.schemas import AccountConnectRequest
-from app.domains.accounts.sync import sync_account_deals, ingest_mt5_core_history_result
+from app.domains.accounts.sync import ingest_mt5_core_history_result
 from app.domains.users.models import User
 from app.shared.utils.encryption import encrypt_secret
 from app.shared.utils.timezone import validate_timezone_name
@@ -250,34 +250,6 @@ def disconnect_account(
     account = get_account(db, current_user=current_user, account_id=account_id)
     account_repo.soft_disconnect_account(db, account)
     db.commit()
-
-
-def sync_account(
-    db: Session, *, current_user: User, account_id: uuid.UUID
-) -> dict:
-    account = get_account(db, current_user=current_user, account_id=account_id)
-
-    if account.sync_provider != SyncProvider.headless_mt5:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This account does not support broker sync.",
-        )
-
-    try:
-        result = sync_account_deals(db, account=account)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        account_repo.set_account_sync_error(db, account, str(exc)[:500])
-        db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail="Account sync failed."
-        ) from exc
-
-    return {
-        "inserted_trades": result.inserted_trades,
-        "touched_trading_dates": result.touched_trading_dates,
-    }
 
 
 def update_account(

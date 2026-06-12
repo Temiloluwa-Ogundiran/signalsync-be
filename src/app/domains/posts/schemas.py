@@ -1,9 +1,10 @@
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
+from decimal import Decimal
+from typing import Literal, Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.domains.posts.models import PostMediaType, PostType
 
@@ -11,6 +12,21 @@ from app.domains.posts.models import PostMediaType, PostType
 # ---------------------------------------------------------------------------
 # Nested / embedded schemas
 # ---------------------------------------------------------------------------
+
+
+class PostTradeData(BaseModel):
+    """Structured trade payload for signal-type posts. Rejects unknown fields."""
+
+    model_config = {"extra": "forbid"}
+
+    symbol: str = Field(min_length=1, max_length=20)
+    direction: Literal["buy", "sell"]
+    entry: Decimal = Field(gt=0)
+    stop_loss: Optional[Decimal] = Field(default=None, gt=0)
+    take_profit: Optional[Decimal] = Field(default=None, gt=0)
+    risk_percent: Optional[Decimal] = Field(default=None, gt=0, le=100)
+    timeframe: Optional[str] = Field(default=None, max_length=10)
+    notes: Optional[str] = Field(default=None, max_length=2000)
 
 
 class PostMediaResponse(BaseModel):
@@ -47,7 +63,7 @@ class PostCreate(BaseModel):
 
     type: PostType
     content: Optional[str] = None
-    trade_data: Optional[dict] = None
+    trade_data: Optional[PostTradeData] = None
     # For replies only — set by the service, not directly from the client
     parent_post_id: Optional[uuid.UUID] = None
 
@@ -62,18 +78,19 @@ class PostCreate(BaseModel):
         Parse a PostCreate from multipart Form fields.
         `trade_data_raw` is the raw JSON string from the form.
         """
-        parsed_trade_data: Optional[dict] = None
+        parsed_trade_data: Optional[PostTradeData] = None
         if trade_data_raw is not None:
             try:
-                parsed_trade_data = json.loads(trade_data_raw)
-                if not isinstance(parsed_trade_data, dict):
+                raw_dict = json.loads(trade_data_raw)
+                if not isinstance(raw_dict, dict):
                     raise ValueError("trade_data must be a JSON object")
+                parsed_trade_data = PostTradeData.model_validate(raw_dict)
             except (ValueError, TypeError) as exc:
                 from fastapi import HTTPException, status
 
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="'trade_data' must be a valid JSON object string.",
+                    detail=f"'trade_data' is invalid: {exc}",
                 ) from exc
 
         return cls(type=type, content=content, trade_data=parsed_trade_data)

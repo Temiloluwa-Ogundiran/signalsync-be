@@ -167,7 +167,7 @@ def create_post(
         author_id=current_user.id,
         type=data.type,
         content=data.content,
-        trade_data=data.trade_data,
+        trade_data=data.trade_data.model_dump(mode="json") if data.trade_data else None,
         parent_post_id=None,
     )
 
@@ -229,7 +229,7 @@ def create_reply(
         author_id=current_user.id,
         type=data.type,
         content=data.content,
-        trade_data=data.trade_data,
+        trade_data=data.trade_data.model_dump(mode="json") if data.trade_data else None,
         parent_post_id=parent_post_id,
     )
 

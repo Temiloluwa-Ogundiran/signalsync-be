@@ -13,6 +13,8 @@ from app.domains.streams.schemas import (
     ApproveRejectRequest,
     ForumToggleRequest,
     MemberListResponse,
+    PaginatedJoinRequestResponse,
+    PaginatedMemberListResponse,
     StreamDiscoverResponse,
     StreamDetailResponse,
     StreamMemberResponse,
@@ -188,8 +190,13 @@ def unfollow_stream(db: Session, *, stream_id: UUID, current_user: User) -> None
 
 
 def list_join_requests(
-    db: Session, *, stream_id: UUID, current_user: User
-) -> list[StreamMemberResponse]:
+    db: Session,
+    *,
+    stream_id: UUID,
+    current_user: User,
+    limit: int = 50,
+    cursor_user_id: UUID | None = None,
+) -> PaginatedJoinRequestResponse:
     stream = stream_repo.get_by_id(db, stream_id)
     if not stream:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
@@ -200,8 +207,17 @@ def list_join_requests(
             detail="Only the stream owner can view join requests.",
         )
 
-    pending = stream_repo.list_pending_members(db, stream_id=stream_id)
-    return [StreamMemberResponse.model_validate(m) for m in pending]
+    # Fetch one extra to determine whether a next page exists
+    rows = stream_repo.list_pending_members_page(
+        db, stream_id=stream_id, limit=limit + 1, cursor_user_id=cursor_user_id
+    )
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = page[-1].user_id if has_more else None
+    return PaginatedJoinRequestResponse(
+        items=[StreamMemberResponse.model_validate(m) for m in page],
+        next_cursor=next_cursor,
+    )
 
 
 def handle_join_request(
@@ -247,7 +263,9 @@ def get_stream_members(
     *,
     stream_id: UUID,
     current_user: User,
-) -> list[MemberListResponse]:
+    limit: int = 50,
+    cursor_user_id: UUID | None = None,
+) -> PaginatedMemberListResponse:
     stream = stream_repo.get_by_id(db, stream_id)
     if not stream:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
@@ -265,17 +283,25 @@ def get_stream_members(
                 detail="You must be an active member of this stream to view its members.",
             )
 
-    members = stream_repo.list_active_members(db, stream_id=stream_id)
-    return [
-        MemberListResponse(
-            user_id=m.user_id,
-            username=m.user.username,
-            avatar_url=m.user.avatar_url,
-            status=m.status if is_owner else None,
-            joined_at=m.joined_at if is_owner else None,
-        )
-        for m in members
-    ]
+    rows = stream_repo.list_active_members_page(
+        db, stream_id=stream_id, limit=limit + 1, cursor_user_id=cursor_user_id
+    )
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    next_cursor = page[-1].user_id if has_more else None
+    return PaginatedMemberListResponse(
+        items=[
+            MemberListResponse(
+                user_id=m.user_id,
+                username=m.user.username,
+                avatar_url=m.user.avatar_url,
+                status=m.status if is_owner else None,
+                joined_at=m.joined_at if is_owner else None,
+            )
+            for m in page
+        ],
+        next_cursor=next_cursor,
+    )
 
 
 def remove_member(

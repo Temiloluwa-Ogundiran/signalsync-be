@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.domains.streams.models import MemberStatus, Stream, StreamMember, StreamPrivacy
@@ -46,41 +46,35 @@ def create(
 
 
 def get_by_id(db: Session, stream_id: UUID) -> Optional[Stream]:
-    return (
-        db.query(Stream)
-        .filter(Stream.id == stream_id, Stream.is_deleted == False)  # noqa: E712
-        .first()
-    )
+    stmt = select(Stream).where(Stream.id == stream_id, Stream.is_deleted.is_(False))
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def get_by_id_with_owner(db: Session, stream_id: UUID) -> Optional[Stream]:
-    return (
-        db.query(Stream)
+    stmt = (
+        select(Stream)
         .options(joinedload(Stream.owner))
-        .filter(Stream.id == stream_id, Stream.is_deleted == False)  # noqa: E712
-        .first()
+        .where(Stream.id == stream_id, Stream.is_deleted.is_(False))
     )
+    return db.execute(stmt).unique().scalar_one_or_none()
 
 
 def get_default_by_owner(db: Session, owner_id: UUID) -> Optional[Stream]:
-    return (
-        db.query(Stream)
-        .filter(
-            Stream.owner_id == owner_id,
-            Stream.is_default == True,  # noqa: E712
-            Stream.is_deleted == False,  # noqa: E712
-        )
-        .first()
+    stmt = select(Stream).where(
+        Stream.owner_id == owner_id,
+        Stream.is_default.is_(True),
+        Stream.is_deleted.is_(False),
     )
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def get_all_by_owner(db: Session, owner_id: UUID) -> list[Stream]:
-    return (
-        db.query(Stream)
-        .filter(Stream.owner_id == owner_id, Stream.is_deleted == False)  # noqa: E712
+    stmt = (
+        select(Stream)
+        .where(Stream.owner_id == owner_id, Stream.is_deleted.is_(False))
         .order_by(Stream.created_at.asc())
-        .all()
     )
+    return list(db.execute(stmt).scalars())
 
 
 def set_forum_enabled(db: Session, stream: Stream, enabled: bool) -> Stream:
@@ -117,8 +111,8 @@ def list_discover(
 ) -> list[DiscoverRow]:
     """Return all non-deleted streams not owned by exclude_owner_id."""
     follower_subq = (
-        db.query(func.count(StreamMember.user_id))
-        .filter(
+        select(func.count(StreamMember.user_id))
+        .where(
             StreamMember.stream_id == Stream.id,
             StreamMember.status == MemberStatus.active,
         )
@@ -127,8 +121,8 @@ def list_discover(
     )
 
     is_following_subq = (
-        db.query(func.count(StreamMember.user_id))
-        .filter(
+        select(func.count(StreamMember.user_id))
+        .where(
             StreamMember.stream_id == Stream.id,
             StreamMember.user_id == current_user_id,
             StreamMember.status.in_([MemberStatus.active, MemberStatus.pending]),
@@ -137,8 +131,18 @@ def list_discover(
         .scalar_subquery()
     )
 
-    rows = (
-        db.query(
+    membership_status_subq = (
+        select(StreamMember.status)
+        .where(
+            StreamMember.stream_id == Stream.id,
+            StreamMember.user_id == current_user_id,
+        )
+        .correlate(Stream)
+        .scalar_subquery()
+    )
+
+    stmt = (
+        select(
             Stream.id,
             Stream.name,
             Stream.description,
@@ -150,26 +154,18 @@ def list_discover(
             User.display_name.label("owner_display_name"),
             follower_subq.label("follower_count"),
             is_following_subq.label("is_following"),
-            (
-                db.query(StreamMember.status)
-                .filter(
-                    StreamMember.stream_id == Stream.id,
-                    StreamMember.user_id == current_user_id,
-                )
-                .correlate(Stream)
-                .scalar_subquery()
-            ).label("membership_status"),
+            membership_status_subq.label("membership_status"),
         )
         .join(User, User.id == Stream.owner_id)
-        .filter(
+        .where(
             Stream.owner_id != exclude_owner_id,
-            Stream.is_deleted == False,  # noqa: E712
+            Stream.is_deleted.is_(False),
         )
         .order_by(Stream.created_at.desc())
         .offset(skip)
         .limit(limit)
-        .all()
     )
+    rows = db.execute(stmt).all()
 
     return [
         DiscoverRow(
@@ -193,11 +189,10 @@ def list_discover(
 # ── StreamMember functions ────────────────────────────────────────────────────
 
 def get_member(db: Session, *, user_id: UUID, stream_id: UUID) -> Optional[StreamMember]:
-    return (
-        db.query(StreamMember)
-        .filter(StreamMember.user_id == user_id, StreamMember.stream_id == stream_id)
-        .first()
+    stmt = select(StreamMember).where(
+        StreamMember.user_id == user_id, StreamMember.stream_id == stream_id
     )
+    return db.execute(stmt).scalar_one_or_none()
 
 
 def create_member(
@@ -227,37 +222,102 @@ def delete_member(db: Session, member: StreamMember) -> None:
 
 
 def list_pending_members(db: Session, *, stream_id: UUID) -> list[StreamMember]:
-    return (
-        db.query(StreamMember)
-        .filter(
-            StreamMember.stream_id == stream_id,
-            StreamMember.status == MemberStatus.pending,
-        )
-        .all()
+    stmt = select(StreamMember).where(
+        StreamMember.stream_id == stream_id,
+        StreamMember.status == MemberStatus.pending,
     )
+    return list(db.execute(stmt).scalars())
 
 
 def list_active_members(db: Session, *, stream_id: UUID) -> list[StreamMember]:
-    return (
-        db.query(StreamMember)
+    stmt = (
+        select(StreamMember)
         .options(joinedload(StreamMember.user))
-        .filter(
+        .where(
             StreamMember.stream_id == stream_id,
             StreamMember.status == MemberStatus.active,
         )
-        .all()
     )
+    return list(db.execute(stmt).unique().scalars())
+
+
+def list_active_members_page(
+    db: Session,
+    *,
+    stream_id: UUID,
+    limit: int,
+    cursor_user_id: UUID | None,
+) -> list[StreamMember]:
+    """Cursor-based page of active members, ordered by (joined_at ASC, user_id ASC)."""
+    stmt = (
+        select(StreamMember)
+        .options(joinedload(StreamMember.user))
+        .where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.status == MemberStatus.active,
+        )
+        .order_by(StreamMember.joined_at.asc(), StreamMember.user_id.asc())
+        .limit(limit)
+    )
+    if cursor_user_id is not None:
+        cursor_stmt = select(StreamMember.joined_at, StreamMember.user_id).where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.user_id == cursor_user_id,
+        )
+        row = db.execute(cursor_stmt).one_or_none()
+        if row is not None:
+            cursor_joined_at, cursor_uid = row
+            stmt = stmt.where(
+                (StreamMember.joined_at > cursor_joined_at)
+                | (
+                    (StreamMember.joined_at == cursor_joined_at)
+                    & (StreamMember.user_id > cursor_uid)
+                )
+            )
+    return list(db.execute(stmt).unique().scalars())
+
+
+def list_pending_members_page(
+    db: Session,
+    *,
+    stream_id: UUID,
+    limit: int,
+    cursor_user_id: UUID | None,
+) -> list[StreamMember]:
+    """Cursor-based page of pending join requests, ordered by (joined_at ASC, user_id ASC)."""
+    stmt = (
+        select(StreamMember)
+        .where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.status == MemberStatus.pending,
+        )
+        .order_by(StreamMember.joined_at.asc(), StreamMember.user_id.asc())
+        .limit(limit)
+    )
+    if cursor_user_id is not None:
+        cursor_stmt = select(StreamMember.joined_at, StreamMember.user_id).where(
+            StreamMember.stream_id == stream_id,
+            StreamMember.user_id == cursor_user_id,
+        )
+        row = db.execute(cursor_stmt).one_or_none()
+        if row is not None:
+            cursor_joined_at, cursor_uid = row
+            stmt = stmt.where(
+                (StreamMember.joined_at > cursor_joined_at)
+                | (
+                    (StreamMember.joined_at == cursor_joined_at)
+                    & (StreamMember.user_id > cursor_uid)
+                )
+            )
+    return list(db.execute(stmt).scalars())
 
 
 def count_active_members(db: Session, *, stream_id: UUID) -> int:
-    return (
-        db.query(func.count(StreamMember.user_id))
-        .filter(
-            StreamMember.stream_id == stream_id,
-            StreamMember.status == MemberStatus.active,
-        )
-        .scalar()
+    stmt = select(func.count(StreamMember.user_id)).where(
+        StreamMember.stream_id == stream_id,
+        StreamMember.status == MemberStatus.active,
     )
+    return db.execute(stmt).scalar_one()
 
 
 def ban_member(db: Session, *, user_id: UUID, stream_id: UUID) -> StreamMember:

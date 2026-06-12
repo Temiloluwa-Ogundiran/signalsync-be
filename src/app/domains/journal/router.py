@@ -23,6 +23,7 @@ from app.domains.journal.schemas import (
     AnalyticsSummaryResponse,
     AnalyticsTimePerformanceResponse,
     AnalyticsTradeSourceResponse,
+    CategoryCreateRequest,
     DailyJournalFeedItemResponse,
     DailyJournalFeedResponse,
     DailyJournalResponse,
@@ -34,6 +35,12 @@ from app.domains.journal.schemas import (
     JournalTemplateResponse,
     JournalTradeListResponse,
     JournalTradeResponse,
+    OptionCreateRequest,
+    TagCategoryResponse,
+    TagOptionResponse,
+    TradeAssessmentUpdateRequest,
+    TradeRatingUpdateRequest,
+    TradeTagUpdateRequest,
 )
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
@@ -588,4 +595,116 @@ def get_dashboard(
         recent_limit=recent_limit,
         time_basis=time_basis,
         include_manual=include_manual,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tags (merged from router_tags.py)
+# ---------------------------------------------------------------------------
+
+tags_router = APIRouter(tags=["journal-tags"])
+
+
+@tags_router.get("/journal/tags/config", response_model=list[TagCategoryResponse])
+def get_tags_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[TagCategoryResponse]:
+    categories = journal_service.list_user_tags_config(db, user=current_user)
+    return [TagCategoryResponse.model_validate(c) for c in categories]
+
+
+@tags_router.post("/journal/tags/categories", response_model=TagCategoryResponse, status_code=status.HTTP_201_CREATED)
+def create_category(
+    payload: CategoryCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TagCategoryResponse:
+    category = journal_service.create_custom_category(db, user=current_user, title=payload.title)
+    return TagCategoryResponse.model_validate(category)
+
+
+@tags_router.delete("/journal/tags/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_category(
+    category_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    journal_service.delete_custom_category(db, user=current_user, category_id=category_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@tags_router.post(
+    "/journal/tags/categories/{category_id}/options",
+    response_model=TagOptionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_option(
+    category_id: uuid.UUID,
+    payload: OptionCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TagOptionResponse:
+    option = journal_service.create_custom_option(
+        db, user=current_user, category_id=category_id, value=payload.value, color=payload.color,
+    )
+    return TagOptionResponse.model_validate(option)
+
+
+@tags_router.delete("/journal/tags/options/{option_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_option(
+    option_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    journal_service.delete_custom_option(db, user=current_user, option_id=option_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@tags_router.get("/journal/trades/{trade_id}/tags", response_model=list[TagOptionResponse])
+def get_trade_tags(
+    trade_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[TagOptionResponse]:
+    options = journal_service.get_trade_tags(db, user=current_user, trade_id=trade_id)
+    return [TagOptionResponse.model_validate(o) for o in options]
+
+
+@tags_router.put("/journal/trades/{trade_id}/tags", response_model=list[TagOptionResponse])
+def update_trade_tags(
+    trade_id: uuid.UUID,
+    payload: TradeTagUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[TagOptionResponse]:
+    options = journal_service.update_trade_tags(db, user=current_user, trade_id=trade_id, option_ids=payload.option_ids)
+    return [TagOptionResponse.model_validate(o) for o in options]
+
+
+@tags_router.put("/journal/trades/{trade_id}/rating")
+def update_trade_rating(
+    trade_id: uuid.UUID,
+    payload: TradeRatingUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    rating = journal_service.update_trade_rating(db, user=current_user, trade_id=trade_id, rating=payload.rating)
+    return {"rating": rating}
+
+
+@tags_router.put("/journal/trades/{trade_id}/assessment")
+def update_trade_assessment(
+    trade_id: uuid.UUID,
+    payload: TradeAssessmentUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return journal_service.update_trade_assessment(
+        db,
+        user=current_user,
+        trade_id=trade_id,
+        execution_quality=payload.execution_quality,
+        setup_quality=payload.setup_quality,
+        discipline_score=payload.discipline_score,
     )

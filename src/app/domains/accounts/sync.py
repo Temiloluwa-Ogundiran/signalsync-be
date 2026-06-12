@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import logging
-import threading
+import uuid
 from typing import Any, Optional
 
 from fastapi import HTTPException, status
@@ -22,9 +22,6 @@ class SyncResult:
     inserted_trades: int
     touched_trading_dates: int
 
-
-_sync_guard = threading.Lock()
-_active_sync_accounts: set = set()
 
 _OPEN_TIMESTAMP_KEYS = (
     "opened_at",
@@ -48,24 +45,6 @@ _CLOSE_TIMESTAMP_KEYS = (
     "doneTime",
     "time",
 )
-
-
-def _try_acquire_account_sync_lock(account_id) -> bool:
-    with _sync_guard:
-        if account_id in _active_sync_accounts:
-            return False
-        _active_sync_accounts.add(account_id)
-        return True
-
-
-def _release_account_sync_lock(account_id) -> None:
-    with _sync_guard:
-        _active_sync_accounts.discard(account_id)
-
-
-def is_account_sync_active(account_id) -> bool:
-    with _sync_guard:
-        return account_id in _active_sync_accounts
 
 
 def _as_decimal(value: Any) -> Decimal:
@@ -199,6 +178,8 @@ def ingest_closed_deals(
     skipped_missing_open_timestamp = 0
     skipped_missing_close_timestamp = 0
 
+    rows_to_upsert = []
+
     for deal in deals:
         if not _is_trade_deal(deal):
             skipped_non_trade += 1
@@ -259,59 +240,35 @@ def ingest_closed_deals(
         # Extract MT5 enrichment fields when the trade payload includes them.
         enrichment = _extract_mt5_enrichment(deal) if mt5_enriched else {}
 
-        was_inserted = account_repo.upsert_closed_trade(
-            db,
-            account_id=account.id,
-            broker_trade_id=broker_trade_id,
-            symbol=symbol,
-            direction=direction,
-            open_price=open_price,
-            close_price=close_price,
-            volume=volume,
-            profit=profit,
-            commission=commission,
-            swap=swap,
-            net_profit=net_profit,
-            duration_seconds=max(0, _as_int((closed_at_utc - opened_at_utc).total_seconds())),
-            session=session_value,
-            opened_at=opened_at_utc,
-            closed_at=closed_at_utc,
+        row = {
+            "id": uuid.uuid4(),
+            "account_id": account.id,
+            "broker_trade_id": broker_trade_id,
+            "symbol": symbol,
+            "direction": direction,
+            "open_price": open_price,
+            "close_price": close_price,
+            "volume": volume,
+            "profit": profit,
+            "commission": commission,
+            "swap": swap,
+            "net_profit": net_profit,
+            "duration_seconds": max(0, _as_int((closed_at_utc - opened_at_utc).total_seconds())),
+            "session": session_value,
+            "opened_at": opened_at_utc,
+            "closed_at": closed_at_utc,
+            "is_manual": False,
+            "is_missed": False,
+            "created_at": datetime.now(timezone.utc),
             **enrichment,
-        )
+        }
+        rows_to_upsert.append(row)
 
-        if was_inserted:
-            inserted += 1
-            touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
-        else:
-            was_updated = account_repo.update_closed_trade(
-                db,
-                account_id=account.id,
-                broker_trade_id=broker_trade_id,
-                symbol=symbol,
-                direction=direction,
-                open_price=open_price,
-                close_price=close_price,
-                volume=volume,
-                profit=profit,
-                commission=commission,
-                swap=swap,
-                net_profit=net_profit,
-                duration_seconds=max(0, _as_int((closed_at_utc - opened_at_utc).total_seconds())),
-                session=session_value,
-                opened_at=opened_at_utc,
-                closed_at=closed_at_utc,
-                **enrichment,
-            )
-            if was_updated:
-                updated += 1
-                touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
+    inserted, updated, affected_closed_ats = account_repo.bulk_upsert_closed_trades(db, rows=rows_to_upsert)
+    for closed_at_utc in affected_closed_ats:
+        touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
 
     for trading_date in touched_dates:
-        account_repo.delete_daily_stats_for_date(
-            db,
-            account_id=account.id,
-            trading_date=trading_date,
-        )
         account_repo.rebuild_daily_stats_for_date(
             db,
             account_id=account.id,
@@ -507,7 +464,7 @@ async def sync_account_deals_mt5(
     try:
         try:
             investor_password = decrypt_secret(account.encrypted_investor_password)
-        except Exception as exc:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to decrypt account credentials.",
@@ -547,27 +504,3 @@ async def sync_account_deals_mt5(
         account_repo.release_account_sync_lock(db, account.id)
 
 
-def sync_account_deals(
-    db: Session,
-    *,
-    account: TradingAccount,
-    lookback_days: int | None = None,
-) -> SyncResult:
-    if account.sync_provider != SyncProvider.headless_mt5:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This account does not support broker sync.",
-        )
-
-    if not _try_acquire_account_sync_lock(account.id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Sync already in progress for this account.",
-        )
-
-    try:
-        import anyio
-
-        return anyio.run(sync_account_deals_mt5, db, account, lookback_days)
-    finally:
-        _release_account_sync_lock(account.id)

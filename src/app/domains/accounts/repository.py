@@ -8,7 +8,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.domains.accounts.models import (
     AccountSnapshot,
@@ -21,7 +21,6 @@ from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingAccountStatus,
 )
-from app.domains.users.models import User
 from app.shared.utils.timezone import classify_session
 
 # ---------------------------------------------------------------------------
@@ -220,61 +219,6 @@ def list_accounts_for_user(db: Session, user_id: uuid.UUID) -> list[TradingAccou
     return list(db.execute(stmt).scalars().all())
 
 
-def list_syncable_accounts(db: Session) -> list[TradingAccount]:
-    stmt = select(TradingAccount).where(
-        TradingAccount.is_deleted.is_(False),
-        TradingAccount.sync_provider == SyncProvider.headless_mt5,
-        TradingAccount.status.in_(
-            [
-                TradingAccountStatus.pending_sync,
-                TradingAccountStatus.synced,
-                TradingAccountStatus.error,
-            ]
-        ),
-    )
-    return list(db.execute(stmt).scalars().all())
-
-
-def list_active_mt5_sync_candidates(
-    db: Session,
-    *,
-    active_after: datetime,
-    now: datetime,
-) -> list[TradingAccount]:
-    stmt = (
-        select(TradingAccount)
-        .join(User, User.id == TradingAccount.user_id)
-        .where(
-            TradingAccount.is_deleted.is_(False),
-            TradingAccount.sync_provider == SyncProvider.headless_mt5,
-            TradingAccount.connection_state.in_(
-                [
-                    TradingAccountConnectionState.ready,
-                    TradingAccountConnectionState.bootstrap_failed,
-                ]
-            ),
-            TradingAccount.status.in_(
-                [
-                    TradingAccountStatus.pending_sync,
-                    TradingAccountStatus.synced,
-                    TradingAccountStatus.error,
-                ]
-            ),
-            User.last_active_at.is_not(None),
-            User.last_active_at >= active_after,
-            (
-                TradingAccount.next_sync_not_before.is_(None)
-                | (TradingAccount.next_sync_not_before <= now)
-            ),
-        )
-        .order_by(
-            TradingAccount.last_synced_at.asc().nullsfirst(),
-            TradingAccount.created_at.asc(),
-        )
-    )
-    return list(db.execute(stmt).scalars().all())
-
-
 def set_account_last_synced_at(
     db: Session, account: TradingAccount, synced_at: datetime
 ) -> None:
@@ -430,20 +374,8 @@ def soft_disconnect_account(db: Session, account: TradingAccount) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sync lock (advisory lock to prevent overlapping sync cycles)
+# Sync lock (per-account advisory lock to prevent overlapping syncs)
 # ---------------------------------------------------------------------------
-
-_JOURNAL_SYNC_CYCLE_LOCK_KEY = 91324051
-
-
-def try_acquire_cycle_lock(db: Session) -> bool:
-    stmt = text("SELECT pg_try_advisory_lock(:lock_key)")
-    return bool(db.execute(stmt, {"lock_key": _JOURNAL_SYNC_CYCLE_LOCK_KEY}).scalar())
-
-
-def release_cycle_lock(db: Session) -> None:
-    stmt = text("SELECT pg_advisory_unlock(:lock_key)")
-    db.execute(stmt, {"lock_key": _JOURNAL_SYNC_CYCLE_LOCK_KEY})
 
 
 def try_acquire_account_sync_lock(db: Session, account_id: uuid.UUID) -> bool:
@@ -464,6 +396,17 @@ def release_account_sync_lock(db: Session, account_id: uuid.UUID) -> None:
     )
 
 
+def is_account_sync_locked(db: Session, account_id: uuid.UUID) -> bool:
+    """True if another session currently holds the per-account sync advisory lock."""
+    stmt = text("""
+        SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND objid = hashtext(:lock_key)::oid AND granted
+        )
+    """)
+    return bool(db.execute(stmt, {"lock_key": f"trading-account-sync:{account_id}"}).scalar())
+
+
 # ---------------------------------------------------------------------------
 # Trade
 # ---------------------------------------------------------------------------
@@ -471,6 +414,39 @@ def release_account_sync_lock(db: Session, account_id: uuid.UUID) -> None:
 def get_trade_by_id(db: Session, trade_id: uuid.UUID) -> Optional[Trade]:
     stmt = select(Trade).where(Trade.id == trade_id)
     return db.execute(stmt).scalar_one_or_none()
+
+
+def bulk_upsert_closed_trades(db: Session, *, rows: list[dict]) -> tuple[int, int, list[datetime]]:
+    """rows: dicts with the exact Trade column names.
+    Returns (inserted_count, updated_count, affected_closed_ats)."""
+    if not rows:
+        return 0, 0, []
+    inserted = 0
+    updated = 0
+    affected_closed_ats = []
+    CHUNK = 500
+    for i in range(0, len(rows), CHUNK):
+        chunk = rows[i : i + CHUNK]
+        stmt = pg_insert(Trade).values(chunk)
+        update_cols = {
+            c: stmt.excluded[c]
+            for c in ("symbol", "direction", "open_price", "close_price", "volume",
+                      "profit", "commission", "swap", "net_profit", "duration_seconds",
+                      "session", "opened_at", "closed_at")
+        }
+        # Preserve existing enrichment when the incoming value is NULL
+        for c in ("sl", "tp", "magic_number", "position_id", "trade_source", "mfe", "mae"):
+            update_cols[c] = func.coalesce(stmt.excluded[c], getattr(Trade, c))
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["account_id", "broker_trade_id"], set_=update_cols
+        ).returning(Trade.closed_at, text("(xmax = 0) AS was_inserted"))
+        for closed_at, was_inserted in db.execute(stmt).all():
+            affected_closed_ats.append(closed_at)
+            if was_inserted:
+                inserted += 1
+            else:
+                updated += 1
+    return inserted, updated, affected_closed_ats
 
 
 def upsert_closed_trade(
@@ -701,26 +677,16 @@ def delete_trades_outside_valid_broker_ids_in_window(
     account_timezone: str,
     valid_broker_trade_ids: set[str],
 ) -> tuple[int, set[date]]:
-    local_date_expr = cast(func.timezone(account_timezone, Trade.closed_at), Date)
-
-    id_stmt = select(Trade.id).where(Trade.account_id == account_id)
+    stmt = sa_delete(Trade).where(Trade.account_id == account_id)
     if closed_from_utc is not None:
-        id_stmt = id_stmt.where(Trade.closed_at >= closed_from_utc)
+        stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
-        id_stmt = id_stmt.where(Trade.closed_at < closed_to_utc_exclusive)
-
+        stmt = stmt.where(Trade.closed_at < closed_to_utc_exclusive)
     if valid_broker_trade_ids:
-        id_stmt = id_stmt.where(Trade.broker_trade_id.not_in(sorted(valid_broker_trade_ids)))
-
-    ids_to_delete = list(db.execute(id_stmt).scalars().all())
-    if not ids_to_delete:
-        return 0, set()
-
-    dates_stmt = select(local_date_expr).where(Trade.id.in_(ids_to_delete)).distinct()
-    affected_dates = {row[0] for row in db.execute(dates_stmt).all() if row[0] is not None}
-
-    deleted = db.execute(sa_delete(Trade).where(Trade.id.in_(ids_to_delete)))
-    return int(deleted.rowcount or 0), affected_dates
+        stmt = stmt.where(Trade.broker_trade_id.not_in(sorted(valid_broker_trade_ids)))
+    stmt = stmt.returning(cast(func.timezone(account_timezone, Trade.closed_at), Date))
+    rows = db.execute(stmt).all()
+    return len(rows), {r[0] for r in rows if r[0] is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -793,48 +759,50 @@ def update_manual_trade(
     user_id: uuid.UUID,
     payload,  # ManualTradeUpdateRequest
 ) -> Trade:
-    stmt = select(Trade).where(Trade.id == trade_id)
-    trade = db.execute(stmt).scalar_one_or_none()
+    stmt = (
+        select(Trade)
+        .options(joinedload(Trade.account))
+        .where(Trade.id == trade_id)
+    )
+    trade = db.execute(stmt).unique().scalar_one_or_none()
     if not trade:
         raise ValueError("Trade not found")
-        
+
     if not trade.is_manual:
         raise ValueError("Cannot modify non-manual trades")
-        
-    # Validate ownership
+
+    # Validate ownership — account is eagerly loaded above to avoid a lazy query
     if trade.account.user_id != user_id:
         raise ValueError("Access denied")
 
-    # Update fields if provided
-    update_data = payload.model_dump(exclude_unset=True)
-    
+    _MANUAL_TRADE_UPDATABLE_FIELDS = frozenset({
+        "symbol", "direction", "opened_at", "closed_at",
+        "open_price", "close_price", "volume",
+        "net_profit", "commission", "swap",
+        "sl", "tp", "is_missed", "notes",
+    })
+
+    # Update only whitelisted fields — prevent mass-assignment of internal columns
+    update_data = {
+        k: v for k, v in payload.model_dump(exclude_unset=True).items()
+        if k in _MANUAL_TRADE_UPDATABLE_FIELDS
+    }
+
     for key, value in update_data.items():
         setattr(trade, key, value)
         
-    # Recalculate derived fields if relevant
-    if "is_missed" in update_data or trade.is_missed:
-        if trade.is_missed:
+    # Recalculate derived fields without clobbering explicitly-provided payload values.
+    if trade.is_missed:
+        # For missed trades: duration is always 0, closed_at == opened_at.
+        # close_price / net_profit / volume etc. keep whatever the payload set (or
+        # the existing DB values) — we do NOT zero them out here.
+        if "closed_at" not in update_data:
             trade.closed_at = trade.opened_at
-            trade.duration_seconds = 0
-            trade.close_price = trade.tp or trade.open_price
-            trade.net_profit = Decimal("0")
-            trade.commission = Decimal("0")
-            trade.swap = Decimal("0")
-            trade.profit = Decimal("0")
-            trade.volume = Decimal("0.01")
-        else:
-            if not trade.volume or trade.volume == Decimal("0.01"):
-                trade.volume = Decimal("0.1")
-            if trade.commission is None:
-                trade.commission = Decimal("0")
-            if trade.swap is None:
-                trade.swap = Decimal("0")
-            trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
-            if trade.opened_at and trade.closed_at:
-                trade.duration_seconds = max(0, int((trade.closed_at - trade.opened_at).total_seconds()))
-
+        trade.duration_seconds = 0
+        trade.commission = trade.commission or Decimal("0")
+        trade.swap = trade.swap or Decimal("0")
+        trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
     else:
-        # Normal executed trade updates
         if "opened_at" in update_data or "closed_at" in update_data:
             opened_at_utc = trade.opened_at if trade.opened_at.tzinfo else trade.opened_at.replace(tzinfo=timezone.utc)
             closed_at_utc = trade.closed_at if trade.closed_at.tzinfo else trade.closed_at.replace(tzinfo=timezone.utc)
@@ -842,7 +810,7 @@ def update_manual_trade(
             trade.closed_at = closed_at_utc
             trade.duration_seconds = max(0, int((closed_at_utc - opened_at_utc).total_seconds()))
             trade.session = TradeSession(classify_session(opened_at_utc))
-            
+
         if "net_profit" in update_data or "commission" in update_data or "swap" in update_data:
             trade.commission = trade.commission or Decimal("0")
             trade.swap = trade.swap or Decimal("0")
@@ -858,8 +826,12 @@ def delete_manual_trade(
     trade_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> None:
-    stmt = select(Trade).where(Trade.id == trade_id)
-    trade = db.execute(stmt).scalar_one_or_none()
+    stmt = (
+        select(Trade)
+        .options(joinedload(Trade.account))
+        .where(Trade.id == trade_id)
+    )
+    trade = db.execute(stmt).unique().scalar_one_or_none()
     if not trade:
         raise ValueError("Trade not found")
         
@@ -944,23 +916,41 @@ def get_latest_account_snapshot_balance(
     return row.balance
 
 
+def get_earliest_snapshot(db: Session, account_id: uuid.UUID) -> Optional[AccountSnapshot]:
+    stmt = (
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id == account_id)
+        .order_by(AccountSnapshot.snapshot_date.asc(), AccountSnapshot.id.asc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def get_latest_snapshots_for_accounts(
     db: Session,
     *,
     account_ids: list[uuid.UUID],
 ) -> dict[uuid.UUID, AccountSnapshot]:
-    snapshots: dict[uuid.UUID, AccountSnapshot] = {}
-    for account_id in account_ids:
-        stmt = (
-            select(AccountSnapshot)
-            .where(AccountSnapshot.account_id == account_id)
-            .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
-            .limit(1)
+    if not account_ids:
+        return {}
+
+    # Single query using Postgres DISTINCT ON to fetch the latest snapshot per
+    # account, instead of one query per account (N+1). The leading ORDER BY column
+    # must match the DISTINCT ON expression.
+    stmt = (
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id.in_(account_ids))
+        .order_by(
+            AccountSnapshot.account_id,
+            AccountSnapshot.snapshot_date.desc(),
+            AccountSnapshot.id.desc(),
         )
-        snapshot = db.execute(stmt).scalar_one_or_none()
-        if snapshot is not None:
-            snapshots[account_id] = snapshot
-    return snapshots
+        .distinct(AccountSnapshot.account_id)
+    )
+    return {
+        snapshot.account_id: snapshot
+        for snapshot in db.execute(stmt).scalars().all()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1063,6 +1053,27 @@ def rebuild_daily_stats_for_date(
     )
     db.execute(
         stmt,
+        {
+            "account_id": str(account_id),
+            "trading_date": trading_date,
+            "account_timezone": account_timezone,
+        },
+    )
+
+    # Delete from daily_stats if no trades exist for this day (redundant row removal)
+    delete_stmt = text(
+        """
+        DELETE FROM daily_stats
+        WHERE account_id = :account_id AND trading_date = :trading_date
+          AND NOT EXISTS (
+              SELECT 1 FROM trades t
+              WHERE t.account_id = :account_id AND t.is_missed = FALSE
+                AND DATE(timezone(:account_timezone, t.closed_at)) = :trading_date
+          )
+        """
+    )
+    db.execute(
+        delete_stmt,
         {
             "account_id": str(account_id),
             "trading_date": trading_date,
