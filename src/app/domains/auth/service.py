@@ -246,9 +246,25 @@ def refresh_access_token(
         token_type=TokenType.REFRESH,
     )
     if not token_record:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token.",
+        grace_record = token_repo.get_recently_revoked(
+            db, hashed_token=hashed, token_type=TokenType.REFRESH
+        )
+        if grace_record is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired refresh token.",
+            )
+        # Concurrent-rotation race: token was just rotated by a parallel request.
+        # Issue a fresh ACCESS token only — no new refresh token, no new cookie.
+        user = user_repo.get_by_id(db, grace_record.user_id)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found.",
+            )
+        return RefreshResponse(
+            access_token=create_access_token(str(user.id)),
+            access_token_expiry_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
         )
 
     user = user_repo.get_by_id(db, token_record.user_id)

@@ -17,7 +17,7 @@ from app.domains.accounts.mt5_core_client import (
     Mt5CoreClientRateLimited,
     Mt5CoreClientTimeout,
 )
-from app.domains.accounts.sync import is_account_sync_active, sync_account_deals_mt5
+from app.domains.accounts.sync import sync_account_deals_mt5
 
 
 @dataclass
@@ -52,7 +52,7 @@ def _check_manual_sync_admission(
     account: TradingAccount,
     attempted_at: datetime,
 ) -> Mt5SyncExecutionResult | None:
-    if is_account_sync_active(account.id):
+    if account_repo.is_account_sync_locked(db, account.id):
         return _build_guarded_result(
             outcome="in_progress",
             retry_after_seconds=10,

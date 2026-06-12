@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_DEFAULT: str = "300/minute"
     RATE_LIMIT_UPLOADS: str = "20/minute"
     RATE_LIMIT_SYNC: str = "12/minute"
+    RATE_LIMIT_REDIS_URL: str = "redis://localhost:6379/2"
 
     # -------------------------------------------------------------------
     # Supabase (Storage legacy paths — optional when unused)

@@ -396,6 +396,17 @@ def release_account_sync_lock(db: Session, account_id: uuid.UUID) -> None:
     )
 
 
+def is_account_sync_locked(db: Session, account_id: uuid.UUID) -> bool:
+    """True if another session currently holds the per-account sync advisory lock."""
+    stmt = text("""
+        SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND objid = hashtext(:lock_key)::oid AND granted
+        )
+    """)
+    return bool(db.execute(stmt, {"lock_key": f"trading-account-sync:{account_id}"}).scalar())
+
+
 # ---------------------------------------------------------------------------
 # Trade
 # ---------------------------------------------------------------------------

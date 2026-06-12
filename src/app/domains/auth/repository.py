@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from uuid import UUID
 
@@ -46,6 +46,7 @@ def get_active(
 
 def revoke(db: Session, token: Token) -> None:
     token.is_revoked = True
+    token.revoked_at = datetime.now(timezone.utc)
     db.flush()
 
 
@@ -63,7 +64,23 @@ def revoke_all_by_user_and_type(
             Token.type == token_type,
             Token.is_revoked.is_(False),
         )
-        .values(is_revoked=True)
+        .values(is_revoked=True, revoked_at=datetime.now(timezone.utc))
         .execution_options(synchronize_session="fetch")
     )
     db.execute(stmt)
+
+
+def get_recently_revoked(
+    db: Session,
+    *,
+    hashed_token: str,
+    token_type: TokenType,
+    grace_seconds: int = 30,
+) -> Optional[Token]:
+    stmt = select(Token).where(
+        Token.token == hashed_token,
+        Token.type == token_type,
+        Token.is_revoked.is_(True),
+        Token.revoked_at >= datetime.now(timezone.utc) - timedelta(seconds=grace_seconds),
+    )
+    return db.execute(stmt).scalar_one_or_none()

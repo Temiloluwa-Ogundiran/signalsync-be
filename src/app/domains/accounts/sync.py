@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import logging
-import threading
 from typing import Any, Optional
 
 from fastapi import HTTPException, status
@@ -22,9 +21,6 @@ class SyncResult:
     inserted_trades: int
     touched_trading_dates: int
 
-
-_sync_guard = threading.Lock()
-_active_sync_accounts: set = set()
 
 _OPEN_TIMESTAMP_KEYS = (
     "opened_at",
@@ -48,11 +44,6 @@ _CLOSE_TIMESTAMP_KEYS = (
     "doneTime",
     "time",
 )
-
-
-def is_account_sync_active(account_id) -> bool:
-    with _sync_guard:
-        return account_id in _active_sync_accounts
 
 
 def _as_decimal(value: Any) -> Decimal:
