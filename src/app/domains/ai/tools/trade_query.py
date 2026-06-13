@@ -10,8 +10,10 @@ import re
 from typing import Annotated, List, Optional, Tuple
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 from langchain_openai import ChatOpenAI
 from sqlalchemy import text
 
@@ -145,6 +147,7 @@ def _execute(model_sql: str, account_ids: List[str]) -> str:
 def query_trades(
     question: Annotated[str, "The trader's question, in plain language"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
 ) -> str:
     """Catch-all for any data question the dedicated tools don't cover. Writes a
     scoped, read-only SQL query against the trader's trades and can answer almost anything.
@@ -154,6 +157,7 @@ def query_trades(
 
     Typical uses: total commission / swap / broker fees, unusual multi-condition
     filters, one-off aggregates, anything bespoke."""
+    account_ids = enforce_account_scope(account_ids, config)
     chain = _get_chain()
     feedback: Optional[str] = None
     last_problem: Optional[str] = None

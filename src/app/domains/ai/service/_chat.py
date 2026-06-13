@@ -39,6 +39,19 @@ def prepare_turn(
         if not session:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
 
+        all_accounts = repo.get_accounts_for_user(db, user_id=user_id)
+        # id → human label, e.g. {"abc-123": "demo1"}
+        account_map = {a["id"]: a["label"] for a in all_accounts}
+
+        # If the session is scoped to a specific account, honour that scope.
+        # Only fall back to all accounts when the session has no account_id.
+        if session.account_id:
+            if str(session.account_id) not in account_map:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+            account_ids = [str(session.account_id)]
+        else:
+            account_ids = [a["id"] for a in all_accounts]
+
         repo.auto_title_session(db, session=session, content=content)
         repo.create_message(
             db,
@@ -49,16 +62,6 @@ def prepare_turn(
         now = datetime.now(timezone.utc)
         repo.touch_session(db, session=session, now=now)
 
-        all_accounts = repo.get_accounts_for_user(db, user_id=user_id)
-        # id → human label, e.g. {"abc-123": "demo1"}
-        account_map = {a["id"]: a["label"] for a in all_accounts}
-
-        # If the session is scoped to a specific account, honour that scope.
-        # Only fall back to all accounts when the session has no account_id.
-        if session.account_id:
-            account_ids = [str(session.account_id)]
-        else:
-            account_ids = [a["id"] for a in all_accounts]
         memory_block = get_memory_block(db, user_id=user_id)
 
         # Capture ORM attributes while the session is still open — after the

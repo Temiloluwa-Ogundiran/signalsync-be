@@ -1,7 +1,9 @@
 from typing import Annotated, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -12,6 +14,7 @@ from app.domains.ai import repository as repo
 def get_trade_notes(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     trade_id: Annotated[Optional[str], "Specific trade UUID to fetch notes for"] = None,
     symbol: Annotated[Optional[str], "Filter by symbol e.g. 'EURUSD'"] = None,
     from_date: Annotated[Optional[str], "Start date YYYY-MM-DD"] = None,
@@ -21,6 +24,7 @@ def get_trade_notes(
     """Fetch journal notes written on specific trades.
     Use for: 'what did I write about this trade', 'show trade notes for XAUUSD',
     'find notes on my losing EURUSD trades', 'show me the note on trade X'."""
+    account_ids = enforce_account_scope(account_ids, config)
     filters = "WHERE t.account_id = ANY(:aids_placeholder)"
     extra: dict = {}
 

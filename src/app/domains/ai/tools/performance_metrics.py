@@ -1,10 +1,12 @@
 from typing import Annotated, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 
 @tool
@@ -12,6 +14,7 @@ from app.domains.ai.cache import tool_cache
 def get_performance_metrics(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     symbol: Annotated[Optional[str], "Filter to a specific symbol e.g. 'EURUSD'"] = None,
     from_date: Annotated[Optional[str], "Optional start date YYYY-MM-DD"] = None,
     to_date: Annotated[Optional[str], "Optional end date YYYY-MM-DD (inclusive)"] = None,
@@ -19,6 +22,7 @@ def get_performance_metrics(
     """Get complete performance metrics including profit factor, expectancy, win/loss ratio, avg hold time.
     Use for: 'what is my profit factor', 'what is my expectancy', 'give me my full stats',
     'how is my risk reward', 'what is my win rate', 'overall performance summary'."""
+    account_ids = enforce_account_scope(account_ids, config)
     with SessionLocal() as db:
         r = repo.analytics_performance_metrics(db, account_ids, symbol, from_date, to_date)
 

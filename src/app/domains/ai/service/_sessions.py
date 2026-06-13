@@ -10,6 +10,20 @@ from app.domains.ai.models import AiChatSession
 from app.domains.ai.schemas import SessionListResponse, SessionResponse
 
 
+def _ensure_account_scope(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    account_id: Optional[uuid.UUID],
+) -> None:
+    if account_id is None:
+        return
+
+    allowed_ids = {account["id"] for account in repo.get_accounts_for_user(db, user_id=user_id)}
+    if str(account_id) not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
+
+
 def create_session(
     db: Session,
     *,
@@ -19,6 +33,7 @@ def create_session(
     context_ref: Optional[str] = None,
     account_id: Optional[uuid.UUID] = None,
 ) -> AiChatSession:
+    _ensure_account_scope(db, user_id=user_id, account_id=account_id)
     session = repo.create_session(
         db,
         user_id=user_id,
@@ -99,6 +114,7 @@ def get_or_create_context_session(
     context_ref: str,
     account_id: Optional[uuid.UUID] = None,
 ) -> AiChatSession:
+    _ensure_account_scope(db, user_id=user_id, account_id=account_id)
     session = repo.get_context_session(
         db,
         user_id=user_id,

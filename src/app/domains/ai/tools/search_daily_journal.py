@@ -1,7 +1,9 @@
 from typing import Annotated, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -12,6 +14,7 @@ from app.domains.ai import repository as repo
 def search_daily_journal(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     keyword: Annotated[Optional[str], "Keyword to search in journal content (case-insensitive)"] = None,
     tag: Annotated[Optional[str], "Filter by a specific tag on the message"] = None,
     from_date: Annotated[Optional[str], "Start date YYYY-MM-DD"] = None,
@@ -22,6 +25,7 @@ def search_daily_journal(
     Use for: 'find notes where I mentioned tilt', 'when did I write about FOMO',
     'search journal for revenge', 'find days I mentioned being emotional',
     'show me notes tagged discipline'."""
+    account_ids = enforce_account_scope(account_ids, config)
     filters = """
         WHERE dj.account_id = ANY(:aids_placeholder)
           AND jm.daily_journal_id IS NOT NULL

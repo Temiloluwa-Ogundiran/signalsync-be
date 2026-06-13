@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, List
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -13,6 +15,7 @@ from app.domains.ai import repository as repo
 def compare_periods(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     days: Annotated[int, "Number of days per period to compare, e.g. 30 for last-30 vs prior-30"] = 30,
 ) -> str:
     """Compare trading performance between the current period and the prior equal period.
@@ -21,6 +24,7 @@ def compare_periods(
     now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     current_start = now - timedelta(days=days)
     prior_start = current_start - timedelta(days=days)
+    account_ids = enforce_account_scope(account_ids, config)
 
     with SessionLocal() as db:
         curr = repo.analytics_period_stats(db, account_ids, current_start, now)

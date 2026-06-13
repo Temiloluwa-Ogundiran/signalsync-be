@@ -55,8 +55,14 @@ async def check(user_id) -> None:
         r = get_redis()
         used = int(await r.get(_credit_key(str(user_id))) or 0)
     except Exception:
-        logger.warning("Redis unavailable — skipping quota check for user %s", user_id)
-        return
+        logger.warning("Redis unavailable — checking DB-backed quota for user %s", user_id)
+        with SessionLocal() as db:
+            usage = ai_repo.get_or_create_usage(
+                db,
+                user_id=user_id,
+                period_month=_period_month(),
+            )
+            used = int(usage.credits_used or 0)
 
     if used >= limit:
         raise HTTPException(
@@ -96,16 +102,19 @@ async def debit(user_id, credits: int, input_tokens: int = 0, output_tokens: int
 async def get_usage_response(user_id) -> dict:
     plan = "free"
     limit = PLAN_CREDITS.get(plan, PLAN_CREDITS["free"])
+    redis_available = True
     try:
         r = get_redis()
         used = int(await r.get(_credit_key(str(user_id))) or 0)
     except Exception:
-        used = 0
+        redis_available = False
 
     with SessionLocal() as db:
         usage_row = ai_repo.get_or_create_usage(
             db, user_id=user_id, period_month=_period_month()
         )
+        if not redis_available:
+            used = int(usage_row.credits_used or 0)
         message_count = usage_row.message_count
 
     return {

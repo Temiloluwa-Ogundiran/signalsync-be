@@ -2,8 +2,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, List
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -14,6 +16,7 @@ from app.domains.ai import repository as repo
 def detect_patterns(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
 ) -> str:
     """Detect harmful behavioural patterns in trading history.
     Use for: 'am I revenge trading', 'do I overtrade', 'do I size up after losses',
@@ -21,6 +24,7 @@ def detect_patterns(
     'discipline check'."""
     now = datetime.now(timezone.utc)
     lookback = now - timedelta(days=30)
+    account_ids = enforce_account_scope(account_ids, config)
 
     with SessionLocal() as db:
         trades, avg_volume_all = repo.analytics_detect_patterns(db, account_ids, lookback)

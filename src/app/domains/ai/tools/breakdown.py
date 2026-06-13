@@ -1,7 +1,9 @@
 from typing import Annotated, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -12,6 +14,7 @@ from app.domains.ai import repository as repo
 def get_breakdown(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     group_by: Annotated[str, "One of: symbol, direction, weekday, hour, session, hold_time_bucket, duration_scatter"] = "symbol",
     symbol: Annotated[Optional[str], "Filter to a specific symbol e.g. 'EURUSD'"] = None,
     from_date: Annotated[Optional[str], "Optional start date YYYY-MM-DD"] = None,
@@ -21,6 +24,7 @@ def get_breakdown(
     Use for: 'which symbols make money', 'am I better long or short', 'what weekday am I worst',
     'what hour do I lose most', 'do short holds hurt me', 'compare sessions',
     'trade duration scatter', 'trade time performance'."""
+    account_ids = enforce_account_scope(account_ids, config)
     date_filter = ""
     extra: dict = {}
     if symbol:

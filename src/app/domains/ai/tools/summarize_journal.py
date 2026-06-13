@@ -1,7 +1,9 @@
 from typing import Annotated, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -12,12 +14,14 @@ from app.domains.ai import repository as repo
 def summarize_journal(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     from_date: Annotated[Optional[str], "Start date YYYY-MM-DD"] = None,
     to_date: Annotated[Optional[str], "End date YYYY-MM-DD (inclusive)"] = None,
 ) -> str:
     """Fetch all daily journal entries for a date range so you can summarise them.
     Use for: 'summarise my journal last week', 'what have I been writing about',
     'give me a recap of my notes this month', 'what themes come up in my journal'."""
+    account_ids = enforce_account_scope(account_ids, config)
     date_filter = ""
     extra: dict = {}
     if from_date:

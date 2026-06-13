@@ -29,6 +29,15 @@ from app.domains.journal.models import (
     TagOption,
     TradeTagSelection,
 )
+from app.domains.ai.models import (
+    AiAgent,
+    AiChatMessage,
+    AiChatSession,
+    AiInsight,
+    AiMessageRole,
+    AiUsage,
+    AiUserMemory,
+)
 
 __all__ = [
     "User",
@@ -63,4 +72,11 @@ __all__ = [
     "TagCategory",
     "TagOption",
     "TradeTagSelection",
+    "AiAgent",
+    "AiChatMessage",
+    "AiChatSession",
+    "AiInsight",
+    "AiMessageRole",
+    "AiUsage",
+    "AiUserMemory",
 ]

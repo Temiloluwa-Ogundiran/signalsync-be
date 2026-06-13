@@ -1,7 +1,9 @@
 from typing import Annotated, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -12,6 +14,7 @@ from app.domains.ai import repository as repo
 def find_trades(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     symbol: Annotated[Optional[str], "Filter by symbol e.g. 'EURUSD'"] = None,
     direction: Annotated[Optional[str], "Filter by 'buy' or 'sell'"] = None,
     result: Annotated[Optional[str], "Filter by 'win' or 'loss'"] = None,
@@ -24,6 +27,7 @@ def find_trades(
     """Fetch and LIST individual trade rows. Use ONLY when the user wants to see actual trades.
     Use for: 'show my worst trades', 'best 10 trades', 'list my XAUUSD losses', 'last 5 trades'.
     Do NOT use for aggregate questions — use get_performance_metrics or get_breakdown for those."""
+    account_ids = enforce_account_scope(account_ids, config)
     filters = "WHERE account_id = ANY(:aids_placeholder)"
     extra: dict = {"limit": limit}
 

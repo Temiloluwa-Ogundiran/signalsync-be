@@ -1,7 +1,9 @@
 from typing import Annotated, List, Optional
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -12,6 +14,7 @@ from app.domains.ai import repository as repo
 def get_equity_curve(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
     group_by: Annotated[str, "Granularity: 'day' (default), 'week', or 'month'"] = "day",
     from_date: Annotated[Optional[str], "Optional start date YYYY-MM-DD"] = None,
     to_date: Annotated[Optional[str], "Optional end date YYYY-MM-DD (inclusive)"] = None,
@@ -19,6 +22,7 @@ def get_equity_curve(
     """Get cumulative P&L over time grouped by day, week, or month.
     Use for: 'show my equity curve', 'P&L over time', 'weekly P&L', 'monthly P&L',
     'am I trending up or down', 'how has my balance grown'."""
+    account_ids = enforce_account_scope(account_ids, config)
     date_filter = ""
     extra: dict = {}
     if from_date:

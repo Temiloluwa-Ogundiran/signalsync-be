@@ -2,8 +2,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, List
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from app.domains.ai.cache import tool_cache
+from app.domains.ai.tools.scope import enforce_account_scope
 
 from app.core.database import SessionLocal
 from app.domains.ai import repository as repo
@@ -14,6 +16,7 @@ from app.domains.ai import repository as repo
 def get_risk_snapshot(
     question: Annotated[str, "The trader's question"],
     account_ids: Annotated[List[str], "List of account UUIDs to scope the query to"],
+    config: RunnableConfig,
 ) -> str:
     """Get recent trading behavior to assess risk and discipline.
     Use for: 'how many trades today', 'am I overtrading', 'am I trading larger than usual',
@@ -21,6 +24,7 @@ def get_risk_snapshot(
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_ago = today - timedelta(days=7)
+    account_ids = enforce_account_scope(account_ids, config)
 
     with SessionLocal() as db:
         today_trades, week_trades, avg_volume = repo.analytics_risk_snapshot(
