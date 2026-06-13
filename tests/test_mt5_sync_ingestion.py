@@ -1,7 +1,7 @@
 import pytest
 import uuid
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 from decimal import Decimal
 from sqlalchemy import BigInteger
 
@@ -14,7 +14,7 @@ import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts.models import TradingAccount, TradingPlatform, TradingAccountType
 from app.domains.accounts.models import Trade
-from app.domains.accounts.sync import ingest_mt5_core_history_result
+from app.domains.accounts.sync import SyncResult, ingest_mt5_core_history_result, sync_account_deals_mt5
 
 @pytest.fixture
 def db_session() -> MagicMock:
@@ -134,3 +134,31 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
 
     # Verify daily stats rebuilding
     mock_repo.rebuild_daily_stats_for_date.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.sync.ingest_mt5_core_history_result")
+@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
+@patch("app.shared.utils.encryption.decrypt_secret")
+@patch("app.domains.accounts.sync.account_repo")
+async def test_manual_mt5_sync_default_window_matches_journal_range(
+    mock_repo,
+    mock_decrypt_secret,
+    mock_client_cls,
+    mock_ingest,
+    db_session,
+    mock_account,
+) -> None:
+    mock_account.encrypted_investor_password = "encrypted"
+    mock_account.last_synced_at = None
+    mock_decrypt_secret.return_value = "investor-password"
+    mock_repo.try_acquire_account_sync_lock.return_value = True
+    mock_ingest.return_value = SyncResult(inserted_trades=0, touched_trading_dates=0)
+    mock_client = AsyncMock()
+    mock_client.submit_history_sync.return_value = {"deals": [], "broker_offset_seconds": 0}
+    mock_client_cls.return_value = mock_client
+
+    await sync_account_deals_mt5(db_session, mock_account)
+
+    _, sync_kwargs = mock_client.submit_history_sync.call_args
+    assert datetime.now(timezone.utc) - sync_kwargs["from_time"] >= timedelta(days=29, hours=23)

@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     VOICE_SIGNED_URL_TTL_SECONDS: int = 3600
     IMAGE_SIGNED_URL_TTL_SECONDS: int = 3600
 
-    INITIAL_SYNC_LOOKBACK_DAYS: int = 14
+    INITIAL_SYNC_LOOKBACK_DAYS: int = 30
 
     # Encryption key for broker credential fields (Fernet base64 key)
     ENCRYPTION_KEY: str = ""

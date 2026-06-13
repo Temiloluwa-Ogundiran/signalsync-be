@@ -1,6 +1,6 @@
 import pytest
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from fastapi import HTTPException
@@ -122,6 +122,8 @@ async def test_connect_account_success(
     mock_repo.mark_account_bootstrapping.assert_called_once_with(db_session, mock_account)
     mock_ingest.assert_called_once_with(db_session, account=mock_account, result={"deals": [{"ticket": "1"}], "broker_offset_seconds": 0})
     mock_repo.mark_account_ready_for_stats.assert_called_once()
+    _, sync_kwargs = mock_client.submit_history_sync.call_args
+    assert datetime.now(timezone.utc) - sync_kwargs["from_time"] >= timedelta(days=29, hours=23)
 
 
 @pytest.mark.anyio
