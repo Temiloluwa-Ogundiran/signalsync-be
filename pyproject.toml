@@ -31,6 +31,15 @@ dependencies = [
     "supabase>=2.28.0",
     "tzdata>=2025.2",
     "uvicorn[standard]>=0.41.0",
+    # AI copilot (Partna AI)
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langgraph>=0.2.0",
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "psycopg[binary,pool]>=3.1.0",
+    "redis>=5.0.0",
+    "anyio>=4.0.0",
 ]
 
 [dependency-groups]

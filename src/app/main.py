@@ -8,6 +8,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi import _rate_limit_exceeded_handler
 
+from app.domains.ai.router import router as ai_router
+from app.domains.ai.checkpointer import init_checkpointer
+from app.domains.ai.agent import build_compiled
 from app.domains.auth.router import router as auth_router
 from app.domains.users.router import router as users_router
 from app.domains.streams.router import router as streams_router
@@ -44,6 +47,14 @@ async def lifespan(app: FastAPI):
             journal_service.seed_system_journal_templates(db)
             seed_system_tags(db)
             db.commit()
+
+    if settings.AI_ENABLED and settings.OPENAI_API_KEY:
+        try:
+            checkpointer = await init_checkpointer()
+            build_compiled(checkpointer=checkpointer)
+        except Exception:
+            logger.exception("AI engine failed to initialise — AI endpoints will be unavailable")
+
     yield
 
 
@@ -127,3 +138,4 @@ app.include_router(journal_messages_router)
 app.include_router(journal_templates_router)
 app.include_router(journal_analytics_router)
 app.include_router(journal_tags_router)
+app.include_router(ai_router)
