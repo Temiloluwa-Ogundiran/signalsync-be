@@ -18,7 +18,18 @@ _PURGE_OLDER_THAN_DAYS = 30
 )
 def send_verification_email_task(self, to_email: str, raw_token: str) -> None:
     from app.shared.utils.email import send_verification_email  # noqa: PLC0415
-    send_verification_email(to_email, raw_token)
+    try:
+        send_verification_email(to_email, raw_token)
+        logger.info("verification email sent to %s (attempt %s)", to_email, self.request.retries)
+    except Exception:
+        # autoretry_for=(Exception,) will retry; log so a permanent failure
+        # (e.g. Resend rejecting the recipient/domain) is visible instead of
+        # silently vanishing after the API already returned 200 to the client.
+        logger.exception(
+            "verification email FAILED to %s (attempt %s/%s)",
+            to_email, self.request.retries, self.max_retries,
+        )
+        raise
 
 
 @celery_app.task(
