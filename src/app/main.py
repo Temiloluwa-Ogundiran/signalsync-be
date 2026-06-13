@@ -53,7 +53,11 @@ async def lifespan(app: FastAPI):
             checkpointer = await init_checkpointer()
             build_compiled(checkpointer=checkpointer)
         except Exception:
-            logger.exception("AI engine failed to initialise — AI endpoints will be unavailable")
+            logger.exception("AI checkpointer failed to initialise; compiling AI engine without checkpointing")
+            try:
+                build_compiled(checkpointer=None)
+            except Exception:
+                logger.exception("AI engine failed to initialise after checkpointer fallback")
 
     yield
 

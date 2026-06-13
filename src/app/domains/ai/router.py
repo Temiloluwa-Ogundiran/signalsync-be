@@ -133,8 +133,6 @@ async def stream_chat(
     )
     safe_response = internal_disclosure_response(body.content)
 
-    compiled = get_compiled()
-
     async def gen():
         full_tokens: List[str] = []
         input_tokens = 0
@@ -149,6 +147,7 @@ async def stream_chat(
                 yield _sse({"type": "done", "message_id": str(msg_id)})
                 return
 
+            compiled = get_compiled()
             async for ev in compiled.astream_events(
                 {"messages": [("human", body.content)]},
                 config=lg_config,

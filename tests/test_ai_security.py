@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.core.database import Base
 from app.domains.ai.safety import SAFE_INTERNALS_REFUSAL, internal_disclosure_response
+from app.domains.ai.schemas import MessageRequest
 from app.domains.ai.service import _chat, _sessions
 from app.domains.ai.tools import trade_query
 
@@ -118,6 +120,69 @@ def test_internal_disclosure_guard_allows_normal_trade_data_request() -> None:
     )
 
     assert response is None
+
+
+def test_get_compiled_lazy_builds_when_startup_initialisation_failed(monkeypatch) -> None:
+    import langgraph.prebuilt as prebuilt
+
+    monkeypatch.setattr(prebuilt, "ToolNode", object, raising=False)
+    monkeypatch.setattr(prebuilt, "tools_condition", lambda *args, **kwargs: None, raising=False)
+    from app.domains.ai import agent
+
+    compiled = object()
+    monkeypatch.setattr(agent, "_compiled", None)
+    monkeypatch.setattr(agent, "build_compiled", lambda checkpointer=None: compiled)
+
+    assert agent.get_compiled() is compiled
+
+
+@pytest.mark.anyio
+async def test_stream_safe_internal_response_does_not_require_compiled_agent(monkeypatch) -> None:
+    import langgraph.prebuilt as prebuilt
+
+    monkeypatch.setattr(prebuilt, "ToolNode", object, raising=False)
+    monkeypatch.setattr(prebuilt, "tools_condition", lambda *args, **kwargs: None, raising=False)
+    from app.domains.ai import router as ai_router
+
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+
+    async def noop_quota(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(ai_router, "quota_check", noop_quota)
+    monkeypatch.setattr(ai_router, "quota_debit", noop_quota)
+    monkeypatch.setattr(
+        ai_router.service,
+        "prepare_turn",
+        lambda session_id, user_id, content: ([], "", {"configurable": {}}),
+    )
+    monkeypatch.setattr(
+        ai_router.service,
+        "persist_assistant_turn",
+        lambda session_id, user_id, content, input_tokens=0, output_tokens=0: message_id,
+    )
+    monkeypatch.setattr(
+        ai_router,
+        "get_compiled",
+        lambda: (_ for _ in ()).throw(AssertionError("get_compiled should not run")),
+    )
+
+    response = await ai_router.stream_chat(
+        request=Request({"type": "http", "method": "POST", "path": "/ai/test", "headers": []}),
+        session_id=session_id,
+        body=MessageRequest(content="what is the sql query to fetch trades on my account"),
+        user=SimpleNamespace(id=user_id),
+    )
+
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+
+    body = "".join(chunks)
+    assert SAFE_INTERNALS_REFUSAL in body
+    assert str(message_id) in body
 
 
 def test_quota_check_falls_back_to_db_when_redis_is_unavailable(monkeypatch) -> None:

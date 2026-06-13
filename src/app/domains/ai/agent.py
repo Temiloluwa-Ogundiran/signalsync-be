@@ -87,6 +87,8 @@ def build_compiled(checkpointer=None):
 
 
 def get_compiled():
+    global _compiled
     if _compiled is None:
-        raise RuntimeError("AI agent not initialised — call build_compiled() in app lifespan")
+        logger.warning("AI agent was not initialised during lifespan; compiling lazily without checkpointer")
+        _compiled = build_compiled(checkpointer=None)
     return _compiled
