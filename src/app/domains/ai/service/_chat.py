@@ -49,7 +49,12 @@ def prepare_turn(
         now = datetime.now(timezone.utc)
         repo.touch_session(db, session=session, now=now)
 
-        account_ids = repo.get_account_ids_for_user(db, user_id=user_id)
+        # If the session is scoped to a specific account, honour that scope.
+        # Only fall back to all accounts when the session has no account_id.
+        if session.account_id:
+            account_ids = [str(session.account_id)]
+        else:
+            account_ids = repo.get_account_ids_for_user(db, user_id=user_id)
         memory_block = get_memory_block(db, user_id=user_id)
 
         # Capture ORM attributes while the session is still open — after the
@@ -57,16 +62,23 @@ def prepare_turn(
         # raises DetachedInstanceError (commit also expires them).
         context_type = session.context_type
         context_ref = session.context_ref
+        session_account_id = session.account_id
 
         db.commit()
 
     context_block = ""
-    if context_type != "general":
+    if session_account_id:
         context_block = (
+            f"Account scope: this conversation is pinned to account {session_account_id}. "
+            f"Pass ONLY that account ID when calling tools. Do not include other accounts."
+        )
+    if context_type != "general":
+        scope_sentence = (
             f"Context: this conversation was opened from {context_type} "
             f"(ref: {context_ref or 'n/a'}). "
             f"Scope your analysis to this context unless the user asks otherwise."
         )
+        context_block = (context_block + "\n\n" + scope_sentence).strip()
     if memory_block:
         context_block += f"\n\n{memory_block}"
 

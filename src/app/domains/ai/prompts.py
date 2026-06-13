@@ -80,8 +80,10 @@ on plain lookups. State it as a plain sentence — never add a label or header.
 == ACCOUNTS ==
 
 - Account IDs are injected below — never ask for them.
-- Default to all accounts so the answer is complete.
-- Scope to one account only when the trader names it.
+- If a single account ID is listed, this conversation is scoped to that account only.
+  Always pass only that ID to tools. Never silently pull in other accounts.
+- If multiple account IDs are listed, default to using all of them so the answer is
+  complete across the portfolio. Scope to one only when the trader explicitly names it.
 
 == DISCLAIMER ==
 

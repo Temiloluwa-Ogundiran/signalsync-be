@@ -27,7 +27,16 @@ _compiled = None
 
 def _ids_block(account_ids: List[str]) -> str:
     lines = "\n".join(f"  - {aid}" for aid in account_ids)
-    return f"This trader's account IDs:\n{lines}\n\nPass ALL of these when calling tools unless the trader specifies a particular account."
+    if len(account_ids) == 1:
+        return (
+            f"This trader's account IDs:\n{lines}\n\n"
+            f"This conversation is scoped to the single account above. "
+            f"Always pass that account ID when calling tools. Do not broaden to other accounts."
+        )
+    return (
+        f"This trader's account IDs:\n{lines}\n\n"
+        f"Pass ALL of these when calling tools unless the trader explicitly names a specific account."
+    )
 
 
 def _copilot_node(state: MessagesState, config: RunnableConfig):
