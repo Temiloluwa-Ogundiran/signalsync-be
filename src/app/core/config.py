@@ -17,9 +17,11 @@ class Settings(BaseSettings):
     # Database connection pool (per worker process).
     # Total cluster connections = web/worker processes * (POOL_SIZE + MAX_OVERFLOW).
     # Keep that product below Postgres max_connections (front with PgBouncer at scale).
+    # Behind a PgBouncer transaction pooler the app pool only gates per-worker
+    # concurrency (not real Postgres connections), so a small pool is correct.
     # -------------------------------------------------------------------
-    DB_POOL_SIZE: int = 10
-    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 5
     DB_POOL_TIMEOUT: int = 30
     DB_POOL_RECYCLE: int = 300
 

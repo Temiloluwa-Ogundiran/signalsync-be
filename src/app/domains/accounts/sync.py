@@ -277,7 +277,11 @@ def ingest_closed_deals(
         )
 
     account_repo.set_account_last_synced_at(db, account, datetime.now(timezone.utc))
-    db.commit()
+    # Single transaction boundary (#7): ingest only flushes; the caller owns the
+    # commit (orchestrate_mt5_sync success path / service.connect bootstrap path).
+    # Committing here would also release the transaction-scoped sync advisory lock
+    # prematurely.
+    db.flush()
 
     logger.info(
         (
@@ -460,47 +464,48 @@ async def sync_account_deals_mt5(
             detail="Sync already in progress for this account.",
         )
 
+    # The advisory lock above is transaction-scoped (pg_try_advisory_xact_lock),
+    # so it auto-releases when orchestrate_mt5_sync commits or rolls back this
+    # transaction — no explicit unlock, no try/finally needed.
+
     # 1. Decrypt investor password
     try:
-        try:
-            investor_password = decrypt_secret(account.encrypted_investor_password)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to decrypt account credentials.",
-            ) from exc
+        investor_password = decrypt_secret(account.encrypted_investor_password)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to decrypt account credentials.",
+        ) from exc
 
-        # 2. Determine from_time
-        effective_lookback_days = lookback_days or settings.INITIAL_SYNC_LOOKBACK_DAYS
-        cleanup_floor = datetime.now(timezone.utc) - timedelta(days=effective_lookback_days)
-        if account.last_synced_at is None:
-            from_time = cleanup_floor
-        else:
-            from_time = min(account.last_synced_at, cleanup_floor)
+    # 2. Determine from_time
+    effective_lookback_days = lookback_days or settings.INITIAL_SYNC_LOOKBACK_DAYS
+    cleanup_floor = datetime.now(timezone.utc) - timedelta(days=effective_lookback_days)
+    if account.last_synced_at is None:
+        from_time = cleanup_floor
+    else:
+        from_time = min(account.last_synced_at, cleanup_floor)
 
-        # 3. Call mt5-core client
-        client = Mt5CoreClient()
-        sync_result = await client.submit_history_sync(
-            account_id=str(account.id),
-            from_time=from_time,
-            credentials={
-                "login": account.broker_login,
-                "password": investor_password,
-                "server": account.broker_server,
-                "broker": account.broker_name,
-            }
-        )
+    # 3. Call mt5-core client
+    client = Mt5CoreClient()
+    sync_result = await client.submit_history_sync(
+        account_id=str(account.id),
+        from_time=from_time,
+        credentials={
+            "login": account.broker_login,
+            "password": investor_password,
+            "server": account.broker_server,
+            "broker": account.broker_name,
+        }
+    )
 
-        # 4. Ingest normalized results
-        return ingest_mt5_core_history_result(
-            db,
-            account=account,
-            result=sync_result,
-            closed_from_utc=from_time,
-            closed_to_utc_exclusive=None,
-            authoritative=True,
-        )
-    finally:
-        account_repo.release_account_sync_lock(db, account.id)
+    # 4. Ingest normalized results
+    return ingest_mt5_core_history_result(
+        db,
+        account=account,
+        result=sync_result,
+        closed_from_utc=from_time,
+        closed_to_utc_exclusive=None,
+        authoritative=True,
+    )
 
 

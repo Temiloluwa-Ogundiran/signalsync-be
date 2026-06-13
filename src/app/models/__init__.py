@@ -17,6 +17,15 @@ from app.domains.accounts.models import (
     TradingAccountType,
     TradingPlatform,
 )
+from app.domains.ai.models import (
+    AiChatSession,
+    AiChatMessage,
+    AiMessageRole,
+    AiUsage,
+    AiUserMemory,
+    AiAgent,
+    AiInsight,
+)
 from app.domains.journal.models import (
     DailyJournal,
     JournalAttachment,
@@ -31,6 +40,13 @@ from app.domains.journal.models import (
 )
 
 __all__ = [
+    "AiChatSession",
+    "AiChatMessage",
+    "AiMessageRole",
+    "AiUsage",
+    "AiUserMemory",
+    "AiAgent",
+    "AiInsight",
     "User",
     "Stream",
     "StreamPrivacy",

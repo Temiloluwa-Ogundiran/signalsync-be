@@ -36,6 +36,10 @@ from app.domains.streams.models import StreamPrivacy
 from app.domains.streams import repository as stream_repo
 from app.tasks.auth_tasks import send_verification_email_task, send_password_reset_email_task
 
+# Module-level dummy hash — ensures bcrypt always runs on login even for unknown
+# emails, defeating timing-based email enumeration (P1-8).
+_DUMMY_HASH: str = get_password_hash(uuid.uuid4().hex)
+
 
 def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
     # ── uniqueness checks ────────────────────────────────────────────────────
@@ -107,8 +111,11 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
 
 def login(db: Session, email: str, password: str, response: Response) -> LoginResponse:
     # ── credential checks ────────────────────────────────────────────
+    # Always call verify_password — even for unknown emails — so response time
+    # is identical regardless of whether the email is registered (P1-8).
     user = user_repo.get_by_email(db, email)
-    if not user or not verify_password(password, user.hashed_password):
+    password_ok = verify_password(password, user.hashed_password if user else _DUMMY_HASH)
+    if not user or not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password.",

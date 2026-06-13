@@ -55,10 +55,14 @@ renderers.dispatch_for(SQLAEnum)(render_enum)
 # Migration runners
 # ---------------------------------------------------------------------------
 def _get_url() -> str:
-    url = os.getenv("DATABASE_URL")
+    # Migrations MUST bypass PgBouncer's transaction pooling: Alembic uses DDL and
+    # its own session-scoped advisory locks, neither of which survive a transaction
+    # pooler. DATABASE_URL_DIRECT points straight at Postgres; fall back to
+    # DATABASE_URL for local/dev setups that have no pooler in front.
+    url = os.getenv("DATABASE_URL_DIRECT") or os.getenv("DATABASE_URL")
     if not url:
         raise RuntimeError(
-            "DATABASE_URL environment variable is not set. "
+            "Neither DATABASE_URL_DIRECT nor DATABASE_URL is set. "
             "Create a .env file at the project root (see .env.example)."
         )
     return url
