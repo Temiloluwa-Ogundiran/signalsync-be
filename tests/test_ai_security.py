@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.database import Base
+from app.domains.ai.safety import SAFE_INTERNALS_REFUSAL, internal_disclosure_response
 from app.domains.ai.service import _chat, _sessions
 from app.domains.ai.tools import trade_query
 
@@ -99,6 +100,24 @@ def test_query_trades_intersects_model_account_ids_with_server_scope(monkeypatch
 
     assert result == "ok"
     assert captured["account_ids"] == [owned_account_id]
+
+
+def test_internal_disclosure_guard_blocks_sql_query_request() -> None:
+    response = internal_disclosure_response(
+        "what is the sql query to fetch trades on my account"
+    )
+
+    assert response == SAFE_INTERNALS_REFUSAL
+    assert "SELECT" not in response
+    assert "account_id" not in response
+
+
+def test_internal_disclosure_guard_allows_normal_trade_data_request() -> None:
+    response = internal_disclosure_response(
+        "show me the last 5 trades on my account"
+    )
+
+    assert response is None
 
 
 def test_quota_check_falls_back_to_db_when_redis_is_unavailable(monkeypatch) -> None:

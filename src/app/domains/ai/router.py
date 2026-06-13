@@ -23,6 +23,7 @@ from app.domains.ai import service
 from app.domains.ai.agent import get_compiled
 from app.domains.ai.deps import get_current_user_id
 from app.domains.ai.quota import check as quota_check, debit as quota_debit, get_usage_response
+from app.domains.ai.safety import internal_disclosure_response
 from app.domains.ai.schemas import (
     InsightResponse,
     MessageRequest,
@@ -130,6 +131,7 @@ async def stream_chat(
     account_ids, context_block, lg_config = await anyio.to_thread.run_sync(
         lambda: service.prepare_turn(session_id, user.id, body.content)
     )
+    safe_response = internal_disclosure_response(body.content)
 
     compiled = get_compiled()
 
@@ -138,6 +140,15 @@ async def stream_chat(
         input_tokens = 0
         output_tokens = 0
         try:
+            if safe_response is not None:
+                msg_id = await anyio.to_thread.run_sync(
+                    lambda: service.persist_assistant_turn(session_id, user.id, safe_response)
+                )
+                await quota_debit(user.id, credits=1)
+                yield _sse({"type": "token", "v": safe_response})
+                yield _sse({"type": "done", "message_id": str(msg_id)})
+                return
+
             async for ev in compiled.astream_events(
                 {"messages": [("human", body.content)]},
                 config=lg_config,
@@ -195,6 +206,20 @@ async def send_message(
     account_ids, context_block, lg_config = await anyio.to_thread.run_sync(
         lambda: service.prepare_turn(session_id, user.id, body.content)
     )
+    safe_response = internal_disclosure_response(body.content)
+
+    if safe_response is not None:
+        msg_id = await anyio.to_thread.run_sync(
+            lambda: service.persist_assistant_turn(session_id, user.id, safe_response)
+        )
+        await quota_debit(user.id, credits=1)
+        from app.core.database import SessionLocal
+        with SessionLocal() as db:
+            session_obj = repo.get_session(db, session_id=session_id, user_id=user.id)
+            for m in session_obj.messages:
+                if m.id == msg_id:
+                    return MessageResponse.model_validate(m)
+        raise HTTPException(status_code=500, detail="Failed to retrieve assistant message.")
 
     compiled = get_compiled()
 
