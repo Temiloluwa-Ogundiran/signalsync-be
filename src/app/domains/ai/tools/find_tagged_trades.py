@@ -31,7 +31,7 @@ def find_tagged_trades(
         rows = repo.analytics_tagged_trades(db, account_ids, date_filter, extra)
 
     if not rows:
-        return "No tagged trades found. Add tags to trade journal messages to use this feature."
+        return "No tagged trades found for the given accounts and date range."
 
     lines = ["=== PERFORMANCE BY TAG / SETUP ==="]
     for r in rows:
@@ -40,8 +40,9 @@ def find_tagged_trades(
             if r.gross_loss and float(r.gross_loss) > 0
             else "∞"
         )
+        label = f"{r.category}: {r.tag}" if r.category else r.tag
         lines.append(
-            f"#{r.tag}: {r.trades} trades | {r.win_rate}% WR | "
+            f"{label} — {r.trades} trades | {r.win_rate}% WR | "
             f"P&L {r.total_pnl} | avg {r.avg_pnl} | PF {pf}"
         )
     return "\n".join(lines)

@@ -701,17 +701,19 @@ def analytics_tagged_trades(
         f"""
         WITH tagged AS (
             SELECT
-                lower(unnest(jm.tags)) AS tag,
+                topt.value             AS tag,
+                tc.title               AS category,
                 t.id                   AS trade_id,
                 t.net_profit
             FROM trades t
-            JOIN trade_journals tj  ON tj.trade_id = t.id
-            JOIN journal_messages jm ON jm.trade_journal_id = tj.id
+            JOIN trade_tag_selections tts ON tts.trade_id = t.id
+            JOIN tag_options topt         ON topt.id = tts.option_id
+            JOIN tag_categories tc        ON tc.id = topt.category_id
             WHERE t.account_id = ANY(:aids_placeholder)
-              AND cardinality(jm.tags) > 0
               {date_filter}
         )
         SELECT
+            category,
             tag,
             COUNT(DISTINCT trade_id)                                                              AS trades,
             COUNT(DISTINCT trade_id) FILTER (WHERE net_profit > 0)                               AS wins,
@@ -722,7 +724,7 @@ def analytics_tagged_trades(
             ROUND(SUM(CASE WHEN net_profit > 0 THEN net_profit ELSE 0 END)::numeric, 2)          AS gross_win,
             ROUND(ABS(SUM(CASE WHEN net_profit < 0 THEN net_profit ELSE 0 END))::numeric, 2)     AS gross_loss
         FROM tagged
-        GROUP BY tag
+        GROUP BY category, tag
         ORDER BY total_pnl DESC
         """,
         account_ids,
