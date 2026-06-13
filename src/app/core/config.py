@@ -108,6 +108,26 @@ class Settings(BaseSettings):
 
 
 
+    # DATABASE_URL_DIRECT: bypasses PgBouncer — used by Alembic and the LangGraph
+    # checkpointer (which needs session-scoped features incompatible with transaction pooling).
+    # Falls back to DATABASE_URL in local/dev setups without a pooler.
+    DATABASE_URL_DIRECT: Optional[str] = None
+
+    # -------------------------------------------------------------------
+    # AI copilot (Partna AI)
+    # -------------------------------------------------------------------
+    OPENAI_API_KEY: str = ""
+    AI_MODEL: str = "gpt-4.1-mini"
+    AI_TEMPERATURE: float = 0.0
+    AI_ENABLED: bool = True
+    AI_REDIS_URL: str = "redis://localhost:6379/3"
+    # Where the FE proxy routes ai/* requests. Empty => in-process (same app).
+    AI_SERVICE_URL: str = ""
+    RATE_LIMIT_AI: str = "12/minute"
+    AI_CREDITS_FREE: int = 50
+    AI_CREDITS_ESSENTIAL: int = 500
+    AI_CREDITS_PRO: int = 1000
+
     # mt5-core service config
     MT5_CORE_URL: str = ""
     MT5_CORE_INTERNAL_SHARED_SECRET: str = ""

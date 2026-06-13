@@ -2,13 +2,36 @@ import asyncio
 import logging
 import uuid
 
+import redis as sync_redis
+
 from app.core.celery_app import celery_app
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import TradingAccountStatus
 from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
 
 logger = logging.getLogger(__name__)
+
+_sync_redis: sync_redis.Redis | None = None
+
+
+def _get_sync_redis() -> sync_redis.Redis:
+    global _sync_redis
+    if _sync_redis is None:
+        _sync_redis = sync_redis.from_url(settings.AI_REDIS_URL, decode_responses=True)
+    return _sync_redis
+
+
+def _bump_data_version(account_id: str) -> None:
+    """Increment per-account data_version so the AI tool cache is invalidated."""
+    try:
+        r = _get_sync_redis()
+        key = f"acct:ver:{account_id}"
+        new_ver = r.incr(key)
+        logger.debug("Bumped data_version for account %s → %s", account_id, new_ver)
+    except Exception:
+        logger.warning("Could not bump data_version for account %s (Redis unavailable)", account_id)
 
 
 @celery_app.task(name="journal.sync_account", bind=True, max_retries=3)
@@ -44,6 +67,12 @@ def sync_account(self, account_id: str) -> dict:
                 enforce_admission=False,
             )
         )
+
+        # Invalidate the AI tool cache for this account after a successful sync.
+        # This ensures that the next AI query sees fresh trade data.
+        if result.inserted_trades > 0:
+            _bump_data_version(account_id)
+
         return {
             "status": result.outcome,
             "inserted_trades": result.inserted_trades,
