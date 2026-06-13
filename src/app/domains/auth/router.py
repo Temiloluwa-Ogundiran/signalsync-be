@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Cookie, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Optional
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import limiter
 from app.domains.auth.schemas import (
@@ -21,6 +22,21 @@ from app.domains.auth.schemas import (
 from app.domains.auth import service as auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def verify_origin(request: Request) -> None:
+    """CSRF mitigation for cookie-authenticated endpoints (#16).
+
+    Browser requests always carry an Origin (or Referer); server-to-server
+    calls (NextAuth refreshing server-side) do not — the None pass-through is
+    intentional and safe because CSRF is a browser-context attack.
+    """
+    origin = request.headers.get("Origin") or request.headers.get("Referer")
+    if origin is None:
+        return
+    allowed = set(settings.get_cors_allowed_origins()) | {settings.FRONTEND_URL}
+    if not any(origin.startswith(a) for a in allowed):
+        raise HTTPException(status_code=403, detail="Invalid origin.")
 
 
 @router.post(
@@ -96,6 +112,7 @@ def login(
         "On success, revokes the old refresh token, issues a new one "
         "(rotation), and returns a fresh access token."
     ),
+    dependencies=[Depends(verify_origin)],
 )
 @limiter.limit("20/minute")
 def refresh_token(
@@ -112,9 +129,11 @@ def refresh_token(
     status_code=status.HTTP_200_OK,
     summary="Log out and revoke the refresh token",
     description="Revokes the refresh token cookie. Always returns 200.",
+    dependencies=[Depends(verify_origin)],
 )
 def logout(
     response: Response,
+    request: Request,
     refresh_token: Optional[str] = Cookie(default=None),
     db: Session = Depends(get_db),
 ):
