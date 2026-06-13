@@ -69,7 +69,15 @@ def send_verification_email(to_email: str, raw_token: str) -> None:
         },
         timeout=15,
     )
+    if response.status_code >= 400:
+        # Resend returns a JSON error body (e.g. unverified domain, recipient
+        # not allowed in test mode). Surface it — raise_for_status alone hides it.
+        logger.error(
+            "Resend rejected verification email to %s: %s %s",
+            to_email, response.status_code, response.text,
+        )
     response.raise_for_status()
+    logger.info("Resend accepted verification email to %s", to_email)
 
 
 def send_password_reset_email(to_email: str, raw_token: str) -> None:

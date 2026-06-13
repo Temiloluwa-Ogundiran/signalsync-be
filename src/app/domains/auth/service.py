@@ -173,6 +173,13 @@ def verify_email(db: Session, raw_token: str) -> VerifyEmailResponse:
     token = db.execute(stmt).scalar_one_or_none()
 
     if not token:
+        # Log enough to disambiguate the failure in prod without leaking the raw
+        # token. A "not found" here means the hash isn't in the DB at all —
+        # usually a stale link whose token was already rotated by a resend, or a
+        # link from a different environment/database.
+        logger.warning(
+            "verify_email: token hash not found (prefix=%s)", hashed[:12]
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired verification token.",
@@ -192,6 +199,13 @@ def verify_email(db: Session, raw_token: str) -> VerifyEmailResponse:
 
     # 2. Check if the token has expired or is revoked for an unverified user
     if token.is_revoked or token.expires_at <= datetime.now(timezone.utc):
+        logger.warning(
+            "verify_email: token rejected for user %s (revoked=%s, expires_at=%s, now=%s)",
+            token.user_id,
+            token.is_revoked,
+            token.expires_at,
+            datetime.now(timezone.utc),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired verification token.",
