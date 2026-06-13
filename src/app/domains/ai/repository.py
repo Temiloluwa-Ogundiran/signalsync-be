@@ -315,6 +315,24 @@ def get_account_ids_for_user(db: Session, *, user_id: uuid.UUID) -> List[str]:
     return [str(r[0]) for r in rows]
 
 
+def get_accounts_for_user(db: Session, *, user_id: uuid.UUID) -> List[Dict[str, str]]:
+    """Return id + human label for every active account. Used to build the AI account map."""
+    rows = db.execute(
+        text(
+            "SELECT id, display_name, broker_login FROM trading_accounts "
+            "WHERE user_id = :uid AND is_deleted = false"
+        ),
+        {"uid": str(user_id)},
+    ).fetchall()
+    return [
+        {
+            "id": str(r[0]),
+            "label": r[1] if r[1] else f"Account {r[2]}",
+        }
+        for r in rows
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Analytics queries — called by tools/
 # Each function opens no session; callers pass `db`.

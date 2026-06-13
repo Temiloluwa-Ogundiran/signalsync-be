@@ -6,7 +6,7 @@ not baked into the graph. This avoids recompiling the graph on every request —
 a prototype bug that added ~200ms per call (§9.1 fix).
 """
 import logging
-from typing import List
+from typing import Dict, List
 
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -25,25 +25,39 @@ _llm_with_tools: ChatOpenAI | None = None
 _compiled = None
 
 
-def _ids_block(account_ids: List[str]) -> str:
-    lines = "\n".join(f"  - {aid}" for aid in account_ids)
+def _ids_block(account_ids: List[str], account_map: Dict[str, str]) -> str:
+    """
+    Render the account roster injected into the system prompt.
+    Format: "  - <uuid>  →  <label>"
+    The label is what the trader sees in the UI and may use in conversation.
+    """
+    lines = "\n".join(
+        f"  - {aid}  →  {account_map.get(aid, 'unknown')}"
+        for aid in account_ids
+    )
     if len(account_ids) == 1:
+        aid = account_ids[0]
+        label = account_map.get(aid, "unknown")
         return (
-            f"This trader's account IDs:\n{lines}\n\n"
-            f"This conversation is scoped to the single account above. "
-            f"Always pass that account ID when calling tools. Do not broaden to other accounts."
+            f"This trader's accounts (UUID → label):\n{lines}\n\n"
+            f"This conversation is scoped to '{label}' (ID: {aid}). "
+            f"Always pass that UUID when calling tools. "
+            f"Always refer to it as '{label}' in your responses — never show the raw UUID to the trader."
         )
     return (
-        f"This trader's account IDs:\n{lines}\n\n"
-        f"Pass ALL of these when calling tools unless the trader explicitly names a specific account."
+        f"This trader's accounts (UUID → label):\n{lines}\n\n"
+        f"Pass ALL UUIDs when calling tools unless the trader names a specific account. "
+        f"When the trader refers to an account by label (e.g. 'demo1'), map it to its UUID for tool calls. "
+        f"Always use the label, not the UUID, when referring to accounts in your responses."
     )
 
 
 def _copilot_node(state: MessagesState, config: RunnableConfig):
     cfg = config.get("configurable", {})
     account_ids: List[str] = cfg.get("account_ids", [])
+    account_map: Dict[str, str] = cfg.get("account_map", {})
     context_block: str = cfg.get("context_block", "")
-    system_content = f"{SYSTEM_PROMPT}\n{_ids_block(account_ids)}"
+    system_content = f"{SYSTEM_PROMPT}\n{_ids_block(account_ids, account_map)}"
     if context_block:
         system_content += f"\n\n{context_block}"
     system = SystemMessage(content=system_content)
