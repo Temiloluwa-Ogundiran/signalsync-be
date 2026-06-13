@@ -1,4 +1,6 @@
 import io
+import importlib.util
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -57,3 +59,31 @@ def test_health_endpoint_sets_request_id_header() -> None:
         response = client.get("/")
         assert response.status_code == 200
         assert response.headers.get(REQUEST_ID_HEADER)
+
+
+def test_start_api_treats_blank_web_concurrency_as_default(monkeypatch) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "docker_start", Path(__file__).resolve().parents[1] / "scripts" / "docker_start.py"
+    )
+    assert spec is not None and spec.loader is not None
+    docker_start = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(docker_start)
+
+    captured: dict[str, list[str]] = {}
+
+    monkeypatch.setattr(docker_start, "wait_for_deps", lambda: None)
+    monkeypatch.setattr(docker_start.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(docker_start, "_default_workers", lambda: "3")
+    monkeypatch.setenv("WEB_CONCURRENCY", "")
+
+    def fake_execvp(program: str, argv: list[str]) -> None:
+        captured["argv"] = argv
+        raise SystemExit
+
+    monkeypatch.setattr(docker_start.os, "execvp", fake_execvp)
+
+    with pytest.raises(SystemExit):
+        docker_start.start_api()
+
+    workers_index = captured["argv"].index("--workers") + 1
+    assert captured["argv"][workers_index] == "3"

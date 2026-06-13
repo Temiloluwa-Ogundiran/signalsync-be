@@ -3,14 +3,17 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 from decimal import Decimal
+from sqlalchemy import BigInteger
 
 # Import domain models to satisfy SQLAlchemy mapper dependencies in tests
+import app.domains.users.models  # noqa: F401
 import app.domains.journal.models  # noqa: F401
 import app.domains.streams.models  # noqa: F401
 import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts.models import TradingAccount, TradingPlatform, TradingAccountType
+from app.domains.accounts.models import Trade
 from app.domains.accounts.sync import ingest_mt5_core_history_result
 
 @pytest.fixture
@@ -27,6 +30,10 @@ def mock_account() -> TradingAccount:
     acct.broker_utc_offset = 0
     acct.timezone = "UTC"
     return acct
+
+
+def test_trade_magic_number_uses_bigint_for_mt5_values() -> None:
+    assert isinstance(Trade.__table__.c.magic_number.type, BigInteger)
 
 @patch("app.domains.accounts.sync.account_repo")
 def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> None:
@@ -58,7 +65,7 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
                 "position_id": "111222",
                 "sl": 1.0800,
                 "tp": 1.0900,
-                "magic_number": 12345,
+                "magic_number": 1780325659298,
                 "trade_source": "personal",
                 "mfe": 25.0,
                 "mae": -5.0,
@@ -120,7 +127,7 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
     assert row["position_id"] == "111222"
     assert row["sl"] == Decimal("1.08")
     assert row["tp"] == Decimal("1.09")
-    assert row["magic_number"] == 12345
+    assert row["magic_number"] == 1780325659298
     assert row["trade_source"].value == "personal"
     assert row["mfe"] == Decimal("25.0")
     assert row["mae"] == Decimal("-5.0")

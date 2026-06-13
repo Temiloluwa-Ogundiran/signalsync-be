@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import List, Optional
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -323,7 +324,7 @@ class Trade(Base):
     tp: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 5), nullable=True)
 
     # MT5 magic number (0 = manual, >0 = EA).
-    magic_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    magic_number: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     # Broker position ID for grouping partial closes into one logical trade.
     position_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)

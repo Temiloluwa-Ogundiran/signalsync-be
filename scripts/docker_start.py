@@ -31,6 +31,16 @@ def _default_workers() -> str:
     return str(2 * (os.cpu_count() or 1) + 1)
 
 
+def _worker_count(env_name: str, default: str) -> str:
+    value = (os.environ.get(env_name) or "").strip()
+    workers = value or default
+    # Gunicorn reads WEB_CONCURRENCY while importing its config, before it parses
+    # the explicit --workers arg. Keep this env var valid even when Compose or
+    # the platform injects it as an empty string.
+    os.environ["WEB_CONCURRENCY"] = workers
+    return workers
+
+
 def wait_for_deps() -> None:
     database_url = os.environ["DATABASE_URL"]
     parsed = urlparse(database_url)
@@ -48,7 +58,7 @@ def start_api() -> None:
     # should ideally be a dedicated init/pre-deploy step so only one process migrates.
     subprocess.run(["alembic", "upgrade", "head"], check=True)
 
-    workers = os.environ.get("WEB_CONCURRENCY", _default_workers())
+    workers = _worker_count("WEB_CONCURRENCY", _default_workers())
     port = os.environ.get("PORT", "8000")
 
     os.execvp(
@@ -81,7 +91,7 @@ def start_ai() -> None:
 
     # AI workers are I/O-bound waiting on OpenAI, so 2-4 workers per instance is
     # correct. Scale horizontally (more Railway replicas) not vertically.
-    workers = os.environ.get("AI_WEB_CONCURRENCY", "4")
+    workers = _worker_count("AI_WEB_CONCURRENCY", "4")
     port = os.environ.get("PORT", "8000")
 
     os.execvp(
