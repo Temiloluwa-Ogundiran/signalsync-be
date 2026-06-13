@@ -121,37 +121,43 @@ def test_list_trade_setups_sql_query() -> None:
 
 
 def test_is_account_sync_locked() -> None:
+    """The sync mutex is a transaction-scoped advisory lock (pg_try_advisory_xact_lock):
+    visible across connections while the holding transaction is open, mutually
+    exclusive, and auto-released when that transaction ends — no manual unlock."""
     from app.domains.accounts.repository import (
         try_acquire_account_sync_lock,
-        release_account_sync_lock,
         is_account_sync_locked,
     )
-    
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
+
+    account_id = uuid.uuid4()
+
+    # Connection A holds the lock; connection B is an independent observer that
+    # stands in for another worker process / pooled server connection.
+    conn_a = engine.connect()
+    db_a = Session(bind=conn_a)
+    conn_b = engine.connect()
+    db_b = Session(bind=conn_b)
     try:
-        account_id = uuid.uuid4()
-        
-        # Initially, the lock should not be held
-        assert is_account_sync_locked(db, account_id) is False
-        
-        # Acquire lock
-        acquired = try_acquire_account_sync_lock(db, account_id)
-        assert acquired is True
-        
-        # Now it should be locked
-        assert is_account_sync_locked(db, account_id) is True
-        
-        # Release lock
-        release_account_sync_lock(db, account_id)
-        
-        # Should be unlocked again
-        assert is_account_sync_locked(db, account_id) is False
-        
+        # Initially nothing holds the lock.
+        assert is_account_sync_locked(db_b, account_id) is False
+
+        # A acquires the xact lock (attaches to A's open transaction).
+        assert try_acquire_account_sync_lock(db_a, account_id) is True
+
+        # Visible from a separate connection while A's transaction stays open.
+        assert is_account_sync_locked(db_b, account_id) is True
+
+        # A second acquirer on another connection cannot take the same lock.
+        assert try_acquire_account_sync_lock(db_b, account_id) is False
+
+        # Ending A's transaction auto-releases the lock — no explicit unlock call.
+        db_a.rollback()
+        assert is_account_sync_locked(db_b, account_id) is False
     finally:
-        db.close()
-        transaction.rollback()
+        db_a.close()
+        conn_a.close()
+        db_b.close()
+        conn_b.close()
         connection.close()
 
 

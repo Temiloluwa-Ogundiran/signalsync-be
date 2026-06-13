@@ -83,6 +83,9 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
     # Verify offset updated
     assert mock_account.broker_utc_offset == 7200
     db_session.flush.assert_called()
+    # #7: ingest owns no transaction boundary — it flushes, the caller commits.
+    # Committing here would also release the transaction-scoped sync advisory lock.
+    db_session.commit.assert_not_called()
 
     # Verify snapshot persisted
     mock_repo.upsert_account_snapshot_for_date.assert_called_once_with(

@@ -52,12 +52,20 @@ def test_send_verification_email_raises_when_resend_is_unconfigured() -> None:
             send_verification_email("user@example.com", "token-123")
 
 
-def test_register_raises_when_email_delivery_fails() -> None:
+def test_register_swallows_email_delivery_failure() -> None:
+    # P2-10: registration commit succeeds and the verification-email enqueue
+    # failure is logged but NOT re-raised (do NOT roll back the new account).
+    from datetime import datetime, timezone
+
     db = MagicMock()
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "user@example.com"
+    user.username = "trader"
     user.display_name = "Trader"
+    user.avatar_url = None
+    user.is_email_verified = False
+    user.created_at = datetime.now(timezone.utc)
     with (
         patch("app.domains.auth.service.user_repo.get_by_email", return_value=None),
         patch("app.domains.auth.service.user_repo.get_by_username", return_value=None),
@@ -65,41 +73,47 @@ def test_register_raises_when_email_delivery_fails() -> None:
         patch("app.domains.auth.service.stream_repo.create"),
         patch("app.domains.auth.service.token_repo.create"),
         patch(
-            "app.domains.auth.service.send_verification_email",
+            "app.domains.auth.service.send_verification_email_task.delay",
             side_effect=RuntimeError("resend down"),
         ),
     ):
-        with pytest.raises(RuntimeError, match="resend down"):
-            auth_service.register(
-                db,
-                RegisterRequest(
-                    email="user@example.com",
-                    username="trader",
-                    display_name="Trader",
-                    password="Password123",
-                ),
-            )
+        response = auth_service.register(
+            db,
+            RegisterRequest(
+                email="user@example.com",
+                username="trader",
+                display_name="Trader",
+                password="Password123",
+            ),
+        )
+
+    db.commit.assert_called_once()
+    assert "check your email" in response.message
 
 
-def test_resend_verification_raises_for_real_delivery_failure() -> None:
+def test_resend_verification_swallows_real_delivery_failure() -> None:
+    # P2-10: the enqueue failure is logged but NOT re-raised; the endpoint
+    # still returns its generic success message.
     db = MagicMock()
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "user@example.com"
     user.is_email_verified = False
     db.query.return_value.filter_by.return_value.all.return_value = []
+    db.execute.return_value.scalars.return_value = []
     with (
         patch("app.domains.auth.service.user_repo.get_by_email", return_value=user),
         patch("app.domains.auth.service.token_repo.create"),
         patch(
-            "app.domains.auth.service.send_verification_email",
+            "app.domains.auth.service.send_verification_email_task.delay",
             side_effect=RuntimeError("resend down"),
         ),
     ):
-        with pytest.raises(RuntimeError, match="resend down"):
-            auth_service.resend_verification(
-                db, ResendVerificationRequest(email="user@example.com")
-            )
+        response = auth_service.resend_verification(
+            db, ResendVerificationRequest(email="user@example.com")
+        )
+
+    assert "a new link has been sent" in response.message
 
 
 def test_login_still_blocks_unverified_user() -> None:

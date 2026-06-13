@@ -24,12 +24,18 @@ def get_current_user(
     if payload is None:
         raise credentials_exception
 
+    # Reject anything that isn't an access token (refresh/reset/verify tokens
+    # must never authenticate a request). The "typ" claim is minted in
+    # create_access_token; tokens without it are pre-claim and already expired.
+    if payload.get("typ") != "access":
+        raise credentials_exception
+
     user_id: str = payload.get("sub")
     if not user_id:
         raise credentials_exception
 
     user = user_repo.get_by_id(db, user_id)
-    if not user:
+    if not user or user.is_deleted or not user.is_email_verified:
         raise credentials_exception
 
     return user

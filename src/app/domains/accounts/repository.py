@@ -379,20 +379,18 @@ def soft_disconnect_account(db: Session, account: TradingAccount) -> None:
 
 
 def try_acquire_account_sync_lock(db: Session, account_id: uuid.UUID) -> bool:
-    stmt = text("SELECT pg_try_advisory_lock(hashtext(:lock_key))")
+    # Transaction-scoped advisory lock: auto-released when the surrounding
+    # transaction commits or rolls back. This is PgBouncer-safe under transaction
+    # pooling — unlike pg_advisory_lock, there is no separate unlock statement that
+    # could land on a different pooled server connection. The single commit that
+    # releases this lock is owned by orchestrate_mt5_sync; ingest_closed_deals must
+    # therefore NOT commit mid-sync (see #7), or the lock releases early.
+    stmt = text("SELECT pg_try_advisory_xact_lock(hashtext(:lock_key))")
     return bool(
         db.execute(
             stmt,
             {"lock_key": f"trading-account-sync:{account_id}"},
         ).scalar()
-    )
-
-
-def release_account_sync_lock(db: Session, account_id: uuid.UUID) -> None:
-    stmt = text("SELECT pg_advisory_unlock(hashtext(:lock_key))")
-    db.execute(
-        stmt,
-        {"lock_key": f"trading-account-sync:{account_id}"},
     )
 
 
