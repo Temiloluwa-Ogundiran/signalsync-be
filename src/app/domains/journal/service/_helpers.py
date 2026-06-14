@@ -12,12 +12,10 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from bisect import bisect_right
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.journal import repository as journal_repo
 from app.domains.journal.schemas import (
-    AnalyticsBalanceHistoryPointResponse,
     JournalAttachmentResponse,
     JournalMessageResponse,
     JournalOpenPositionResponse,
@@ -28,17 +26,6 @@ from app.shared.utils.storage import generate_signed_url
 from app.shared.utils.timezone import local_date_to_utc_range, to_account_local_date
 
 _HASHTAG_PATTERN = r"#([A-Za-z][A-Za-z0-9_-]*)"
-
-
-def build_snapshot_lookup(db: Session, *, account_id: uuid.UUID) -> tuple[list[date], list[Decimal]]:
-    snaps = journal_repo.list_account_snapshots(db, account_id=account_id, from_date=None, to_date=None)
-    return [s.snapshot_date for s in snaps], [s.balance for s in snaps]
-
-
-def latest_balance_on_or_before(lookup: tuple[list[date], list[Decimal]], target: date) -> Decimal | None:
-    dates, balances = lookup
-    idx = bisect_right(dates, target)
-    return balances[idx - 1] if idx else None
 
 
 def extract_tags(content: str | None) -> list[str]:

@@ -28,17 +28,9 @@ from ._templates import (  # noqa: F401
     seed_system_journal_templates,
 )
 from ._analytics import (  # noqa: F401
-    get_analytics_balance_history,
-    get_analytics_calendar,
     get_analytics_dashboard,
-    get_analytics_equity,
-    get_analytics_instruments,
-    get_analytics_report,
-    get_analytics_sessions,
-    get_analytics_setups,
     get_analytics_summary,
     get_analytics_time_performance,
-    get_analytics_trade_sources,
 )
 from ._manual_trades import (  # noqa: F401
     create_manual_trade,

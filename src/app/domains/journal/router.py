@@ -12,17 +12,9 @@ from app.domains.journal import service as journal_service
 from app.domains.journal.models import JournalMessageType, JournalTemplateType
 from app.domains.journal.schemas import (
     AdjacentTradedDatesResponse,
-    AnalyticsCalendarResponse,
-    AnalyticsBalanceHistoryResponse,
     AnalyticsDashboardResponse,
-    AnalyticsEquityResponse,
-    AnalyticsInstrumentsResponse,
-    AnalyticsReportResponse,
-    AnalyticsSessionsResponse,
-    AnalyticsSetupsResponse,
     AnalyticsSummaryResponse,
     AnalyticsTimePerformanceResponse,
-    AnalyticsTradeSourceResponse,
     CategoryCreateRequest,
     DailyJournalFeedItemResponse,
     DailyJournalFeedResponse,
@@ -401,63 +393,6 @@ def get_summary(
     )
 
 
-@analytics_router.get("/calendar", response_model=AnalyticsCalendarResponse)
-def get_calendar(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsCalendarResponse:
-    return journal_service.get_analytics_calendar(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
-        include_manual=include_manual,
-    )
-
-
-@analytics_router.get("/sessions", response_model=AnalyticsSessionsResponse)
-def get_sessions(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsSessionsResponse:
-    return journal_service.get_analytics_sessions(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
-        include_manual=include_manual,
-    )
-
-
-@analytics_router.get("/instruments", response_model=AnalyticsInstrumentsResponse)
-def get_instruments(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsInstrumentsResponse:
-    return journal_service.get_analytics_instruments(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
-        include_manual=include_manual,
-    )
-
-
 @analytics_router.get("/time-performance", response_model=AnalyticsTimePerformanceResponse)
 def get_time_performance(
     account_id: uuid.UUID = Query(...),
@@ -475,102 +410,6 @@ def get_time_performance(
         from_date=from_date,
         to_date=to_date,
         time_basis=time_basis,
-        include_manual=include_manual,
-    )
-
-
-@analytics_router.get("/equity", response_model=AnalyticsEquityResponse)
-def get_equity(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsEquityResponse:
-    return journal_service.get_analytics_equity(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
-    )
-
-
-@analytics_router.get("/balance-history", response_model=AnalyticsBalanceHistoryResponse)
-def get_balance_history(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    granularity: str = Query("day", pattern="^(intraday|day)$"),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsBalanceHistoryResponse:
-    return journal_service.get_analytics_balance_history(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
-        granularity=granularity,
-        include_manual=include_manual,
-    )
-
-
-@analytics_router.get("/setups", response_model=AnalyticsSetupsResponse)
-def get_setups(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsSetupsResponse:
-    return journal_service.get_analytics_setups(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
-        include_manual=include_manual,
-    )
-
-
-@analytics_router.get("/trade-sources", response_model=AnalyticsTradeSourceResponse)
-def get_trade_sources(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsTradeSourceResponse:
-    return journal_service.get_analytics_trade_sources(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
-        include_manual=include_manual,
-    )
-
-
-@analytics_router.get("/report", response_model=AnalyticsReportResponse)
-def get_report(
-    account_id: uuid.UUID = Query(...),
-    from_date: date | None = Query(None),
-    to_date: date | None = Query(None),
-    include_manual: bool = Query(True),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> AnalyticsReportResponse:
-    return journal_service.get_analytics_report(
-        db,
-        account_id=account_id,
-        user_id=current_user.id,
-        from_date=from_date,
-        to_date=to_date,
         include_manual=include_manual,
     )
 

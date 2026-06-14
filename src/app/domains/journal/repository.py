@@ -7,7 +7,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.domains.accounts.models import AccountSnapshot, Trade
+from app.domains.accounts.models import Trade
 from app.domains.journal.models import (
     DailyJournal,
     JournalAttachment,
@@ -663,24 +663,6 @@ def list_trading_dates_with_journal_activity(
 
     combined = stmt_daily.union(stmt_trade, stmt_daily_reviewed, stmt_trade_reviewed)
     return {d for (d,) in db.execute(combined).all() if d is not None}
-
-
-def list_account_snapshots(
-    db: Session,
-    *,
-    account_id: uuid.UUID,
-    from_date,
-    to_date,
-) -> list[AccountSnapshot]:
-    stmt = select(AccountSnapshot).where(AccountSnapshot.account_id == account_id)
-
-    if from_date is not None:
-        stmt = stmt.where(AccountSnapshot.snapshot_date >= from_date)
-    if to_date is not None:
-        stmt = stmt.where(AccountSnapshot.snapshot_date <= to_date)
-
-    stmt = stmt.order_by(AccountSnapshot.snapshot_date.asc(), AccountSnapshot.id.asc())
-    return list(db.execute(stmt).scalars().all())
 
 
 

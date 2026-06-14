@@ -135,15 +135,11 @@ class TestComputeSummary:
         assert r.best_day.date == date(2025, 1, 1)
         assert r.worst_day.date == date(2025, 1, 1)
 
-    def test_net_pnl_percent_of_starting_balance(self):
-        trades = [_trade(+50, _dt(2025, 1, 1))]
-        r = _compute_summary(trades=trades, starting_balance=Decimal("1000"))
-        assert r.net_pnl_percent == pytest.approx(5.0)
-
     def test_zero_starting_balance_does_not_raise(self):
         trades = [_trade(+10, _dt(2025, 1, 1))]
         r = _compute_summary(trades=trades, starting_balance=Decimal("0"))
-        assert r.net_pnl_percent == 0.0
+        assert r.starting_balance == 0.0
+        assert r.total_net_pnl == pytest.approx(10.0)
 
     def test_avg_duration_seconds(self):
         trades = [

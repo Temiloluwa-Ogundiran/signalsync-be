@@ -229,7 +229,6 @@ class AnalyticsSummaryResponse(BaseModel):
     avg_trade_duration_seconds: float
     total_net_pnl: float
     starting_balance: float
-    net_pnl_percent: float
     max_drawdown: float
     best_day: Optional[AnalyticsBestWorstDay]
     worst_day: Optional[AnalyticsBestWorstDay]
@@ -248,18 +247,6 @@ class AnalyticsCalendarDayResponse(BaseModel):
 class AnalyticsCalendarResponse(BaseModel):
     month: str
     days: list[AnalyticsCalendarDayResponse]
-
-
-class AnalyticsSessionItemResponse(BaseModel):
-    session: str
-    trade_count: int
-    win_rate: float
-    total_pnl: float
-    avg_pnl: float
-
-
-class AnalyticsSessionsResponse(BaseModel):
-    sessions: list[AnalyticsSessionItemResponse]
 
 
 class AnalyticsInstrumentItemResponse(BaseModel):
@@ -288,59 +275,6 @@ class AnalyticsTimePerformancePointResponse(BaseModel):
 class AnalyticsTimePerformanceResponse(BaseModel):
     hourly: list[AnalyticsTimePerformancePointResponse]
     daily: list[AnalyticsTimePerformancePointResponse]
-
-
-class AnalyticsTradeSourceItemResponse(BaseModel):
-    trade_source: str
-    trade_count: int
-    win_rate: float
-    total_pnl: float
-    avg_pnl: float
-
-
-class AnalyticsTradeSourceResponse(BaseModel):
-    sources: list[AnalyticsTradeSourceItemResponse]
-
-
-class AnalyticsEquityPointResponse(BaseModel):
-    date: date
-    balance: float
-    equity: float
-    floating_pnl: float
-
-
-class AnalyticsEquityResponse(BaseModel):
-    points: list[AnalyticsEquityPointResponse]
-
-
-class AnalyticsBalanceHistoryPointResponse(BaseModel):
-    timestamp: datetime
-    balance: float
-    equity: float | None = None
-    source: str
-
-
-class AnalyticsBalanceHistoryResponse(BaseModel):
-    points: list[AnalyticsBalanceHistoryPointResponse]
-
-
-class AnalyticsSetupItemResponse(BaseModel):
-    tag: str
-    trade_count: int
-    win_rate: float
-    total_pnl: float
-
-
-class AnalyticsSetupsResponse(BaseModel):
-    setups: list[AnalyticsSetupItemResponse]
-
-
-class AnalyticsReportResponse(BaseModel):
-    summary: AnalyticsSummaryResponse
-    sessions: AnalyticsSessionsResponse
-    instruments: AnalyticsInstrumentsResponse
-    setups: AnalyticsSetupsResponse
-    trade_sources: AnalyticsTradeSourceResponse
 
 
 class AnalyticsDashboardResponse(BaseModel):
