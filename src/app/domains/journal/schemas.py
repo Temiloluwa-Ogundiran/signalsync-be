@@ -261,6 +261,27 @@ class AnalyticsEquityCurveResponse(BaseModel):
     points: list[AnalyticsEquityCurvePointResponse]
 
 
+class AnalyticsEvaluationResponse(BaseModel):
+    """Detailed evaluation stats for the journal sidebar panel — all derived
+    from closed trades. Dollar/count based (the FE renders a $ view)."""
+
+    total_trades: int
+    avg_profit_per_trading_day: float  # total net P&L / number of trading days
+    biggest_winner: float  # largest single-trade net profit (0 if none)
+    biggest_loser: float  # most negative single-trade net profit (0 if none)
+    total_fees: float  # sum of commission + swap across trades
+    avg_hold_seconds: float  # mean trade duration in seconds
+    winrate_wo_be: float  # wins / (wins + losses) * 100, excluding breakeven
+    roi: float  # total net P&L / starting balance * 100 (0 if no starting bal)
+    max_drawdown_pct: float  # peak-to-trough drawdown as % of the running peak
+    winning_days: int
+    losing_days: int
+    trades_per_day: float
+    trades_per_week: float
+    # Outcome of the most recent trades, oldest→newest: "W" win, "L" loss, "B" breakeven.
+    recent_streak: list[str]
+
+
 class AnalyticsInstrumentItemResponse(BaseModel):
     symbol: str
     trade_count: int

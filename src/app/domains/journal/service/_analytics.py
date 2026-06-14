@@ -14,6 +14,7 @@ from app.domains.journal.schemas import (
     AnalyticsDashboardResponse,
     AnalyticsEquityCurvePointResponse,
     AnalyticsEquityCurveResponse,
+    AnalyticsEvaluationResponse,
     AnalyticsInstrumentItemResponse,
     AnalyticsInstrumentsResponse,
     AnalyticsSummaryResponse,
@@ -195,6 +196,112 @@ def get_analytics_equity_curve(
         )
 
     return AnalyticsEquityCurveResponse(points=points)
+
+
+def get_analytics_evaluation(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    from_date: date | None,
+    to_date: date | None,
+    include_manual: bool = True,
+) -> AnalyticsEvaluationResponse:
+    """Detailed evaluation stats for the journal sidebar, all trade-derived."""
+    account = _get_account_or_404(db, account_id, user_id)
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+    )
+
+    if not trades:
+        return AnalyticsEvaluationResponse(
+            total_trades=0, avg_profit_per_trading_day=0.0, biggest_winner=0.0,
+            biggest_loser=0.0, total_fees=0.0, avg_hold_seconds=0.0,
+            winrate_wo_be=0.0, roi=0.0, max_drawdown_pct=0.0,
+            winning_days=0, losing_days=0, trades_per_day=0.0,
+            trades_per_week=0.0, recent_streak=[],
+        )
+
+    total_trades = len(trades)
+    total_net_pnl = sum((t.net_profit for t in trades), Decimal("0"))
+    total_fees = sum(
+        ((t.commission or Decimal("0")) + (t.swap or Decimal("0")) for t in trades),
+        Decimal("0"),
+    )
+    biggest_winner = max((t.net_profit for t in trades), default=Decimal("0"))
+    biggest_loser = min((t.net_profit for t in trades), default=Decimal("0"))
+    avg_hold_seconds = (
+        sum((t.duration_seconds or 0) for t in trades) / total_trades
+    )
+
+    wins = sum(1 for t in trades if t.net_profit > 0)
+    losses = sum(1 for t in trades if t.net_profit < 0)
+    winrate_wo_be = (wins / (wins + losses) * 100) if (wins + losses) else 0.0
+
+    starting_balance = _estimate_starting_balance(db, account=account)
+    roi = (
+        float(total_net_pnl / starting_balance * Decimal("100"))
+        if starting_balance and starting_balance != 0
+        else 0.0
+    )
+
+    # Per-account-local-day aggregation for day-based stats.
+    by_day: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
+    for t in trades:
+        by_day[to_account_local_date(t.closed_at, account.timezone)] += t.net_profit
+    trading_days = len(by_day)
+    winning_days = sum(1 for v in by_day.values() if v > 0)
+    losing_days = sum(1 for v in by_day.values() if v < 0)
+    avg_profit_per_trading_day = (
+        float(total_net_pnl) / trading_days if trading_days else 0.0
+    )
+    trades_per_day = total_trades / trading_days if trading_days else 0.0
+    # Span the calendar from first to last trading day for a per-week rate.
+    day_keys = sorted(by_day.keys())
+    span_days = (day_keys[-1] - day_keys[0]).days + 1
+    weeks = max(1.0, span_days / 7)
+    trades_per_week = total_trades / weeks
+
+    # Max drawdown as % of the running cumulative-P&L peak (peak-to-trough).
+    running_max = Decimal("0")
+    max_dd_abs = Decimal("0")
+    cumulative = Decimal("0")
+    for t in trades:
+        cumulative += t.net_profit
+        running_max = max(running_max, cumulative)
+        max_dd_abs = max(max_dd_abs, running_max - cumulative)
+    dd_basis = (
+        starting_balance if starting_balance and starting_balance > 0 else running_max
+    )
+    max_drawdown_pct = (
+        float(max_dd_abs / dd_basis * Decimal("100")) if dd_basis and dd_basis > 0 else 0.0
+    )
+
+    # Most recent trades, oldest→newest (trades are already closed_at-ascending).
+    recent = trades[-5:]
+    recent_streak = [
+        "W" if t.net_profit > 0 else ("L" if t.net_profit < 0 else "B")
+        for t in recent
+    ]
+
+    return AnalyticsEvaluationResponse(
+        total_trades=total_trades,
+        avg_profit_per_trading_day=avg_profit_per_trading_day,
+        biggest_winner=float(biggest_winner),
+        biggest_loser=float(biggest_loser),
+        total_fees=float(total_fees),
+        avg_hold_seconds=float(avg_hold_seconds),
+        winrate_wo_be=winrate_wo_be,
+        roi=roi,
+        max_drawdown_pct=max_drawdown_pct,
+        winning_days=winning_days,
+        losing_days=losing_days,
+        trades_per_day=trades_per_day,
+        trades_per_week=trades_per_week,
+        recent_streak=recent_streak,
+    )
 
 
 def get_analytics_dashboard(

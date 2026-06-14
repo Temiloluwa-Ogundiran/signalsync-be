@@ -501,6 +501,8 @@ def delete_user_template(
 ANALYTICS_COLUMNS = (
     Trade.id,
     Trade.net_profit,
+    Trade.commission,
+    Trade.swap,
     Trade.duration_seconds,
     Trade.session,
     Trade.symbol,
