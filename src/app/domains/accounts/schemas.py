@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
@@ -26,6 +26,21 @@ class AccountConnectRequest(BaseModel):
     timezone: str = Field(default="UTC", min_length=1, max_length=50)
     broker_utc_offset: int = Field(default=0, ge=-1440, le=1440)
     display_name: Optional[str] = Field(default=None, max_length=120)
+
+
+class AccountBalanceResponse(BaseModel):
+    """Latest known account balance/equity from the most recent synced snapshot.
+
+    All fields are null when the account has no snapshot yet (e.g. just connected
+    and not synced). The account's realized trading P&L is separate and lives in
+    the journal analytics summary.
+    """
+
+    account_id: uuid.UUID
+    balance: Optional[float] = None
+    equity: Optional[float] = None
+    floating_pnl: Optional[float] = None
+    as_of: Optional[date] = None
 
 
 class AccountResponse(BaseModel):

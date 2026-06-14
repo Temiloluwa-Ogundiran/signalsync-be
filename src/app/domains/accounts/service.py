@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import SyncProvider, TradingAccount
-from app.domains.accounts.schemas import AccountConnectRequest
+from app.domains.accounts.schemas import AccountBalanceResponse, AccountConnectRequest
 from app.domains.accounts.sync import ingest_mt5_core_history_result
 from app.domains.users.models import User
 from app.shared.utils.encryption import encrypt_secret
@@ -242,6 +242,29 @@ def get_account(
             status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
         )
     return account
+
+
+def get_account_balance(
+    db: Session, *, current_user: User, account_id: uuid.UUID
+) -> AccountBalanceResponse:
+    """Latest known balance/equity for an account from its most recent snapshot.
+
+    Returns null fields when the account has no snapshot yet (just connected,
+    never synced).
+    """
+    # Reuse the same ownership guard as get_account (404s for non-owners).
+    get_account(db, current_user=current_user, account_id=account_id)
+
+    snapshot = account_repo.get_latest_account_snapshot(db, account_id=account_id)
+    if snapshot is None:
+        return AccountBalanceResponse(account_id=account_id)
+    return AccountBalanceResponse(
+        account_id=account_id,
+        balance=float(snapshot.balance),
+        equity=float(snapshot.equity),
+        floating_pnl=float(snapshot.floating_pnl),
+        as_of=snapshot.snapshot_date,
+    )
 
 
 def disconnect_account(

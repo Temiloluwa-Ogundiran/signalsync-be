@@ -914,6 +914,21 @@ def get_latest_account_snapshot_balance(
     return row.balance
 
 
+def get_latest_account_snapshot(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+) -> Optional[AccountSnapshot]:
+    """Most recent persisted account snapshot (balance/equity) for an account."""
+    stmt = (
+        select(AccountSnapshot)
+        .where(AccountSnapshot.account_id == account_id)
+        .order_by(AccountSnapshot.snapshot_date.desc(), AccountSnapshot.id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def get_earliest_snapshot(db: Session, account_id: uuid.UUID) -> Optional[AccountSnapshot]:
     stmt = (
         select(AccountSnapshot)

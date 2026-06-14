@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts import service as account_service
 from app.domains.accounts.schemas import (
+    AccountBalanceResponse,
     AccountConnectRequest,
     AccountResponse,
     AccountUpdateRequest,
@@ -48,6 +49,17 @@ def get_account(
 ) -> AccountResponse:
     account = account_service.get_account(db, current_user=current_user, account_id=account_id)
     return AccountResponse.model_validate(account)
+
+
+@router.get("/{account_id}/balance", response_model=AccountBalanceResponse)
+def get_account_balance(
+    account_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AccountBalanceResponse:
+    return account_service.get_account_balance(
+        db, current_user=current_user, account_id=account_id
+    )
 
 
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
