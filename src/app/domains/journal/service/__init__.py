@@ -29,6 +29,7 @@ from ._templates import (  # noqa: F401
 )
 from ._analytics import (  # noqa: F401
     get_analytics_dashboard,
+    get_analytics_equity_curve,
     get_analytics_summary,
     get_analytics_time_performance,
 )

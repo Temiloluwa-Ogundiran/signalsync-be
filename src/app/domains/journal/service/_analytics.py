@@ -12,6 +12,8 @@ from app.domains.journal.schemas import (
     AnalyticsCalendarDayResponse,
     AnalyticsCalendarResponse,
     AnalyticsDashboardResponse,
+    AnalyticsEquityCurvePointResponse,
+    AnalyticsEquityCurveResponse,
     AnalyticsInstrumentItemResponse,
     AnalyticsInstrumentsResponse,
     AnalyticsSummaryResponse,
@@ -148,6 +150,51 @@ def _compute_time_performance(*, trades, account_timezone: str, time_basis: str)
         hourly=[build_point(f"{hour:02d}", hourly_groups.get(f"{hour:02d}", [])) for hour in range(24)],
         daily=[build_point(day, weekday_groups.get(day, [])) for day in weekday_order],
     )
+
+
+def get_analytics_equity_curve(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    from_date: date | None,
+    to_date: date | None,
+    include_manual: bool = True,
+) -> AnalyticsEquityCurveResponse:
+    """Cumulative net realized P&L over time, starting from zero.
+
+    Derived purely from closed trades (no account snapshots / starting balance):
+    bucket each trade's net P&L by its account-local close date, then walk the
+    days in order keeping a running total. The final point equals the period's
+    total net P&L, and the curve crosses zero exactly when the account goes
+    net-negative — letting the client split the area green (>=0) / red (<0).
+    """
+    account = _get_account_or_404(db, account_id, user_id)
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+    )
+
+    # Sum net P&L per account-local trading day.
+    daily_pnl: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
+    for trade in trades:
+        local_day = to_account_local_date(trade.closed_at, account.timezone)
+        daily_pnl[local_day] += trade.net_profit
+
+    running = Decimal("0")
+    points: list[AnalyticsEquityCurvePointResponse] = []
+    for day in sorted(daily_pnl.keys()):
+        running += daily_pnl[day]
+        points.append(
+            AnalyticsEquityCurvePointResponse(
+                date=day,
+                cumulative_pnl=float(running),
+                daily_pnl=float(daily_pnl[day]),
+            )
+        )
+
+    return AnalyticsEquityCurveResponse(points=points)
 
 
 def get_analytics_dashboard(

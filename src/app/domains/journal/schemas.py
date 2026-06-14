@@ -249,6 +249,18 @@ class AnalyticsCalendarResponse(BaseModel):
     days: list[AnalyticsCalendarDayResponse]
 
 
+class AnalyticsEquityCurvePointResponse(BaseModel):
+    """One point on the cumulative net-realized-P&L curve (starts at zero)."""
+
+    date: date
+    cumulative_pnl: float
+    daily_pnl: float
+
+
+class AnalyticsEquityCurveResponse(BaseModel):
+    points: list[AnalyticsEquityCurvePointResponse]
+
+
 class AnalyticsInstrumentItemResponse(BaseModel):
     symbol: str
     trade_count: int

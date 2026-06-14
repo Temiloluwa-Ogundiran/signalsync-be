@@ -13,6 +13,7 @@ from app.domains.journal.models import JournalMessageType, JournalTemplateType
 from app.domains.journal.schemas import (
     AdjacentTradedDatesResponse,
     AnalyticsDashboardResponse,
+    AnalyticsEquityCurveResponse,
     AnalyticsSummaryResponse,
     AnalyticsTimePerformanceResponse,
     CategoryCreateRequest,
@@ -410,6 +411,25 @@ def get_time_performance(
         from_date=from_date,
         to_date=to_date,
         time_basis=time_basis,
+        include_manual=include_manual,
+    )
+
+
+@analytics_router.get("/equity-curve", response_model=AnalyticsEquityCurveResponse)
+def get_equity_curve(
+    account_id: uuid.UUID = Query(...),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnalyticsEquityCurveResponse:
+    return journal_service.get_analytics_equity_curve(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        from_date=from_date,
+        to_date=to_date,
         include_manual=include_manual,
     )
 
