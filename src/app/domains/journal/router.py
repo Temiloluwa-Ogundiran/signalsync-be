@@ -15,6 +15,7 @@ from app.domains.journal.schemas import (
     AnalyticsDashboardResponse,
     AnalyticsEquityCurveResponse,
     AnalyticsEvaluationResponse,
+    AnalyticsIntradayCurvesResponse,
     AnalyticsSummaryResponse,
     AnalyticsTimePerformanceResponse,
     CategoryCreateRequest,
@@ -426,6 +427,27 @@ def get_equity_curve(
     current_user: User = Depends(get_current_user),
 ) -> AnalyticsEquityCurveResponse:
     return journal_service.get_analytics_equity_curve(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        from_date=from_date,
+        to_date=to_date,
+        include_manual=include_manual,
+    )
+
+
+@analytics_router.get(
+    "/intraday-curves", response_model=AnalyticsIntradayCurvesResponse
+)
+def get_intraday_curves(
+    account_id: uuid.UUID = Query(...),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    include_manual: bool = Query(True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnalyticsIntradayCurvesResponse:
+    return journal_service.get_analytics_intraday_curves(
         db,
         account_id=account_id,
         user_id=current_user.id,

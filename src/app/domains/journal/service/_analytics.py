@@ -17,12 +17,18 @@ from app.domains.journal.schemas import (
     AnalyticsEvaluationResponse,
     AnalyticsInstrumentItemResponse,
     AnalyticsInstrumentsResponse,
+    AnalyticsIntradayCurveDayResponse,
+    AnalyticsIntradayCurvePointResponse,
+    AnalyticsIntradayCurvesResponse,
     AnalyticsSummaryResponse,
     AnalyticsTimePerformancePointResponse,
     AnalyticsTimePerformanceResponse,
     JournalTradeListResponse,
 )
-from app.shared.utils.timezone import to_account_local_date
+from app.shared.utils.timezone import (
+    to_account_local_date,
+    to_account_local_datetime,
+)
 
 from ._helpers import (
     _build_trade_response,
@@ -196,6 +202,61 @@ def get_analytics_equity_curve(
         )
 
     return AnalyticsEquityCurveResponse(points=points)
+
+
+def get_analytics_intraday_curves(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    from_date: date | None,
+    to_date: date | None,
+    include_manual: bool = True,
+) -> AnalyticsIntradayCurvesResponse:
+    """Per-day intraday running-P&L curves for a date range, in one payload.
+
+    For each account-local trading day, take that day's closed trades, order
+    them by close time, and walk through accumulating net P&L from zero. The
+    resulting per-day series is a time sequence (one point per trade close) that
+    the client renders directly as a day sparkline — no per-day fetches needed.
+    """
+    account = _get_account_or_404(db, account_id, user_id)
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    trades = journal_repo.list_trade_rows_for_analytics(
+        db, account_ids=[account_id], closed_from_utc=start_utc,
+        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+    )
+
+    # Bucket trades by account-local close date.
+    by_day: dict[date, list] = defaultdict(list)
+    for trade in trades:
+        local_day = to_account_local_date(trade.closed_at, account.timezone)
+        by_day[local_day].append(trade)
+
+    days: list[AnalyticsIntradayCurveDayResponse] = []
+    for day in sorted(by_day.keys()):
+        # Order matters: the sparkline is a time sequence. Sort by close time
+        # (tie-break by id for stable ordering on equal timestamps).
+        day_trades = sorted(by_day[day], key=lambda t: (t.closed_at, str(t.id)))
+        running = Decimal("0")
+        points: list[AnalyticsIntradayCurvePointResponse] = []
+        for trade in day_trades:
+            running += trade.net_profit
+            points.append(
+                AnalyticsIntradayCurvePointResponse(
+                    t=to_account_local_datetime(trade.closed_at, account.timezone),
+                    cumulative_pnl=float(running),
+                )
+            )
+        days.append(
+            AnalyticsIntradayCurveDayResponse(
+                date=day,
+                net_pnl=float(running),
+                points=points,
+            )
+        )
+
+    return AnalyticsIntradayCurvesResponse(days=days)
 
 
 def get_analytics_evaluation(

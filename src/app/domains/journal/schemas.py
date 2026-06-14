@@ -261,6 +261,35 @@ class AnalyticsEquityCurveResponse(BaseModel):
     points: list[AnalyticsEquityCurvePointResponse]
 
 
+class AnalyticsIntradayCurvePointResponse(BaseModel):
+    """One point on a single day's intraday running-P&L curve.
+
+    `t` is the account-local close timestamp of the trade; `cumulative_pnl` is
+    the running total of net P&L within that day up to and including this trade.
+    """
+
+    t: datetime
+    cumulative_pnl: float
+
+
+class AnalyticsIntradayCurveDayResponse(BaseModel):
+    """One day's intraday curve: trades ordered by close time, accumulated."""
+
+    date: date
+    net_pnl: float  # day total = last point's cumulative_pnl
+    points: list[AnalyticsIntradayCurvePointResponse]
+
+
+class AnalyticsIntradayCurvesResponse(BaseModel):
+    """Per-day intraday running-P&L curves for a date range, in one payload.
+
+    Each day's `points` are ordered by close time with a running cumulative sum
+    reset to zero at the start of the day — ready to render as a day sparkline.
+    """
+
+    days: list[AnalyticsIntradayCurveDayResponse]
+
+
 class AnalyticsEvaluationResponse(BaseModel):
     """Detailed evaluation stats for the journal sidebar panel — all derived
     from closed trades. Dollar/count based (the FE renders a $ view)."""

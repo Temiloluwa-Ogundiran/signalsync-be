@@ -35,6 +35,13 @@ def to_account_local_date(value_utc: datetime, account_timezone: str) -> date:
     return value_utc.astimezone(ZoneInfo(account_timezone)).date()
 
 
+def to_account_local_datetime(value_utc: datetime, account_timezone: str) -> datetime:
+    """Convert a UTC datetime to an account-local timezone-aware datetime."""
+    if value_utc.tzinfo is None:
+        value_utc = value_utc.replace(tzinfo=UTC)
+    return value_utc.astimezone(ZoneInfo(account_timezone))
+
+
 def local_date_to_utc_range(local_day: date, account_timezone: str) -> tuple[datetime, datetime]:
     """
     Convert an account-local calendar date to a UTC [start, end) range.
