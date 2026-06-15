@@ -15,6 +15,7 @@ from app.domains.journal.schemas import (
     AnalyticsDashboardResponse,
     AnalyticsEquityCurveResponse,
     AnalyticsEvaluationResponse,
+    AnalyticsCurveResponse,
     AnalyticsIntradayCurvesResponse,
     AnalyticsSummaryResponse,
     AnalyticsTimePerformanceResponse,
@@ -494,6 +495,35 @@ def get_intraday_curves(
         include_manual=include_manual,
     )
 
+
+
+@analytics_router.get("/curve", response_model=AnalyticsCurveResponse)
+def get_curve(
+    account_id: uuid.UUID = Query(...),
+    from_date: date | None = Query(None),
+    to_date: date | None = Query(None),
+    granularity: str = Query(..., pattern="^(daily|intraday)$"),
+    include_manual: bool = Query(True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AnalyticsCurveResponse:
+    """Unified curve endpoint: daily or intraday granularity.
+    
+    - granularity=daily: daily P&L bars + cumulative curve (range-scoped)
+    - granularity=intraday: all days with per-trade points (one call, no N+1),
+                           downsampled to ~20 per day, zero-baselined
+    
+    Uses deterministic sort: close_time → broker_trade_id (BIGINT, NULLS LAST) → id
+    """
+    return journal_service.get_analytics_curve(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        from_date=from_date,
+        to_date=to_date,
+        granularity=granularity,
+        include_manual=include_manual,
+    )
 
 @analytics_router.get("/evaluation", response_model=AnalyticsEvaluationResponse)
 def get_evaluation(

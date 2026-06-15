@@ -406,3 +406,45 @@ class TradeAssessmentUpdateRequest(BaseModel):
     execution_quality: Optional[int] = Field(default=None, ge=0, le=10)
     setup_quality: Optional[int] = Field(default=None, ge=0, le=10)
     discipline_score: Optional[int] = Field(default=None, ge=0, le=10)
+
+
+# ---------------------------------------------------------------------------
+# Unified Curve Endpoint (Phase 1)
+# ---------------------------------------------------------------------------
+
+class AnalyticsCurveDailyPointResponse(BaseModel):
+    """One day in the daily P&L curve."""
+    date: date
+    daily_pnl: float  # P&L on this day alone
+    cumulative_pnl: float  # cumulative from start of range
+
+
+class AnalyticsCurveDailyResponse(BaseModel):
+    """Daily P&L curve: one point per day, cumulative reset at range start."""
+    points: list[AnalyticsCurveDailyPointResponse]
+
+
+class AnalyticsCurveIntradayPointResponse(BaseModel):
+    """One point on an intraday curve (sequence-indexed, not timestamped)."""
+    i: int  # sequence index within the day (0, 1, 2...)
+    cumulative_pnl: float  # cumulative P&L within the day at this trade
+
+
+class AnalyticsCurveIntradayDayResponse(BaseModel):
+    """One day's intraday curve."""
+    date: date
+    net_pnl: float  # total for the day
+    trades_count: int  # number of trades
+    points: list[AnalyticsCurveIntradayPointResponse]
+
+
+class AnalyticsCurveIntradayResponse(BaseModel):
+    """Intraday curves for all days in range (one response, no per-day calls)."""
+    days: list[AnalyticsCurveIntradayDayResponse]
+
+
+class AnalyticsCurveResponse(BaseModel):
+    """Union response for unified /curve endpoint."""
+    # When granularity=daily, populate daily_curve; when granularity=intraday, populate intraday_curve.
+    daily_curve: Optional[AnalyticsCurveDailyResponse] = None
+    intraday_curve: Optional[AnalyticsCurveIntradayResponse] = None

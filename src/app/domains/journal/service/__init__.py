@@ -30,6 +30,7 @@ from ._templates import (  # noqa: F401
     seed_system_journal_templates,
 )
 from ._analytics import (  # noqa: F401
+    get_analytics_curve,
     get_analytics_dashboard,
     get_analytics_equity_curve,
     get_analytics_evaluation,

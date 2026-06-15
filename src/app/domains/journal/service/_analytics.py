@@ -259,6 +259,179 @@ def get_analytics_intraday_curves(
     return AnalyticsIntradayCurvesResponse(days=days)
 
 
+
+def get_analytics_curve(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    from_date: date | None,
+    to_date: date | None,
+    granularity: str,  # "daily" or "intraday"
+    include_manual: bool = True,
+):
+    """Unified curve endpoint supporting both daily and intraday granularities.
+    
+    Deterministic sort: close_time ASC, broker_trade_id (cast to BIGINT) ASC NULLS LAST, id ASC.
+    This ensures: same input → same curve, every time. True execution order when the
+    broker ticket exists; stable order when it doesn't.
+    
+    - granularity="daily": daily P&L bars + cumulative curve (range-scoped reset)
+    - granularity="intraday": per-day sequences with trades, cumulative resets daily,
+                              downsampled to ~20 points per day.
+    """
+    from sqlalchemy import cast, Integer
+    from app.domains.accounts.models import Trade
+    from app.domains.journal.schemas import (
+        AnalyticsCurveDailyPointResponse,
+        AnalyticsCurveDailyResponse,
+        AnalyticsCurveIntradayDayResponse,
+        AnalyticsCurveIntradayPointResponse,
+        AnalyticsCurveIntradayResponse,
+        AnalyticsCurveResponse,
+    )
+    
+    account = _get_account_or_404(db, account_id, user_id)
+    start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
+    
+    # Fetch trades with deterministic sort: close_time, broker_trade_id (as BIGINT), id
+    stmt = (
+        db.query(Trade)
+        .filter(
+            Trade.account_id == account_id,
+            Trade.is_missed.is_(False),
+        )
+    )
+    
+    if not include_manual:
+        stmt = stmt.filter(Trade.is_manual.is_(False))
+    
+    if start_utc is not None:
+        stmt = stmt.filter(Trade.closed_at >= start_utc)
+    if end_utc is not None:
+        stmt = stmt.filter(Trade.closed_at < end_utc)
+    
+    # Deterministic sort: close_time → broker_trade_id (BIGINT, NULLS LAST) → id
+    stmt = stmt.order_by(
+        Trade.closed_at.asc(),
+        cast(Trade.broker_trade_id, Integer).asc().nullslast(),
+        Trade.id.asc(),
+    )
+    
+    trades = stmt.all()
+    
+    if granularity == "daily":
+        return _build_daily_curve(trades, account.timezone)
+    elif granularity == "intraday":
+        return _build_intraday_curve(trades, account.timezone)
+    else:
+        raise ValueError(f"Invalid granularity: {granularity}. Must be 'daily' or 'intraday'.")
+
+
+def _build_daily_curve(trades, account_timezone):
+    """Build daily P&L curve (range-scoped cumulative)."""
+    from app.domains.journal.schemas import (
+        AnalyticsCurveDailyPointResponse,
+        AnalyticsCurveDailyResponse,
+        AnalyticsCurveResponse,
+    )
+    
+    daily_pnl: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
+    for trade in trades:
+        local_day = to_account_local_date(trade.closed_at, account_timezone)
+        daily_pnl[local_day] += trade.net_profit
+    
+    running = Decimal("0")
+    points = []
+    for day in sorted(daily_pnl.keys()):
+        running += daily_pnl[day]
+        points.append(
+            AnalyticsCurveDailyPointResponse(
+                date=day,
+                daily_pnl=float(daily_pnl[day]),
+                cumulative_pnl=float(running),
+            )
+        )
+    
+    return AnalyticsCurveResponse(
+        daily_curve=AnalyticsCurveDailyResponse(points=points),
+        intraday_curve=None,
+    )
+
+
+def _build_intraday_curve(trades, account_timezone):
+    """Build intraday curves (daily reset, sequence-indexed, downsampled ~20 per day)."""
+    from app.domains.journal.schemas import (
+        AnalyticsCurveIntradayDayResponse,
+        AnalyticsCurveIntradayPointResponse,
+        AnalyticsCurveIntradayResponse,
+        AnalyticsCurveResponse,
+    )
+    
+    # Bucket trades by account-local close date
+    by_day: dict[date, list] = defaultdict(list)
+    for trade in trades:
+        local_day = to_account_local_date(trade.closed_at, account_timezone)
+        by_day[local_day].append(trade)
+    
+    days = []
+    for day in sorted(by_day.keys()):
+        day_trades = by_day[day]
+        running = Decimal("0")
+        points = []
+        
+        # Accumulate all trades for the day (already sorted by deterministic order)
+        for idx, trade in enumerate(day_trades):
+            running += trade.net_profit
+            points.append(
+                AnalyticsCurveIntradayPointResponse(
+                    i=idx + 1,  # 1-indexed (0 is the baseline)
+                    cumulative_pnl=float(running),
+                )
+            )
+        
+        # Downsample to ~20 points: keep first, last, and evenly sample the rest
+        downsampled = _downsample_points(points, max_points=20)
+        
+        # Prepend zero baseline
+        downsampled = [
+            AnalyticsCurveIntradayPointResponse(i=0, cumulative_pnl=0.0)
+        ] + downsampled
+        
+        days.append(
+            AnalyticsCurveIntradayDayResponse(
+                date=day,
+                net_pnl=float(running),
+                trades_count=len(day_trades),
+                points=downsampled,
+            )
+        )
+    
+    return AnalyticsCurveResponse(
+        daily_curve=None,
+        intraday_curve=AnalyticsCurveIntradayResponse(days=days),
+    )
+
+
+def _downsample_points(points: list, max_points: int = 20) -> list:
+    """Downsample points to max_points, always keeping first and last."""
+    if len(points) <= max_points:
+        return points
+    
+    # Always include first and last
+    sampled = [points[0]]
+    
+    # Sample evenly between first and last (exclusive)
+    step = (len(points) - 1) / (max_points - 1)
+    for i in range(1, max_points - 1):
+        idx = int(i * step)
+        sampled.append(points[idx])
+    
+    # Add last
+    sampled.append(points[-1])
+    
+    return sampled
+
 def get_analytics_evaluation(
     db: Session,
     *,
