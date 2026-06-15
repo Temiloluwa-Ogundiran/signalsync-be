@@ -51,6 +51,13 @@ class DailyJournal(Base):
         nullable=True,
     )
 
+    # Single rich-text "daily note" per day (HTML from the day-details editor).
+    note_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    note_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     account: Mapped["TradingAccount"] = relationship(back_populates="daily_journals")  # noqa: F821
     trade_journals: Mapped[List["TradeJournal"]] = relationship(
         back_populates="daily_journal",

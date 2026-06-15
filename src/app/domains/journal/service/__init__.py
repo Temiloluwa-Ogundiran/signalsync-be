@@ -10,11 +10,13 @@ from ._journals import (  # noqa: F401
     create_trade_journal_message,
     delete_message,
     get_adjacent_traded_dates,
+    get_day_note,
     get_or_create_daily_journal,
     get_or_create_trade_journal,
     list_daily_journal_feed,
     mark_daily_journal_reviewed,
     mark_trade_journal_reviewed,
+    save_day_note,
     update_message,
 )
 from ._trades import (  # noqa: F401

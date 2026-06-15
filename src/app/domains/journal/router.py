@@ -22,6 +22,8 @@ from app.domains.journal.schemas import (
     DailyJournalFeedItemResponse,
     DailyJournalFeedResponse,
     DailyJournalResponse,
+    DayNoteResponse,
+    DayNoteUpdateRequest,
     JournalMessageResponse,
     JournalMessageUpdateRequest,
     JournalOpenPositionListResponse,
@@ -261,6 +263,42 @@ def get_or_create_daily_journal(
         current_user=current_user,
         include_messages=include_messages,
         include_manual=include_manual,
+    )
+
+
+@daily_router.get(
+    "/{account_id}/{trading_date}/note", response_model=DayNoteResponse
+)
+def get_day_note(
+    account_id: uuid.UUID,
+    trading_date: date,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DayNoteResponse:
+    return journal_service.get_day_note(
+        db,
+        account_id=account_id,
+        trading_date=trading_date,
+        current_user=current_user,
+    )
+
+
+@daily_router.put(
+    "/{account_id}/{trading_date}/note", response_model=DayNoteResponse
+)
+def save_day_note(
+    account_id: uuid.UUID,
+    trading_date: date,
+    payload: DayNoteUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DayNoteResponse:
+    return journal_service.save_day_note(
+        db,
+        account_id=account_id,
+        trading_date=trading_date,
+        note_html=payload.note_html,
+        current_user=current_user,
     )
 
 

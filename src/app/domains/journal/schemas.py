@@ -157,11 +157,27 @@ class DailyJournalResponse(BaseModel):
     trading_date: date
     account_timezone: str
     reviewed_at: Optional[datetime] = None
+    note_html: Optional[str] = None
+    note_updated_at: Optional[datetime] = None
     day_start_balance: Decimal | None = None
     day_end_balance: Decimal | None = None
     trade_chips: list[DailyTradeChipResponse]
     trades: list[JournalTradeResponse]
     messages: list[JournalMessageResponse]
+
+
+class DayNoteUpdateRequest(BaseModel):
+    """Save payload for the single daily note (HTML from the rich-text editor)."""
+
+    note_html: Optional[str] = None
+
+
+class DayNoteResponse(BaseModel):
+    """The daily note for one account-local trading day."""
+
+    trading_date: date
+    note_html: Optional[str] = None
+    note_updated_at: Optional[datetime] = None
 
 
 class DailyJournalFeedItemResponse(BaseModel):

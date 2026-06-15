@@ -13,6 +13,7 @@ from app.domains.journal.schemas import (
     AdjacentTradedDatesResponse,
     DailyJournalResponse,
     DailyTradeChipResponse,
+    DayNoteResponse,
     JournalMessageResponse,
     JournalReviewedAtResponse,
     JournalTradeListResponse,
@@ -276,11 +277,77 @@ def get_or_create_daily_journal(
         trading_date=daily_journal.trading_date,
         account_timezone=account.timezone,
         reviewed_at=daily_journal.reviewed_at,
+        note_html=daily_journal.note_html,
+        note_updated_at=daily_journal.note_updated_at,
         day_start_balance=day_start_balance,
         day_end_balance=day_end_balance,
         trade_chips=trade_chips,
         trades=trade_models,
         messages=messages,
+    )
+
+
+def get_day_note(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    trading_date,
+    current_user: User,
+) -> DayNoteResponse:
+    """Fetch the single daily note for an account-local trading day.
+
+    Keyed by account + date (the day-details page only knows those). Creates the
+    DailyJournal row on first access so a note can always be saved against it.
+    """
+    account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
+        )
+
+    daily_journal = journal_repo.get_or_create_daily_journal(
+        db, account_id=account_id, trading_date=trading_date,
+    )
+    db.commit()
+    db.refresh(daily_journal)
+
+    return DayNoteResponse(
+        trading_date=daily_journal.trading_date,
+        note_html=daily_journal.note_html,
+        note_updated_at=daily_journal.note_updated_at,
+    )
+
+
+def save_day_note(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    trading_date,
+    note_html: str | None,
+    current_user: User,
+) -> DayNoteResponse:
+    """Upsert the single daily note for an account-local trading day."""
+    account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
+        )
+
+    daily_journal = journal_repo.get_or_create_daily_journal(
+        db, account_id=account_id, trading_date=trading_date,
+    )
+
+    # Normalize empty content to NULL so "blank note" and "no note" are the same.
+    cleaned = note_html.strip() if note_html else None
+    daily_journal.note_html = cleaned or None
+    daily_journal.note_updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(daily_journal)
+
+    return DayNoteResponse(
+        trading_date=daily_journal.trading_date,
+        note_html=daily_journal.note_html,
+        note_updated_at=daily_journal.note_updated_at,
     )
 
 
