@@ -374,20 +374,6 @@ def _build_daily_curve(trades, account_timezone):
     )
 
 
-def _broker_trade_id_sort_key(broker_trade_id):
-    """Python analogue of `CAST(broker_trade_id AS BIGINT) ASC NULLS LAST`.
-
-    Returns (is_null_or_nonnumeric, numeric_value) so real numeric ids sort
-    ascending and NULL/non-numeric ids sort last — matching the SQL tie-break.
-    """
-    if broker_trade_id is None:
-        return (1, 0)
-    try:
-        return (0, int(broker_trade_id))
-    except (TypeError, ValueError):
-        return (1, 0)
-
-
 def _build_intraday_curve(trades, account_timezone):
     """Build intraday curves (daily reset, sequence-indexed, downsampled ~20 per day)."""
     from app.domains.journal.schemas import (
@@ -405,19 +391,10 @@ def _build_intraday_curve(trades, account_timezone):
     
     days = []
     for day in sorted(by_day.keys()):
-        # Re-sort each day's trades for the sequence axis: close_time ASC, then
-        # net_profit ASC (same-second batch ordered biggest-loss-first), then the
-        # deterministic broker_trade_id (BIGINT) / id tie-breaks. This only affects
-        # the visual order of same-second nodes; the day total is unchanged.
-        day_trades = sorted(
-            by_day[day],
-            key=lambda tr: (
-                tr.closed_at,
-                tr.net_profit,
-                _broker_trade_id_sort_key(tr.broker_trade_id),
-                str(tr.id),
-            ),
-        )
+        # Trades already arrive in the deterministic shared order
+        # (close_time ASC, broker_trade_id BIGINT NULLS LAST, id ASC); bucketing
+        # preserves it, so no per-day re-sort is needed.
+        day_trades = by_day[day]
         running = Decimal("0")
         points = []
 
