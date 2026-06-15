@@ -380,22 +380,28 @@ def _build_intraday_curve(trades, account_timezone):
         running = Decimal("0")
         points = []
         
-        # Accumulate all trades for the day (already sorted by deterministic order)
+        # Accumulate all trades for the day (already sorted by deterministic order:
+        # close_time ASC, broker_trade_id, id). Each point carries its account-local
+        # close time `t` so the client can plot by real time (uneven spacing).
         for idx, trade in enumerate(day_trades):
             running += trade.net_profit
             points.append(
                 AnalyticsCurveIntradayPointResponse(
                     i=idx + 1,  # 1-indexed (0 is the baseline)
+                    t=to_account_local_datetime(trade.closed_at, account_timezone),
                     cumulative_pnl=float(running),
                 )
             )
-        
-        # Downsample to ~20 points: keep first, last, and evenly sample the rest
+
+        # Downsample to ~20 points: keep first, last, and evenly sample the rest.
+        # Each kept point retains its own `t`, so time-spacing is preserved.
         downsampled = _downsample_points(points, max_points=20)
-        
-        # Prepend zero baseline
+
+        # Prepend zero baseline at the first trade's close time (curve starts at $0
+        # there, then steps with each close).
+        baseline_t = to_account_local_datetime(day_trades[0].closed_at, account_timezone)
         downsampled = [
-            AnalyticsCurveIntradayPointResponse(i=0, cumulative_pnl=0.0)
+            AnalyticsCurveIntradayPointResponse(i=0, t=baseline_t, cumulative_pnl=0.0)
         ] + downsampled
         
         days.append(

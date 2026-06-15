@@ -425,8 +425,13 @@ class AnalyticsCurveDailyResponse(BaseModel):
 
 
 class AnalyticsCurveIntradayPointResponse(BaseModel):
-    """One point on an intraday curve (sequence-indexed, not timestamped)."""
+    """One point on an intraday curve.
+
+    Carries both the sequence index `i` and the account-local close time `t`
+    so the client can plot by real time (Tradezella-style uneven spacing).
+    """
     i: int  # sequence index within the day (0, 1, 2...)
+    t: datetime  # account-local close time of this trade (baseline = first close)
     cumulative_pnl: float  # cumulative P&L within the day at this trade
 
 
