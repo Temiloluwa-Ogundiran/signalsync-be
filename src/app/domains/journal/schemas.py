@@ -445,10 +445,18 @@ class AnalyticsCurveIntradayPointResponse(BaseModel):
 
 
 class AnalyticsCurveIntradayDayResponse(BaseModel):
-    """One day's intraday curve."""
+    """One day's intraday curve plus the day's summary stats (so the journal
+    feed can render a full per-day stat card from one fetch)."""
     date: date
-    net_pnl: float  # total for the day
+    net_pnl: float  # total net P&L for the day
     trades_count: int  # number of trades
+    gross_pnl: float  # sum of gross profit (before commission/swap)
+    win_count: int  # trades with net P&L > 0
+    loss_count: int  # trades with net P&L < 0
+    commissions: float  # sum of commission
+    win_rate: float  # win_count / trades_count * 100
+    volume: float  # sum of trade volume (lots)
+    profit_factor: float | None  # gross wins / |gross losses| (net); None if no losses
     points: list[AnalyticsCurveIntradayPointResponse]
 
 

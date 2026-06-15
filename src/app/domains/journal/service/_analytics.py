@@ -398,11 +398,29 @@ def _build_intraday_curve(trades, account_timezone):
         running = Decimal("0")
         points = []
 
+        # Per-day summary stats (standard defs) accumulated in the same pass.
+        gross = Decimal("0")
+        commissions = Decimal("0")
+        volume = Decimal("0")
+        win_count = 0
+        loss_count = 0
+        gross_win = Decimal("0")  # sum of positive net P&L
+        gross_loss = Decimal("0")  # abs sum of negative net P&L
+
         # One node per trade (no downsampling): each point carries its account-local
         # close time `t`. The frontend plots on the sequence index `i`, deriving the
         # HH:MM:SS label from `t`.
         for idx, trade in enumerate(day_trades):
             running += trade.net_profit
+            gross += trade.profit
+            commissions += trade.commission
+            volume += trade.volume
+            if trade.net_profit > 0:
+                win_count += 1
+                gross_win += trade.net_profit
+            elif trade.net_profit < 0:
+                loss_count += 1
+                gross_loss += -trade.net_profit
             points.append(
                 AnalyticsCurveIntradayPointResponse(
                     i=idx + 1,  # 1-indexed (0 is the baseline)
@@ -411,6 +429,12 @@ def _build_intraday_curve(trades, account_timezone):
                     cumulative_pnl=float(running),
                 )
             )
+
+        trades_count = len(day_trades)
+        profit_factor = (
+            float(gross_win / gross_loss) if gross_loss > 0 else None
+        )
+        win_rate = (win_count / trades_count * 100) if trades_count else 0.0
 
         # Prepend a $0 baseline node one hour before the first trade's local close
         # time, clamped so it never crosses below midnight of that local day.
@@ -425,7 +449,14 @@ def _build_intraday_curve(trades, account_timezone):
             AnalyticsCurveIntradayDayResponse(
                 date=day,
                 net_pnl=float(running),
-                trades_count=len(day_trades),
+                trades_count=trades_count,
+                gross_pnl=float(gross),
+                win_count=win_count,
+                loss_count=loss_count,
+                commissions=float(commissions),
+                win_rate=win_rate,
+                volume=float(volume),
+                profit_factor=profit_factor,
                 points=points,
             )
         )
