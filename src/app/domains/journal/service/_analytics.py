@@ -1,6 +1,6 @@
 import uuid
 from collections import defaultdict
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -359,6 +359,20 @@ def _build_daily_curve(trades, account_timezone):
     )
 
 
+def _broker_trade_id_sort_key(broker_trade_id):
+    """Python analogue of `CAST(broker_trade_id AS BIGINT) ASC NULLS LAST`.
+
+    Returns (is_null_or_nonnumeric, numeric_value) so real numeric ids sort
+    ascending and NULL/non-numeric ids sort last — matching the SQL tie-break.
+    """
+    if broker_trade_id is None:
+        return (1, 0)
+    try:
+        return (0, int(broker_trade_id))
+    except (TypeError, ValueError):
+        return (1, 0)
+
+
 def _build_intraday_curve(trades, account_timezone):
     """Build intraday curves (daily reset, sequence-indexed, downsampled ~20 per day)."""
     from app.domains.journal.schemas import (
@@ -376,13 +390,25 @@ def _build_intraday_curve(trades, account_timezone):
     
     days = []
     for day in sorted(by_day.keys()):
-        day_trades = by_day[day]
+        # Re-sort each day's trades for the sequence axis: close_time ASC, then
+        # net_profit ASC (same-second batch ordered biggest-loss-first), then the
+        # deterministic broker_trade_id (BIGINT) / id tie-breaks. This only affects
+        # the visual order of same-second nodes; the day total is unchanged.
+        day_trades = sorted(
+            by_day[day],
+            key=lambda tr: (
+                tr.closed_at,
+                tr.net_profit,
+                _broker_trade_id_sort_key(tr.broker_trade_id),
+                str(tr.id),
+            ),
+        )
         running = Decimal("0")
         points = []
-        
-        # Accumulate all trades for the day (already sorted by deterministic order:
-        # close_time ASC, broker_trade_id, id). Each point carries its account-local
-        # close time `t` so the client can plot by real time (uneven spacing).
+
+        # One node per trade (no downsampling): each point carries its account-local
+        # close time `t`. The frontend plots on the sequence index `i`, deriving the
+        # HH:MM:SS label from `t`.
         for idx, trade in enumerate(day_trades):
             running += trade.net_profit
             points.append(
@@ -394,23 +420,21 @@ def _build_intraday_curve(trades, account_timezone):
                 )
             )
 
-        # Downsample to ~20 points: keep first, last, and evenly sample the rest.
-        # Each kept point retains its own `t`, so time-spacing is preserved.
-        downsampled = _downsample_points(points, max_points=20)
-
-        # Prepend zero baseline at the first trade's close time (curve starts at $0
-        # there, then steps with each close).
-        baseline_t = to_account_local_datetime(day_trades[0].closed_at, account_timezone)
-        downsampled = [
+        # Prepend a $0 baseline node one hour before the first trade's local close
+        # time, clamped so it never crosses below midnight of that local day.
+        first_local = to_account_local_datetime(day_trades[0].closed_at, account_timezone)
+        midnight = first_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        baseline_t = max(first_local - timedelta(hours=1), midnight)
+        points = [
             AnalyticsCurveIntradayPointResponse(i=0, t=baseline_t, cumulative_pnl=0.0)
-        ] + downsampled
-        
+        ] + points
+
         days.append(
             AnalyticsCurveIntradayDayResponse(
                 date=day,
                 net_pnl=float(running),
                 trades_count=len(day_trades),
-                points=downsampled,
+                points=points,
             )
         )
     
