@@ -413,10 +413,17 @@ class TradeAssessmentUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class AnalyticsCurveDailyPointResponse(BaseModel):
-    """One day in the daily P&L curve."""
+    """One day in the daily P&L curve.
+
+    The first point may be a synthetic $0 baseline (the calendar day before the
+    first traded day) so the cumulative line visibly starts at $0; it has
+    is_baseline=True and daily_pnl=None, and consumers that only want real
+    trading days (bar chart, KPI sparkline) should filter it out.
+    """
     date: date
-    daily_pnl: float  # P&L on this day alone
+    daily_pnl: Optional[float] = None  # P&L on this day alone (None for baseline)
     cumulative_pnl: float  # cumulative from start of range
+    is_baseline: bool = False
 
 
 class AnalyticsCurveDailyResponse(BaseModel):

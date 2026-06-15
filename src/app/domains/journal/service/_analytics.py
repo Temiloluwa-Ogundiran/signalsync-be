@@ -352,7 +352,22 @@ def _build_daily_curve(trades, account_timezone):
                 cumulative_pnl=float(running),
             )
         )
-    
+
+    # Prepend a $0 baseline node the calendar day before the first traded day,
+    # so the cumulative line visibly starts at $0 (daily analogue of intraday's
+    # "first close − 1h"). Consumers that want trading days only (bar chart, KPI
+    # sparkline) filter on is_baseline.
+    if points:
+        baseline_day = points[0].date - timedelta(days=1)
+        points = [
+            AnalyticsCurveDailyPointResponse(
+                date=baseline_day,
+                daily_pnl=None,
+                cumulative_pnl=0.0,
+                is_baseline=True,
+            )
+        ] + points
+
     return AnalyticsCurveResponse(
         daily_curve=AnalyticsCurveDailyResponse(points=points),
         intraday_curve=None,
