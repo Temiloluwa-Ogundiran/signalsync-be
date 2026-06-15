@@ -389,6 +389,7 @@ def _build_intraday_curve(trades, account_timezone):
                 AnalyticsCurveIntradayPointResponse(
                     i=idx + 1,  # 1-indexed (0 is the baseline)
                     t=to_account_local_datetime(trade.closed_at, account_timezone),
+                    symbol=trade.symbol,
                     cumulative_pnl=float(running),
                 )
             )
