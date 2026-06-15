@@ -49,7 +49,6 @@ def _build_response(
     media_response: Optional[PostMediaResponse] = None
     if post.media is not None:
         signed_url, url_expires_at = generate_signed_url(
-            bucket=settings.SUPABASE_POST_MEDIA_BUCKET,
             storage_path=post.media.storage_path,
             expires_in=settings.MEDIA_SIGNED_URL_TTL_SECONDS,
         )
@@ -114,7 +113,6 @@ def _persist_media(
     """Upload the media file and persist a PostMedia row."""
     storage_path, media_type, mime_type = upload_media(
         file=media_file,
-        bucket=settings.SUPABASE_POST_MEDIA_BUCKET,
         prefix=author_prefix,
     )
     post_repo.create_media(

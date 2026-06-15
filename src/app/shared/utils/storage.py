@@ -1,22 +1,15 @@
 """
-Object storage: custom storage microservice (preferred) or Supabase Storage (legacy paths).
+Object storage — AWS S3 (direct, via boto3). Private bucket; reads are served
+via short-lived presigned GET URLs. Keys are `{prefix}/{uuid}.{ext}`.
 """
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import HTTPException, UploadFile, status
 
-from app.core.config import settings
-from app.core.supabase import get_supabase
+from app.core.s3 import delete_object, presigned_get_url, put_object, s3_enabled
 from app.domains.posts.models import PostMediaType
-from app.shared.utils.storage_service_client import (
-    gateway_url_for_object_key,
-    is_legacy_supabase_storage_path,
-    storage_service_enabled,
-    upload_via_storage_service,
-)
 from app.shared.utils.uploads import validate_audio_magic_bytes, validate_image_magic_bytes
 
 _MAGIC_PEEK_BYTES = 16
@@ -56,18 +49,29 @@ JOURNAL_VOICE_ALLOWED_MIME_TYPES = frozenset(
 )
 
 
-def upload_image(
-    file: UploadFile,
-    bucket: str,
-    prefix: str,
-) -> str:
-    """
-    Upload a stream avatar/banner image.
+def _require_storage() -> None:
+    if not s3_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object storage is not configured.",
+        )
 
-    Returns:
-        A URL suitable for persisting on `Stream.avatar_url` / `banner_url`:
-        public Supabase URL (legacy) or HTTPS gateway URL on the storage microservice.
+
+def _read_all(file: UploadFile) -> bytes:
+    file.file.seek(0)
+    data = file.file.read()
+    file.file.seek(0)
+    return data
+
+
+def upload_image(file: UploadFile, *, prefix: str) -> str:
     """
+    Upload a stream avatar/banner image to S3.
+
+    Returns the S3 object key (persist it; build a fetch URL via
+    `generate_signed_url`).
+    """
+    _require_storage()
     content_type = file.content_type or ""
     if not any(content_type.startswith(p) for p in _ALLOWED_MIME_PREFIXES):
         raise HTTPException(
@@ -78,46 +82,21 @@ def upload_image(
     file.file.seek(0)
     header = file.file.read(_MAGIC_PEEK_BYTES)
     validate_image_magic_bytes(header)
-    file.file.seek(0)
-
-    if storage_service_enabled():
-        object_key = upload_via_storage_service(file)
-        return gateway_url_for_object_key(object_key)
 
     ext = _MIME_TO_EXT.get(content_type, "jpg")
-    file_path = f"{prefix}/{uuid.uuid4()}.{ext}"
-    file.file.seek(0)
-    file_bytes = file.file.read()
-
-    supabase = get_supabase()
-    response = supabase.storage.from_(bucket).upload(
-        path=file_path,
-        file=file_bytes,
-        file_options={"content-type": content_type, "upsert": "false"},
-    )
-
-    if hasattr(response, "error") and response.error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload image. Please try again.",
-        )
-
-    public_url: str = supabase.storage.from_(bucket).get_public_url(file_path)
-    return public_url
+    key = f"{prefix}/{uuid.uuid4()}.{ext}"
+    put_object(key=key, body=_read_all(file), content_type=content_type)
+    return key
 
 
-def upload_media(
-    file: UploadFile,
-    bucket: str,
-    prefix: str,
-) -> tuple[str, PostMediaType, str]:
+def upload_media(file: UploadFile, *, prefix: str) -> tuple[str, PostMediaType, str]:
     """
-    Upload post or journal attachment media.
+    Upload post or journal attachment media to S3.
 
-    Returns:
-        (storage_path, PostMediaType, mime_type). For the microservice, `storage_path`
-        is the object key; use `generate_signed_url` to build the gateway URL for clients.
+    Returns (storage_path, PostMediaType, mime_type) where storage_path is the
+    S3 object key.
     """
+    _require_storage()
     content_type = file.content_type or ""
     if content_type not in _MEDIA_MIME_MAP:
         allowed = ", ".join(_MEDIA_MIME_MAP.keys())
@@ -126,50 +105,25 @@ def upload_media(
             detail=f"Unsupported media type '{content_type}'. Allowed: {allowed}.",
         )
 
-    # Validate magic bytes for image uploads (skip video/PDF — less predictable headers)
-    _, media_type_check = _MEDIA_MIME_MAP[content_type]
-    if media_type_check == PostMediaType.image:
+    ext, media_type = _MEDIA_MIME_MAP[content_type]
+    if media_type == PostMediaType.image:
         file.file.seek(0)
         header = file.file.read(_MAGIC_PEEK_BYTES)
         validate_image_magic_bytes(header)
-        file.file.seek(0)
 
-    if storage_service_enabled():
-        object_key = upload_via_storage_service(file)
-        _, media_type = _MEDIA_MIME_MAP[content_type]
-        return object_key, media_type, content_type
-
-    ext, media_type = _MEDIA_MIME_MAP[content_type]
-    storage_path = f"{prefix}/{uuid.uuid4()}.{ext}"
-
-    file.file.seek(0)
-    file_bytes = file.file.read()
-
-    supabase = get_supabase()
-    response = supabase.storage.from_(bucket).upload(
-        path=storage_path,
-        file=file_bytes,
-        file_options={"content-type": content_type, "upsert": "false"},
-    )
-
-    if hasattr(response, "error") and response.error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to upload media. Please try again.",
-        )
-
-    return storage_path, media_type, content_type
+    key = f"{prefix}/{uuid.uuid4()}.{ext}"
+    put_object(key=key, body=_read_all(file), content_type=content_type)
+    return key, media_type, content_type
 
 
 def upload_journal_voice_note(file: UploadFile, *, user_prefix: str) -> tuple[str, str]:
     """
-    Upload a journal voice attachment.
+    Upload a journal voice attachment to S3.
 
-    Returns:
-        (storage_path, normalized_content_type). `user_prefix` is kept for API
-        compatibility; the storage microservice assigns its own object key.
+    Returns (storage_path, normalized_content_type) where storage_path is the
+    S3 object key.
     """
-    _ = user_prefix
+    _require_storage()
     content_type = (file.content_type or "").lower()
     if content_type not in JOURNAL_VOICE_ALLOWED_MIME_TYPES:
         raise HTTPException(
@@ -180,70 +134,25 @@ def upload_journal_voice_note(file: UploadFile, *, user_prefix: str) -> tuple[st
     file.file.seek(0)
     header = file.file.read(_MAGIC_PEEK_BYTES)
     validate_audio_magic_bytes(header)
-    file.file.seek(0)
-
-    if storage_service_enabled():
-        object_key = upload_via_storage_service(file)
-        return object_key, content_type
 
     ext = "bin"
     if "/" in content_type:
         ext = content_type.split("/")[1].replace("x-", "")
-
-    storage_path = f"{user_prefix}/{uuid.uuid4()}.{ext}"
-    file.file.seek(0)
-    file_bytes = file.file.read()
-
-    supabase = get_supabase()
-    supabase.storage.from_(settings.JOURNAL_VOICE_BUCKET).upload(
-        path=storage_path,
-        file=file_bytes,
-        file_options={"content-type": content_type, "upsert": "false"},
-    )
-    return storage_path, content_type
+    key = f"{user_prefix}/{uuid.uuid4()}.{ext}"
+    put_object(key=key, body=_read_all(file), content_type=content_type)
+    return key, content_type
 
 
-def generate_signed_url(
-    bucket: str,
-    storage_path: str,
-    expires_in: int,
-) -> tuple[str, datetime]:
-    """
-    Return a URL clients can use to fetch private media.
+def generate_signed_url(storage_path: str, expires_in: int) -> tuple[str, datetime]:
+    """Return a short-lived presigned GET URL (and its expiry) for an S3 key."""
+    _require_storage()
+    url = presigned_get_url(key=storage_path, expires_in=expires_in)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(1, int(expires_in)))
+    return url, expires_at
 
-    For the storage microservice (non-legacy keys), this returns a stable HTTPS gateway URL
-    that redirects to a fresh S3 presigned URL on each request.
-    """
-    if storage_service_enabled() and not is_legacy_supabase_storage_path(storage_path):
-        url = gateway_url_for_object_key(storage_path)
-        ttl = min(
-            expires_in,
-            max(1, int(settings.STORAGE_SERVICE_PRESIGNED_TTL_SECONDS)),
-        )
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
-        return url, expires_at
 
-    if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Supabase Storage is not configured but this media requires a legacy URL.",
-        )
-
-    supabase = get_supabase()
-    result = supabase.storage.from_(bucket).create_signed_url(storage_path, expires_in)
-
-    signed_url: Optional[str]
-    if isinstance(result, dict):
-        signed_url = result.get("signedURL") or result.get("signed_url")
-    else:
-        raw = getattr(result, "signed_url", None)
-        signed_url = str(raw) if raw is not None else None
-
-    if not signed_url:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate media URL. Please try again.",
-        )
-
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-    return signed_url, expires_at
+def delete_storage_object(storage_path: str) -> bool:
+    """Best-effort delete of an S3 object by key. Never raises."""
+    if not storage_path or not s3_enabled():
+        return False
+    return delete_object(key=storage_path)

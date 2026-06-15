@@ -5,7 +5,6 @@ from decimal import Decimal
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.domains.accounts import repository as account_repo
 from app.domains.journal import repository as journal_repo
 from app.domains.journal.models import JournalMessageType
@@ -121,7 +120,7 @@ def create_trade_journal_message(
                 detail="Image file is required.",
             )
         image_storage_path, media_type, image_mime_type = upload_media(
-            file=file, bucket=settings.JOURNAL_IMAGES_BUCKET, prefix=str(current_user.id),
+            file=file, prefix=str(current_user.id),
         )
         if str(media_type.value) != "image":
             raise HTTPException(
@@ -438,7 +437,7 @@ def create_daily_journal_message(
                 detail="Image file is required.",
             )
         image_storage_path, media_type, image_mime_type = upload_media(
-            file=file, bucket=settings.JOURNAL_IMAGES_BUCKET, prefix=str(current_user.id),
+            file=file, prefix=str(current_user.id),
         )
         if str(media_type.value) != "image":
             raise HTTPException(

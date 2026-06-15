@@ -41,7 +41,6 @@ def _serialize_message(message, *, attachments: list) -> JournalMessageResponse:
 
     if message.audio_storage_path:
         audio_url, audio_url_expires_at = generate_signed_url(
-            bucket=settings.JOURNAL_VOICE_BUCKET,
             storage_path=message.audio_storage_path,
             expires_in=settings.VOICE_SIGNED_URL_TTL_SECONDS,
         )
@@ -49,7 +48,6 @@ def _serialize_message(message, *, attachments: list) -> JournalMessageResponse:
     attachments_payload: list[JournalAttachmentResponse] = []
     for attachment in attachments:
         signed_url, signed_url_expires_at = generate_signed_url(
-            bucket=settings.JOURNAL_IMAGES_BUCKET,
             storage_path=attachment.storage_path,
             expires_in=settings.IMAGE_SIGNED_URL_TTL_SECONDS,
         )

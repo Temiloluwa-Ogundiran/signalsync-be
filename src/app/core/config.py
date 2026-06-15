@@ -40,19 +40,16 @@ class Settings(BaseSettings):
     RATE_LIMIT_REDIS_URL: str = "redis://localhost:6379/2"
 
     # -------------------------------------------------------------------
-    # Supabase (Storage legacy paths — optional when unused)
     # -------------------------------------------------------------------
-    SUPABASE_URL: str = ""
-    SUPABASE_SERVICE_KEY: str = ""
-
+    # Object storage — AWS S3 (direct, via boto3). Private bucket; reads are
+    # served via short-lived presigned GET URLs.
     # -------------------------------------------------------------------
-    # Custom storage microservice (S3-backed) — preferred when set
-    # -------------------------------------------------------------------
-    STORAGE_SERVICE_BASE_URL: str = ""
-    STORAGE_SERVICE_UPLOAD_PATH: str = "/api/upload"
-    STORAGE_SERVICE_API_KEY: str = ""
-    # Hint for clients: S3 presign behind /files/… is shorter than Supabase defaults.
-    STORAGE_SERVICE_PRESIGNED_TTL_SECONDS: int = 600
+    AWS_S3_BUCKET: str = ""
+    AWS_S3_REGION: str = "us-east-1"
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    # Optional: custom/S3-compatible endpoint (leave blank for real AWS S3).
+    AWS_S3_ENDPOINT_URL: str = ""
 
     # Auth
     SECRET_KEY: str
@@ -84,13 +81,13 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = ""
     EMAIL_FROM_NAME: str = "SyncTrades"
 
-    # Supabase Storage — bucket names
-    SUPABASE_STREAM_AVATARS_BUCKET: str = "stream-avatars"
-    SUPABASE_STREAM_BANNERS_BUCKET: str = "stream-banners"
-    SUPABASE_POST_MEDIA_BUCKET: str = "post-media"
-    JOURNAL_VOICE_BUCKET: str = "journal-voice-notes"
-    JOURNAL_IMAGES_BUCKET: str = "journal-images"
-    # How long generated signed URLs for post media remain valid (seconds).
+    # S3 key prefixes per media kind (folders within the one bucket).
+    S3_PREFIX_STREAM_AVATARS: str = "stream-avatars"
+    S3_PREFIX_STREAM_BANNERS: str = "stream-banners"
+    S3_PREFIX_POST_MEDIA: str = "post-media"
+    S3_PREFIX_JOURNAL_VOICE: str = "journal-voice-notes"
+    S3_PREFIX_JOURNAL_IMAGES: str = "journal-images"
+    # How long generated presigned GET URLs remain valid (seconds).
     MEDIA_SIGNED_URL_TTL_SECONDS: int = 3600  # 1 hour
     VOICE_SIGNED_URL_TTL_SECONDS: int = 3600
     IMAGE_SIGNED_URL_TTL_SECONDS: int = 3600

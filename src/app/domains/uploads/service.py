@@ -13,12 +13,12 @@ def upload_stream_image(
     bucket_type: Literal["avatar", "banner"],
     user_id: UUID,
 ) -> str:
-    bucket = (
-        settings.SUPABASE_STREAM_AVATARS_BUCKET
+    base = (
+        settings.S3_PREFIX_STREAM_AVATARS
         if bucket_type == "avatar"
-        else settings.SUPABASE_STREAM_BANNERS_BUCKET
+        else settings.S3_PREFIX_STREAM_BANNERS
     )
-    return upload_image(file, bucket=bucket, prefix=str(user_id))
+    return upload_image(file, prefix=f"{base}/{user_id}")
 
 
 def upload_post_media(
@@ -26,8 +26,4 @@ def upload_post_media(
     user_id: UUID,
 ) -> tuple[str, PostMediaType, str]:
     """Upload post media and return (storage_path, media_type, mime_type)."""
-    return upload_media(
-        file,
-        bucket=settings.SUPABASE_POST_MEDIA_BUCKET,
-        prefix=str(user_id),
-    )
+    return upload_media(file, prefix=f"{settings.S3_PREFIX_POST_MEDIA}/{user_id}")

@@ -116,7 +116,7 @@ class PostMedia(Base):
         index=True,
     )
 
-    # The path inside the Supabase bucket (used to generate signed URLs).
+    # The S3 object key (used to generate presigned GET URLs).
     # Never expose this directly to clients — always sign first.
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
 
