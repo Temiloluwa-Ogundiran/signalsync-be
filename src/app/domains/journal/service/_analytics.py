@@ -280,7 +280,7 @@ def get_analytics_curve(
     - granularity="intraday": per-day sequences with trades, cumulative resets daily,
                               downsampled to ~20 points per day.
     """
-    from sqlalchemy import cast, Integer
+    from sqlalchemy import BigInteger, cast
     from app.domains.accounts.models import Trade
     from app.domains.journal.schemas import (
         AnalyticsCurveDailyPointResponse,
@@ -314,7 +314,7 @@ def get_analytics_curve(
     # Deterministic sort: close_time → broker_trade_id (BIGINT, NULLS LAST) → id
     stmt = stmt.order_by(
         Trade.closed_at.asc(),
-        cast(Trade.broker_trade_id, Integer).asc().nullslast(),
+        cast(Trade.broker_trade_id, BigInteger).asc().nullslast(),
         Trade.id.asc(),
     )
     
