@@ -639,7 +639,20 @@ def analytics_summarize_journal(
             ds.loss_count
         FROM journal_messages jm
         JOIN daily_journals dj ON dj.id = jm.daily_journal_id
-        LEFT JOIN daily_stats ds
+        LEFT JOIN (
+            SELECT
+                t.account_id,
+                DATE(timezone(ta.timezone, t.closed_at)) AS trading_date,
+                COUNT(*)::int                                   AS trade_count,
+                COUNT(*) FILTER (WHERE t.net_profit > 0)::int   AS win_count,
+                COUNT(*) FILTER (WHERE t.net_profit < 0)::int   AS loss_count,
+                COALESCE(SUM(t.net_profit), 0)                  AS total_pnl
+            FROM trades t
+            JOIN trading_accounts ta ON ta.id = t.account_id
+            WHERE t.account_id = ANY(:aids_placeholder)
+              AND t.is_missed = FALSE
+            GROUP BY t.account_id, DATE(timezone(ta.timezone, t.closed_at))
+        ) ds
             ON ds.account_id = dj.account_id
            AND ds.trading_date = dj.trading_date
         WHERE dj.account_id = ANY(:aids_placeholder)

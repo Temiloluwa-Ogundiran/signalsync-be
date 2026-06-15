@@ -268,14 +268,6 @@ def ingest_closed_deals(
     for closed_at_utc in affected_closed_ats:
         touched_dates.add(to_account_local_date(closed_at_utc, account.timezone))
 
-    for trading_date in touched_dates:
-        account_repo.rebuild_daily_stats_for_date(
-            db,
-            account_id=account.id,
-            trading_date=trading_date,
-            account_timezone=account.timezone,
-        )
-
     account_repo.set_account_last_synced_at(db, account, datetime.now(timezone.utc))
     # Single transaction boundary (#7): ingest only flushes; the caller owns the
     # commit (orchestrate_mt5_sync success path / service.connect bootstrap path).

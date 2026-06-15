@@ -7,7 +7,6 @@ from app.domains.posts.models import Post, PostMedia, PostMediaType, PostType, P
 from app.domains.auth.models import Token, TokenType
 from app.domains.accounts.models import (
     AccountSnapshot,
-    DailyStats,
     Trade,
     TradeDirection,
     TradeSession,
@@ -61,7 +60,6 @@ __all__ = [
     "TradeDirection",
     "TradeSession",
     "AccountSnapshot",
-    "DailyStats",
     "DailyJournal",
     "TradeJournal",
     "JournalMessage",

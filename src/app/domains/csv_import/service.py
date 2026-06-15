@@ -208,16 +208,7 @@ async def confirm_import(
         else:
             skipped += 1
 
-    # 3. Rebuild DailyStats for all touched dates
-    for trading_date in touched_dates:
-        account_repo.rebuild_daily_stats_for_date(
-            db,
-            account_id=account.id,
-            trading_date=trading_date,
-            account_timezone=account.timezone,
-        )
-
-    # 4. Upsert account snapshots
+    # 3. Upsert account snapshots
     # If the parser returned daily snapshots, write all of them first
     if getattr(result, "daily_balances", None):
         for snap_date, bal in result.daily_balances.items():
