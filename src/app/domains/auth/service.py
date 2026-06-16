@@ -64,6 +64,20 @@ def _create_default_stream(db: Session, user) -> None:
     )
 
 
+def _seed_demo_data(db: Session, user) -> None:
+    """Seed a demo trading account so the new user lands in a populated app.
+
+    Best-effort: a failure here must never block sign-up, so it's isolated. The
+    seed shares the open session and is committed with the rest of sign-up.
+    """
+    try:
+        from app.domains.demo.service import seed_demo_account
+
+        seed_demo_account(db, user.id)
+    except Exception:
+        logger.exception("Demo seeding failed for user %s — continuing sign-up", user.id)
+
+
 def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
     # ── uniqueness checks ────────────────────────────────────────────────────
     if user_repo.get_by_email(db, payload.email):
@@ -82,6 +96,9 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
 
     # ── create default stream ────────────────────────────────────────────────
     _create_default_stream(db, user)
+
+    # ── seed demo data so the app isn't empty on first login ─────────────────
+    _seed_demo_data(db, user)
 
     # ── issue verification token ─────────────────────────────────────────────
     raw_token = str(uuid.uuid4())
@@ -232,6 +249,7 @@ def google_auth(db: Session, id_token: str, response: Response) -> LoginResponse
         user.is_email_verified = True
         db.flush()
         _create_default_stream(db, user)
+        _seed_demo_data(db, user)
         db.commit()
         db.refresh(user)
     elif not user.is_email_verified:

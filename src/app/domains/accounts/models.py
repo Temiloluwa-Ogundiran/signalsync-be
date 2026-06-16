@@ -347,6 +347,11 @@ class Trade(Base):
     # Whether this is a "missed trade" — only meaningful when is_manual=True
     is_missed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Playbook setup name (e.g. "London breakout") and whether the trade followed
+    # the plan. Populated for demo/seeded trades; nullable for synced trades.
+    setup: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    plan_followed: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

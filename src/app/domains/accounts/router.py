@@ -41,6 +41,19 @@ def list_accounts(
     return [AccountResponse.model_validate(a) for a in accounts]
 
 
+@router.delete("/demo", status_code=status.HTTP_204_NO_CONTENT)
+def clear_demo(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Remove the user's seeded demo account and all its data (idempotent)."""
+    from app.domains.demo.service import clear_demo_account
+
+    clear_demo_account(db, current_user.id)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{account_id}", response_model=AccountResponse)
 def get_account(
     account_id: uuid.UUID,
