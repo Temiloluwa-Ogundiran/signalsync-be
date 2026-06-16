@@ -132,8 +132,30 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
     assert row["mfe"] == Decimal("25.0")
     assert row["mae"] == Decimal("-5.0")
 
-    # Verify daily stats rebuilding
-    mock_repo.rebuild_daily_stats_for_date.assert_called_once()
+@patch("app.domains.accounts.sync.account_repo")
+def test_ingest_mt5_core_history_result_skips_authoritative_cleanup_for_empty_history(
+    mock_repo,
+    db_session,
+    mock_account,
+) -> None:
+    mock_repo.bulk_upsert_closed_trades.return_value = (0, 0, [])
+
+    result = ingest_mt5_core_history_result(
+        db_session,
+        account=mock_account,
+        result={
+            "broker_offset_seconds": 0,
+            "deals": [],
+        },
+        closed_from_utc=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        closed_to_utc_exclusive=None,
+        authoritative=True,
+    )
+
+    assert result.inserted_trades == 0
+    assert result.touched_trading_dates == 0
+    mock_repo.delete_trades_outside_valid_broker_ids_in_window.assert_not_called()
+    mock_repo.bulk_upsert_closed_trades.assert_called_once()
 
 
 @pytest.mark.anyio

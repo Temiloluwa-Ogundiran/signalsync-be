@@ -423,14 +423,25 @@ def ingest_mt5_core_history_result(
             for deal in deals
             if str(deal.get("ticket") or "").strip()
         }
-        _, deleted_dates = account_repo.delete_trades_outside_valid_broker_ids_in_window(
-            db,
-            account_id=account.id,
-            closed_from_utc=closed_from_utc,
-            closed_to_utc_exclusive=closed_to_utc_exclusive,
-            account_timezone=account.timezone,
-            valid_broker_trade_ids=valid_broker_trade_ids,
-        )
+        if valid_broker_trade_ids:
+            _, deleted_dates = account_repo.delete_trades_outside_valid_broker_ids_in_window(
+                db,
+                account_id=account.id,
+                closed_from_utc=closed_from_utc,
+                closed_to_utc_exclusive=closed_to_utc_exclusive,
+                account_timezone=account.timezone,
+                valid_broker_trade_ids=valid_broker_trade_ids,
+            )
+        else:
+            logger.warning(
+                (
+                    "Skipping authoritative MT5 cleanup because history returned no valid broker trade ids | "
+                    "account_id=%s closed_from_utc=%s closed_to_utc_exclusive=%s"
+                ),
+                account.id,
+                closed_from_utc,
+                closed_to_utc_exclusive,
+            )
 
     # Ingest deals using ingest_mt5_deals
     sync_result = ingest_mt5_deals(
