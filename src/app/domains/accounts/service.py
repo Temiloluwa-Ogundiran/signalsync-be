@@ -1,16 +1,13 @@
 import uuid
 import logging
-from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import SyncProvider, TradingAccount
 from app.domains.accounts.schemas import AccountBalanceResponse, AccountConnectRequest
-from app.domains.accounts.sync import ingest_mt5_core_history_result
 from app.domains.users.models import User
 from app.shared.utils.encryption import encrypt_secret
 from app.shared.utils.timezone import validate_timezone_name
@@ -21,6 +18,21 @@ logger = logging.getLogger(__name__)
 
 def _mt5_invalid_credentials_message() -> str:
     return "MT5 authorization failed. Check the account number, broker server, and investor password."
+
+
+def is_valid_mt5_verification_result(
+    result: dict,
+    *,
+    requested_login: str,
+    requested_server: str,
+) -> bool:
+    verified_login = str(result.get("login") or requested_login).strip()
+    verified_server = str(result.get("server") or requested_server).strip()
+    return (
+        bool(result.get("verified"))
+        and verified_login == str(requested_login).strip()
+        and verified_server.lower() == str(requested_server).strip().lower()
+    )
 
 
 def _build_pseudo_meta_account_id(
@@ -35,17 +47,6 @@ async def connect_account(
     current_user: User,
     payload: AccountConnectRequest,
 ) -> TradingAccount:
-    from datetime import timedelta
-    from app.domains.accounts.mt5_core_client import (
-        Mt5CoreClient,
-        Mt5CoreClientBackpressure,
-        Mt5CoreClientJobFailed,
-        Mt5CoreClientRateLimited,
-        Mt5CoreClientTimeout,
-        Mt5CoreClientError,
-    )
-    from app.domains.accounts.models import TradingAccountConnectionState
-
     validate_timezone_name(payload.timezone)
     broker_name = (payload.broker_name or "").strip() or payload.broker_server
     meta_account_id = _build_pseudo_meta_account_id(
@@ -62,83 +63,10 @@ async def connect_account(
     if existing is not None and not existing.is_deleted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already connected.")
 
-    # Generate or reuse the account ID for verification boundary
+    # Generate or reuse the account ID. Verification happens asynchronously so
+    # the request/response path stays sub-second instead of waiting on MT5/Wine.
     account_id_to_verify = str(existing.id) if existing is not None else str(uuid.uuid4())
 
-    # Step 1: Verification Boundary (Call mt5-core verification job before saving)
-    client = Mt5CoreClient()
-    try:
-        verification_result = await client.verify_credentials(
-            account_id=account_id_to_verify,
-            login=payload.broker_login,
-            password=payload.investor_password,
-            server=payload.broker_server,
-            broker=broker_name,
-        )
-        verified_login = str(verification_result.get("login") or payload.broker_login).strip()
-        verified_server = str(verification_result.get("server") or payload.broker_server).strip()
-        requested_login = str(payload.broker_login).strip()
-        requested_server = str(payload.broker_server).strip()
-        if (
-            not verification_result.get("verified")
-            or verified_login != requested_login
-            or verified_server.lower() != requested_server.lower()
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "code": "INVALID_CREDENTIALS",
-                    "message": _mt5_invalid_credentials_message(),
-                },
-            )
-    except Mt5CoreClientJobFailed as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "code": "INVALID_CREDENTIALS",
-                "message": _mt5_invalid_credentials_message(),
-            },
-        ) from exc
-    except Mt5CoreClientRateLimited as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "code": exc.code,
-                "message": str(exc),
-            },
-            headers={"Retry-After": str(exc.retry_after_seconds)}
-            if exc.retry_after_seconds is not None
-            else None,
-        )
-    except Mt5CoreClientBackpressure as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": exc.code,
-                "message": str(exc),
-            },
-            headers={"Retry-After": str(exc.retry_after_seconds)}
-            if exc.retry_after_seconds is not None
-            else None,
-        )
-    except Mt5CoreClientTimeout as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "MT5_CORE_TIMEOUT",
-                "message": f"Credential verification timed out: {str(exc)}",
-            },
-        )
-    except Mt5CoreClientError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "MT5_CORE_ERROR",
-                "message": f"Credential verification failed: {str(exc)}",
-            },
-        )
-
-    # Step 2: Successful verification becomes the persistence boundary.
     try:
         encrypted_investor_password = encrypt_secret(payload.investor_password)
         encrypted_trader_password = (
@@ -202,37 +130,9 @@ async def connect_account(
         ) from exc
 
     db.refresh(account)
+    from app.tasks.journal_sync_tasks import bootstrap_account
 
-    # Step 3: Transition to bootstrapping in a separate database transaction boundary
-    account_repo.mark_account_bootstrapping(db, account)
-    db.commit()
-
-    # Step 4: Submit initial sync job to bootstrap account history
-    from_time = datetime.now(timezone.utc) - timedelta(days=settings.INITIAL_SYNC_LOOKBACK_DAYS)
-    try:
-        sync_result = await client.submit_history_sync(
-            account_id=str(account.id),
-            from_time=from_time,
-            credentials={
-                "login": account.broker_login,
-                "password": payload.investor_password,
-                "server": account.broker_server,
-                "broker": account.broker_name,
-            },
-        )
-        ingest_mt5_core_history_result(db, account=account, result=sync_result)
-        account_repo.mark_account_ready_for_stats(db, account, synced_at=datetime.now(timezone.utc))
-        db.commit()
-    except (Mt5CoreClientJobFailed, Mt5CoreClientTimeout, Mt5CoreClientError) as exc:
-        # Warning Recovery: sync failure preserves the persisted account in bootstrap_failed
-        logger.warning(
-            "Initial post-verification history sync failed/timed out | account_id=%s error=%s",
-            account.id,
-            str(exc),
-        )
-        account_repo.mark_account_bootstrap_failed(db, account, str(exc)[:500])
-        account_repo.set_account_sync_error(db, account, f"Initial sync failed: {str(exc)[:450]}")
-        db.commit()
+    bootstrap_account.delay(str(account.id))
 
     return account
 

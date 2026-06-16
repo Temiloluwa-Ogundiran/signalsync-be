@@ -1,8 +1,7 @@
-import pytest
 import uuid
-from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fastapi import HTTPException
 
 # Import the journal models to satisfy SQLAlchemy mapper dependencies in tests
@@ -11,25 +10,29 @@ import app.domains.streams.models  # noqa: F401
 import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
-from app.domains.accounts.models import TradingAccount, TradingAccountConnectionState, TradingAccountStatus, TradingAccountType, TradingPlatform
+from app.domains.accounts.models import (
+    TradingAccount,
+    TradingAccountConnectionState,
+    TradingAccountType,
+    TradingPlatform,
+)
+from app.domains.accounts.mt5_core_client import Mt5CoreClientJobFailed
 from app.domains.accounts.schemas import AccountConnectRequest
 from app.domains.accounts.service import connect_account
-from app.domains.accounts.mt5_core_client import (
-    Mt5CoreClientError,
-    Mt5CoreClientJobFailed,
-    Mt5CoreClientRateLimited,
-    Mt5CoreClientTimeout,
-)
+from app.tasks.journal_sync_tasks import bootstrap_account
+
 
 @pytest.fixture
 def db_session() -> MagicMock:
     return MagicMock()
+
 
 @pytest.fixture
 def current_user() -> MagicMock:
     user = MagicMock()
     user.id = uuid.uuid4()
     return user
+
 
 @pytest.fixture
 def payload() -> AccountConnectRequest:
@@ -47,6 +50,7 @@ def payload() -> AccountConnectRequest:
         display_name="Live MT5",
     )
 
+
 @pytest.fixture
 def mock_account() -> TradingAccount:
     acct = TradingAccount()
@@ -58,167 +62,131 @@ def mock_account() -> TradingAccount:
     acct.connection_state = TradingAccountConnectionState.pending_verification
     return acct
 
+
 @pytest.mark.anyio
+@patch("app.tasks.journal_sync_tasks.bootstrap_account.delay")
 @patch("app.domains.accounts.service.account_repo")
 @patch("app.domains.accounts.service.encrypt_secret")
-@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
-async def test_connect_account_invalid_credentials(
-    mock_client_cls,
+async def test_connect_account_returns_pending_and_queues_bootstrap(
     mock_encrypt_secret,
     mock_repo,
+    mock_bootstrap_delay,
     db_session,
     current_user,
-    payload
+    payload,
+    mock_account,
 ) -> None:
-    # Set up client verification failure
-    mock_client = AsyncMock()
-    mock_client.verify_credentials.side_effect = Mt5CoreClientJobFailed("Invalid credentials")
-    mock_client_cls.return_value = mock_client
-
     mock_repo.get_account_by_user_and_meta_id.return_value = None
+    mock_repo.create_account.return_value = mock_account
+    mock_encrypt_secret.return_value = "encrypted_password"
 
-    # Verification failure should raise 400 Bad Request
+    result = await connect_account(db_session, current_user=current_user, payload=payload)
+
+    assert result == mock_account
+    mock_repo.create_account.assert_called_once()
+    assert mock_repo.create_account.call_args.kwargs["id"] is not None
+    db_session.commit.assert_called_once()
+    db_session.refresh.assert_called_once_with(mock_account)
+    mock_bootstrap_delay.assert_called_once_with(str(mock_account.id))
+
+
+@pytest.mark.anyio
+@patch("app.tasks.journal_sync_tasks.bootstrap_account.delay")
+@patch("app.domains.accounts.service.account_repo")
+async def test_connect_account_existing_active_account_still_conflicts(
+    mock_repo,
+    mock_bootstrap_delay,
+    db_session,
+    current_user,
+    payload,
+    mock_account,
+) -> None:
+    mock_account.is_deleted = False
+    mock_repo.get_account_by_user_and_meta_id.return_value = mock_account
+
     with pytest.raises(HTTPException) as exc:
         await connect_account(db_session, current_user=current_user, payload=payload)
-    
-    assert exc.value.status_code == 400
-    assert exc.value.detail["code"] == "INVALID_CREDENTIALS"
-    assert "MT5 authorization failed" in exc.value.detail["message"]
-    
-    # DB create_account should never be called (persistence boundary)
-    mock_repo.create_account.assert_not_called()
-    db_session.commit.assert_not_called()
+
+    assert exc.value.status_code == 409
+    mock_bootstrap_delay.assert_not_called()
 
 
-@pytest.mark.anyio
-@patch("app.domains.accounts.service.account_repo")
-@patch("app.domains.accounts.service.encrypt_secret")
-@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
-async def test_connect_account_rejects_unverified_success_payload(
-    mock_client_cls,
-    mock_encrypt_secret,
+@patch("app.tasks.journal_sync_tasks.sync_account_deals_mt5", new_callable=AsyncMock)
+@patch("app.tasks.journal_sync_tasks.ingest_mt5_snapshots")
+@patch("app.tasks.journal_sync_tasks.Mt5CoreClient")
+@patch("app.tasks.journal_sync_tasks.decrypt_secret")
+@patch("app.tasks.journal_sync_tasks.account_repo")
+@patch("app.tasks.journal_sync_tasks.SessionLocal")
+def test_bootstrap_account_verifies_snapshots_and_syncs_history(
+    mock_session_local,
     mock_repo,
-    db_session,
-    current_user,
-    payload
+    mock_decrypt_secret,
+    mock_client_cls,
+    mock_ingest_snapshots,
+    mock_sync_account_deals_mt5,
+    mock_account,
 ) -> None:
+    db = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = db
+    context.__exit__.return_value = None
+    mock_session_local.return_value = context
+    mock_repo.get_account_by_id.return_value = mock_account
+    mock_decrypt_secret.return_value = "investor-password"
+
     mock_client = AsyncMock()
     mock_client.verify_credentials.return_value = {
-        "verified": False,
-        "login": int(payload.broker_login),
-        "server": payload.broker_server,
+        "verified": True,
+        "login": int(mock_account.broker_login),
+        "server": mock_account.broker_server,
+        "balance": 5000.0,
+        "equity": 5100.0,
     }
     mock_client_cls.return_value = mock_client
-
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
-
-    with pytest.raises(HTTPException) as exc:
-        await connect_account(db_session, current_user=current_user, payload=payload)
-
-    assert exc.value.status_code == 400
-    assert exc.value.detail["code"] == "INVALID_CREDENTIALS"
-    assert "MT5 authorization failed" in exc.value.detail["message"]
-    mock_encrypt_secret.assert_not_called()
-    mock_repo.create_account.assert_not_called()
-    db_session.commit.assert_not_called()
-
-
-@pytest.mark.anyio
-@patch("app.domains.accounts.service.account_repo")
-@patch("app.domains.accounts.service.encrypt_secret")
-@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
-@patch("app.domains.accounts.service.ingest_mt5_core_history_result")
-async def test_connect_account_success(
-    mock_ingest,
-    mock_client_cls,
-    mock_encrypt_secret,
-    mock_repo,
-    db_session,
-    current_user,
-    payload,
-    mock_account
-) -> None:
-    mock_client = AsyncMock()
-    mock_client.verify_credentials.return_value = {"verified": True}
-    mock_client.submit_history_sync.return_value = {"deals": [{"ticket": "1"}], "broker_offset_seconds": 0}
-    mock_client_cls.return_value = mock_client
-
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
-    mock_repo.create_account.return_value = mock_account
-    mock_encrypt_secret.return_value = "encrypted_password"
-
-    result = await connect_account(db_session, current_user=current_user, payload=payload)
-
-    # Asserts
-    assert result == mock_account
-    mock_repo.create_account.assert_called_once()
-    mock_repo.mark_account_bootstrapping.assert_called_once_with(db_session, mock_account)
-    mock_ingest.assert_called_once_with(db_session, account=mock_account, result={"deals": [{"ticket": "1"}], "broker_offset_seconds": 0})
-    mock_repo.mark_account_ready_for_stats.assert_called_once()
-    _, sync_kwargs = mock_client.submit_history_sync.call_args
-    assert datetime.now(timezone.utc) - sync_kwargs["from_time"] >= timedelta(days=29, hours=23)
-
-
-@pytest.mark.anyio
-@patch("app.domains.accounts.service.account_repo")
-@patch("app.domains.accounts.service.encrypt_secret")
-@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
-async def test_connect_account_warning_state_recovery(
-    mock_client_cls,
-    mock_encrypt_secret,
-    mock_repo,
-    db_session,
-    current_user,
-    payload,
-    mock_account
-) -> None:
-    mock_client = AsyncMock()
-    mock_client.verify_credentials.return_value = {"verified": True}
-    # Submit sync fails
-    mock_client.submit_history_sync.side_effect = Mt5CoreClientTimeout("Sync timed out")
-    mock_client_cls.return_value = mock_client
-
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
-    mock_repo.create_account.return_value = mock_account
-    mock_encrypt_secret.return_value = "encrypted_password"
-
-    # Sync timeout should NOT raise HTTPException, instead mark bootstrap_failed
-    result = await connect_account(db_session, current_user=current_user, payload=payload)
-
-    assert result == mock_account
-    mock_repo.create_account.assert_called_once()
-    mock_repo.mark_account_bootstrapping.assert_called_once_with(db_session, mock_account)
-    
-    # Check that bootstrap failed and error message are set, and commit is still called
-    mock_repo.mark_account_bootstrap_failed.assert_called_once_with(db_session, mock_account, "Sync timed out")
-    mock_repo.set_account_sync_error.assert_called_once_with(db_session, mock_account, "Initial sync failed: Sync timed out")
-
-
-@pytest.mark.anyio
-@patch("app.domains.accounts.service.account_repo")
-@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
-async def test_connect_account_rate_limited_uses_429_response(
-    mock_client_cls,
-    mock_repo,
-    db_session,
-    current_user,
-    payload,
-) -> None:
-    mock_client = AsyncMock()
-    mock_client.verify_credentials.side_effect = Mt5CoreClientRateLimited(
-        "RATE_LIMITED",
-        "Submission rate limit exceeded. Please retry shortly.",
-        status_code=429,
-        retry_after_seconds=60,
+    mock_sync_account_deals_mt5.return_value = MagicMock(
+        inserted_trades=2,
+        touched_trading_dates=1,
     )
+
+    result = bootstrap_account.run(str(mock_account.id))
+
+    assert result["status"] == "ready"
+    assert result["inserted_trades"] == 2
+    mock_ingest_snapshots.assert_called_once()
+    mock_repo.mark_account_bootstrapping.assert_called_once_with(db, mock_account)
+    mock_repo.mark_account_ready_for_stats.assert_called_once()
+    assert db.commit.call_count == 2
+
+
+@patch("app.tasks.journal_sync_tasks.Mt5CoreClient")
+@patch("app.tasks.journal_sync_tasks.decrypt_secret")
+@patch("app.tasks.journal_sync_tasks.account_repo")
+@patch("app.tasks.journal_sync_tasks.SessionLocal")
+def test_bootstrap_account_marks_invalid_credentials(
+    mock_session_local,
+    mock_repo,
+    mock_decrypt_secret,
+    mock_client_cls,
+    mock_account,
+) -> None:
+    db = MagicMock()
+    context = MagicMock()
+    context.__enter__.return_value = db
+    context.__exit__.return_value = None
+    mock_session_local.return_value = context
+    mock_repo.get_account_by_id.return_value = mock_account
+    mock_decrypt_secret.return_value = "investor-password"
+
+    mock_client = AsyncMock()
+    mock_client.verify_credentials.side_effect = Mt5CoreClientJobFailed("Invalid account")
     mock_client_cls.return_value = mock_client
 
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
+    result = bootstrap_account.run(str(mock_account.id))
 
-    with pytest.raises(HTTPException) as exc:
-        await connect_account(db_session, current_user=current_user, payload=payload)
-
-    assert exc.value.status_code == 429
-    assert exc.value.headers["Retry-After"] == "60"
-    assert exc.value.detail["code"] == "RATE_LIMITED"
-    mock_repo.create_account.assert_not_called()
+    assert result["status"] == "verification_failed"
+    mock_repo.mark_account_verification_failed.assert_called_once()
+    args = mock_repo.mark_account_verification_failed.call_args.args
+    assert args[0] == db
+    assert args[1] == mock_account
+    assert "MT5 authorization failed" in args[2]
+    db.commit.assert_called_once()
