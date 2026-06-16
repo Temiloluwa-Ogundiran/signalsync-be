@@ -25,7 +25,6 @@ def test_list_trade_setups_sql_query() -> None:
         # Create user
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -176,7 +175,6 @@ def test_refresh_token_grace_window() -> None:
         # Create user
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -231,7 +229,6 @@ def test_bulk_upsert_closed_trades_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -331,7 +328,6 @@ def test_earliest_snapshot_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -397,7 +393,6 @@ def test_map_attachments_by_message_ids_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -480,7 +475,6 @@ def test_list_trading_dates_with_journal_activity_union_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -553,7 +547,6 @@ def test_delete_trades_outside_valid_broker_ids_in_window_returning_db() -> None
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -648,7 +641,6 @@ def test_list_trade_rows_for_analytics_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -724,7 +716,6 @@ def test_list_recent_trades_for_dashboard_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
@@ -799,7 +790,6 @@ def test_multi_account_timezone_dashboard_analytics_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",

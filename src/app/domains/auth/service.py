@@ -48,16 +48,10 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists.",
         )
-    if user_repo.get_by_username(db, payload.username):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This username is already taken.",
-        )
 
     # ── create user ──────────────────────────────────────────────────────────
     user = user_repo.create(
         db,
-        username=payload.username,
         email=payload.email,
         hashed_password=get_password_hash(payload.password),
         display_name=payload.display_name,

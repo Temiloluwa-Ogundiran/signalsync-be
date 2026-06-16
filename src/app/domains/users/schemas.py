@@ -7,7 +7,6 @@ from pydantic import BaseModel
 
 class UserResponse(BaseModel):
     id: uuid.UUID
-    username: str
     email: str
     display_name: Optional[str] = None
     avatar_url: Optional[str] = None
@@ -15,8 +14,3 @@ class UserResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class UsernameAvailabilityResponse(BaseModel):
-    username: str
-    available: bool

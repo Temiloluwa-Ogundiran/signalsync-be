@@ -171,7 +171,7 @@ def list_join_requests(
     status_code=status.HTTP_200_OK,
     summary="List active stream members",
     description=(
-        "Returns `user_id`, `username`, `avatar_url` for all callers. "
+        "Returns `user_id`, `display_name`, `avatar_url` for all callers. "
         "Stream owners additionally receive `status` and `joined_at` per member. "
         "Public streams: any authenticated user can call this. "
         "Private/paid streams: owner or active members only. "

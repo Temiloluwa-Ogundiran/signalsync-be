@@ -42,7 +42,7 @@ class PostMediaResponse(BaseModel):
 
 class AuthorInfo(BaseModel):
     id: uuid.UUID
-    username: str
+    display_name: Optional[str] = None
     avatar_url: Optional[str] = None
 
     model_config = {"from_attributes": True}
