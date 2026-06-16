@@ -40,7 +40,10 @@ DEMO_META_ACCOUNT_ID = "DEMO-SEED"
 DEMO_DISPLAY_NAME = "Demo Account"
 DEMO_BROKER_NAME = "TradePartna Demo"
 DEMO_BROKER_LOGIN = "34567890"  # the displayed account number
-DEMO_STARTING_BALANCE = 25_000.0
+DEMO_STARTING_BALANCE = 25_000.0  # used only for trade-risk sizing in the generator
+# The account balance shown in the UI — a realistic standalone figure, not
+# derived from starting balance + P&L.
+DEMO_ACCOUNT_BALANCE = 7_000.0
 
 
 def _seed_for_user(user_id: uuid.UUID) -> int:
@@ -140,20 +143,23 @@ def seed_demo_account(
     db.add(account)
     db.flush()  # need account.id
 
-    # Balance snapshot so the account shows a live balance/equity = starting +
-    # cumulative net. Dated to the last trading day.
-    final_net = sum(float(t.net_profit) for t in data.trades)
-    final_balance = round(DEMO_STARTING_BALANCE + final_net, 2)
+    # Balance snapshot — a realistic standalone account balance (NOT derived from
+    # starting balance + cumulative net). Dated to the last trading day; the
+    # account's last_synced_at is set to match so the journal's default 30-day
+    # window anchors to the data instead of "today".
     last_trading_day = max(
         (d.day for d in data.days if d.trades), default=signup_date
     )
     db.add(AccountSnapshot(
         account_id=account.id,
-        balance=final_balance,
-        equity=final_balance,
+        balance=DEMO_ACCOUNT_BALANCE,
+        equity=DEMO_ACCOUNT_BALANCE,
         floating_pnl=0,
         snapshot_date=last_trading_day,
     ))
+    account.last_synced_at = datetime.combine(
+        last_trading_day, datetime.min.time(), tzinfo=timezone.utc
+    )
 
     # Insert trades, keeping a TradeSpec→Trade map for the per-trade journals.
     trade_objs: list[tuple[Trade, TradeSpec]] = []
