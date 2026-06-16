@@ -30,6 +30,7 @@ class TradingAccountStatus(str, enum.Enum):
 
 
 class SyncProvider(str, enum.Enum):
+    metaapi = "metaapi"  # API-based connection (legacy/demo)
     headless_mt5 = "headless_mt5"
     csv_import = "csv_import"
 

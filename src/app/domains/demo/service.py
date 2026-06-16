@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import (
+    AccountSnapshot,
     Trade,
     TradeDirection,
     TradeSession,
@@ -36,8 +37,9 @@ logger = logging.getLogger(__name__)
 
 # Sentinel that marks the seeded account as demo data, independent of name.
 DEMO_META_ACCOUNT_ID = "DEMO-SEED"
-DEMO_DISPLAY_NAME = "FTMO Demo $25K"
+DEMO_DISPLAY_NAME = "Demo Account"
 DEMO_BROKER_NAME = "TradePartna Demo"
+DEMO_BROKER_LOGIN = "34567890"  # the displayed account number
 DEMO_STARTING_BALANCE = 25_000.0
 
 
@@ -119,7 +121,7 @@ def seed_demo_account(
         user_id=user_id,
         meta_account_id=DEMO_META_ACCOUNT_ID,
         broker_name=DEMO_BROKER_NAME,
-        broker_login="0000000",
+        broker_login=DEMO_BROKER_LOGIN,
         broker_server="TradePartna-Demo",
         encrypted_investor_password="",  # no credentials — synthetic account
         account_type=TradingAccountType.demo,
@@ -130,13 +132,28 @@ def seed_demo_account(
         display_name=DEMO_DISPLAY_NAME,
         status=TradingAccountStatus.synced,
         provisioning_status=TradingAccountProvisioningStatus.provisioned,
-        sync_provider=SyncProvider.csv_import,
+        sync_provider=SyncProvider.metaapi,  # API connection
         connection_state=TradingAccountConnectionState.ready,
         is_data_ready_for_stats=True,
         last_synced_at=datetime.now(timezone.utc),
     )
     db.add(account)
     db.flush()  # need account.id
+
+    # Balance snapshot so the account shows a live balance/equity = starting +
+    # cumulative net. Dated to the last trading day.
+    final_net = sum(float(t.net_profit) for t in data.trades)
+    final_balance = round(DEMO_STARTING_BALANCE + final_net, 2)
+    last_trading_day = max(
+        (d.day for d in data.days if d.trades), default=signup_date
+    )
+    db.add(AccountSnapshot(
+        account_id=account.id,
+        balance=final_balance,
+        equity=final_balance,
+        floating_pnl=0,
+        snapshot_date=last_trading_day,
+    ))
 
     # Insert trades, keeping a TradeSpec→Trade map for the per-trade journals.
     trade_objs: list[tuple[Trade, TradeSpec]] = []
