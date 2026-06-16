@@ -2,6 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi import HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -40,6 +41,28 @@ from app.tasks.auth_tasks import send_verification_email_task, send_password_res
 # emails, defeating timing-based email enumeration (P1-8).
 _DUMMY_HASH: str = get_password_hash(uuid.uuid4().hex)
 
+# Google's tokeninfo endpoint — verifies an ID token's signature, expiry, and
+# issuer server-side and returns its claims. Avoids adding a google-auth dep.
+_GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+
+
+def _create_default_stream(db: Session, user) -> None:
+    """Create the user's default public stream. Shared by all sign-up paths."""
+    stream_repo.create(
+        db,
+        owner_id=user.id,
+        name=f"{user.display_name}'s Stream",
+        description=None,
+        privacy=StreamPrivacy.public,
+        forum_enabled=True,
+        tags=None,
+        price=None,
+        avatar_url=None,
+        banner_url=None,
+        require_join_approval=False,
+        is_default=True,
+    )
+
 
 def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
     # ── uniqueness checks ────────────────────────────────────────────────────
@@ -58,20 +81,7 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
     )
 
     # ── create default stream ────────────────────────────────────────────────
-    stream_repo.create(
-        db,
-        owner_id=user.id,
-        name=f"{user.display_name}'s Stream",
-        description=None,
-        privacy=StreamPrivacy.public,
-        forum_enabled=True,
-        tags=None,
-        price=None,
-        avatar_url=None,
-        banner_url=None,
-        require_join_approval=False,
-        is_default=True,
-    )
+    _create_default_stream(db, user)
 
     # ── issue verification token ─────────────────────────────────────────────
     raw_token = str(uuid.uuid4())
@@ -136,6 +146,108 @@ def _issue_session(db: Session, user, response: Response) -> tuple[str, int, str
     )
 
     return access_token, settings.ACCESS_TOKEN_EXPIRE_MINUTES, raw_refresh
+
+
+def _verify_google_id_token(id_token: str) -> dict:
+    """Verify a Google ID token via Google's tokeninfo endpoint.
+
+    Validates the signature/expiry server-side and checks the audience matches
+    our configured client ID. Returns the token claims on success.
+    """
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google sign-in is not configured.",
+        )
+
+    try:
+        resp = httpx.get(
+            _GOOGLE_TOKENINFO_URL, params={"id_token": id_token}, timeout=10.0
+        )
+    except httpx.HTTPError:
+        logger.exception("google_auth: tokeninfo request failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not reach Google to verify sign-in. Try again.",
+        )
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google sign-in token.",
+        )
+
+    claims = resp.json()
+
+    # Audience must match our client ID — guards against tokens minted for a
+    # different app being replayed here.
+    if claims.get("aud") != settings.GOOGLE_CLIENT_ID:
+        logger.warning("google_auth: aud mismatch (got=%s)", claims.get("aud"))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google sign-in token.",
+        )
+
+    if claims.get("email_verified") not in (True, "true"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your Google email is not verified.",
+        )
+
+    if not claims.get("email"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google sign-in did not return an email.",
+        )
+
+    return claims
+
+
+def google_auth(db: Session, id_token: str, response: Response) -> LoginResponse:
+    """Sign in (or sign up) with a Google ID token.
+
+    Verifies the token, finds the user by email or creates one (auto-linking to
+    an existing email/password account), then issues our own session tokens.
+    """
+    claims = _verify_google_id_token(id_token)
+    email = claims["email"].lower()
+
+    user = user_repo.get_by_email(db, email)
+
+    if user is None:
+        # New user — create the account with an unusable password (they can set
+        # one later via forgot-password) and the standard default stream.
+        display_name = (
+            claims.get("name") or claims.get("given_name") or email.split("@")[0]
+        )
+        user = user_repo.create(
+            db,
+            email=email,
+            hashed_password=get_password_hash(uuid.uuid4().hex),
+            display_name=display_name,
+        )
+        if claims.get("picture") and not user.avatar_url:
+            user.avatar_url = claims["picture"]
+        # Google has verified the email for us.
+        user.is_email_verified = True
+        db.flush()
+        _create_default_stream(db, user)
+        db.commit()
+        db.refresh(user)
+    elif not user.is_email_verified:
+        # Existing email/password account that never verified — Google proves
+        # ownership of the inbox, so mark it verified and link.
+        user.is_email_verified = True
+        db.commit()
+        db.refresh(user)
+
+    access_token, expiry_minutes, _raw_refresh = _issue_session(db, user, response)
+
+    return LoginResponse(
+        access_token=access_token,
+        access_token_expiry_minutes=expiry_minutes,
+        user=UserResponse.model_validate(user),
+    )
 
 
 def login(db: Session, email: str, password: str, response: Response) -> LoginResponse:

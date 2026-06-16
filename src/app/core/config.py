@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     IS_PRODUCTION: bool = False
     # Canonical frontend URL used for email/deep links.
     FRONTEND_URL: str = "http://localhost:3000"
+    # Google Sign-In: the OAuth client ID Google ID tokens are issued for. Used
+    # as the audience when verifying tokens server-side. Empty disables it.
+    GOOGLE_CLIENT_ID: str = ""
     # CORS origins as raw env string; parsed via get_cors_allowed_origins().
     # Supports CSV: "http://localhost:3000,https://app.example.com"
     # Supports JSON array: "[\"http://localhost:3000\",\"https://app.example.com\"]"

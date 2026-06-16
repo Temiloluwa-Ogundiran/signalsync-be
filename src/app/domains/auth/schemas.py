@@ -32,6 +32,11 @@ class RegisterRequest(BaseModel):
         return value
 
 
+class GoogleAuthRequest(BaseModel):
+    # The Google ID token (JWT) obtained client-side via Google Identity Services.
+    id_token: str = Field(min_length=1)
+
+
 class ResendVerificationRequest(BaseModel):
     email: EmailStr
 

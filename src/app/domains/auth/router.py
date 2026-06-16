@@ -9,6 +9,7 @@ from app.core.rate_limit import limiter
 from app.domains.auth.schemas import (
     ForgotPasswordRequest,
     ForgotPasswordResponse,
+    GoogleAuthRequest,
     LoginResponse,
     RefreshResponse,
     RegisterRequest,
@@ -101,6 +102,22 @@ def login(
 ):
     # OAuth2PasswordRequestForm uses 'username' — we treat it as the email.
     return auth_service.login(db, form_data.username, form_data.password, response)
+
+
+@router.post(
+    "/google",
+    response_model=LoginResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Sign in or sign up with a Google ID token",
+)
+@limiter.limit("10/minute")
+def google_auth(
+    request: Request,
+    response: Response,
+    payload: GoogleAuthRequest,
+    db: Session = Depends(get_db),
+):
+    return auth_service.google_auth(db, payload.id_token, response)
 
 
 @router.post(
