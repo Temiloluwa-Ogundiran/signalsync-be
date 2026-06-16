@@ -19,6 +19,10 @@ from app.shared.utils.timezone import validate_timezone_name
 logger = logging.getLogger(__name__)
 
 
+def _mt5_invalid_credentials_message() -> str:
+    return "MT5 authorization failed. Check the account number, broker server, and investor password."
+
+
 def _build_pseudo_meta_account_id(
     *, broker_login: str, broker_server: str, platform: str
 ) -> str:
@@ -64,21 +68,37 @@ async def connect_account(
     # Step 1: Verification Boundary (Call mt5-core verification job before saving)
     client = Mt5CoreClient()
     try:
-        await client.verify_credentials(
+        verification_result = await client.verify_credentials(
             account_id=account_id_to_verify,
             login=payload.broker_login,
             password=payload.investor_password,
             server=payload.broker_server,
             broker=broker_name,
         )
+        verified_login = str(verification_result.get("login") or payload.broker_login).strip()
+        verified_server = str(verification_result.get("server") or payload.broker_server).strip()
+        requested_login = str(payload.broker_login).strip()
+        requested_server = str(payload.broker_server).strip()
+        if (
+            not verification_result.get("verified")
+            or verified_login != requested_login
+            or verified_server.lower() != requested_server.lower()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "INVALID_CREDENTIALS",
+                    "message": _mt5_invalid_credentials_message(),
+                },
+            )
     except Mt5CoreClientJobFailed as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "code": "INVALID_CREDENTIALS",
-                "message": f"Credential verification failed: {str(exc)}",
+                "message": _mt5_invalid_credentials_message(),
             },
-        )
+        ) from exc
     except Mt5CoreClientRateLimited as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

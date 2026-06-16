@@ -18,7 +18,7 @@ from app.domains.accounts import repository as account_repo
 from app.domains.accounts import router as accounts_router
 from app.domains.accounts.models import SyncProvider, TradingAccountConnectionState
 from app.domains.accounts.schemas import AccountResponse
-from app.domains.accounts.mt5_core_client import Mt5CoreClientRateLimited
+from app.domains.accounts.mt5_core_client import Mt5CoreClientJobFailed, Mt5CoreClientRateLimited
 from app.domains.accounts import service as account_service
 from app.domains.journal import service as journal_service
 from app.domains.users import repository as user_repo
@@ -214,6 +214,44 @@ async def test_orchestrate_mt5_sync_keeps_account_connected_when_rate_limited(
     assert result.retry_after_seconds == 60
     assert account.connection_state == TradingAccountConnectionState.ready
     mock_account_repo.mark_sync_retryable.assert_called_once()
+    db_session.commit.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.sync_orchestrator.account_repo")
+@patch("app.domains.accounts.sync_orchestrator.sync_account_deals_mt5")
+async def test_orchestrate_mt5_sync_marks_verification_failed_on_invalid_credentials(
+    mock_sync_account_deals_mt5,
+    mock_account_repo,
+    db_session: MagicMock,
+) -> None:
+    from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
+
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    account.user_id = uuid.uuid4()
+    account.connection_state = TradingAccountConnectionState.ready
+    account.next_sync_not_before = None
+    mock_account_repo.is_account_sync_locked.return_value = False
+    mock_account_repo.list_recent_sync_attempts_for_user.return_value = []
+    mock_sync_account_deals_mt5.side_effect = Mt5CoreClientJobFailed(
+        "Failed to login to MT5 account"
+    )
+
+    result = await orchestrate_mt5_sync(
+        db_session,
+        account=account,
+        trigger="manual",
+    )
+
+    assert result.outcome == "invalid_credentials"
+    assert "MT5 authorization failed" in (result.message or "")
+    mock_account_repo.mark_account_verification_failed.assert_called_once()
+    verification_args = mock_account_repo.mark_account_verification_failed.call_args.args
+    assert verification_args[0] == db_session
+    assert verification_args[1] == account
+    assert "MT5 authorization failed" in verification_args[2]
+    mock_account_repo.mark_sync_attention_required.assert_called_once()
     db_session.commit.assert_called_once()
 
 

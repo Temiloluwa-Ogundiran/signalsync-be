@@ -46,6 +46,10 @@ def _build_guarded_result(
     )
 
 
+def _mt5_invalid_credentials_message() -> str:
+    return "MT5 authorization failed. Check the account number, broker server, and investor password."
+
+
 def _check_manual_sync_admission(
     db: Session,
     *,
@@ -203,17 +207,23 @@ async def orchestrate_mt5_sync(
         db.commit()
         return Mt5SyncExecutionResult(outcome="timeout", message=str(exc))
     except Mt5CoreClientJobFailed as exc:
+        message = _mt5_invalid_credentials_message()
+        account_repo.mark_account_verification_failed(
+            db,
+            account,
+            message,
+        )
         account_repo.mark_sync_attention_required(
             db,
             account=account,
             outcome="invalid_credentials",
-            message=str(exc),
+            message=message,
             attempted_at=attempted_at,
         )
         db.commit()
         return Mt5SyncExecutionResult(
             outcome="invalid_credentials",
-            message=str(exc),
+            message=message,
         )
     except Mt5CoreClientError as exc:
         account_repo.mark_sync_retryable(

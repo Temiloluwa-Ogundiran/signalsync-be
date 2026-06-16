@@ -345,9 +345,11 @@ def mark_account_ready_for_stats(
 def mark_account_verification_failed(
     db: Session, account: TradingAccount, message: str
 ) -> None:
+    account.status = TradingAccountStatus.error
     account.connection_state = TradingAccountConnectionState.verification_failed
     account.is_data_ready_for_stats = False
-    account.bootstrap_error_message = message
+    account.sync_error_message = message
+    account.bootstrap_error_message = None
     db.flush()
 
 

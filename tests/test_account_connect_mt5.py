@@ -83,9 +83,42 @@ async def test_connect_account_invalid_credentials(
     
     assert exc.value.status_code == 400
     assert exc.value.detail["code"] == "INVALID_CREDENTIALS"
-    assert "Credential verification failed" in exc.value.detail["message"]
+    assert "MT5 authorization failed" in exc.value.detail["message"]
     
     # DB create_account should never be called (persistence boundary)
+    mock_repo.create_account.assert_not_called()
+    db_session.commit.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.service.account_repo")
+@patch("app.domains.accounts.service.encrypt_secret")
+@patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
+async def test_connect_account_rejects_unverified_success_payload(
+    mock_client_cls,
+    mock_encrypt_secret,
+    mock_repo,
+    db_session,
+    current_user,
+    payload
+) -> None:
+    mock_client = AsyncMock()
+    mock_client.verify_credentials.return_value = {
+        "verified": False,
+        "login": int(payload.broker_login),
+        "server": payload.broker_server,
+    }
+    mock_client_cls.return_value = mock_client
+
+    mock_repo.get_account_by_user_and_meta_id.return_value = None
+
+    with pytest.raises(HTTPException) as exc:
+        await connect_account(db_session, current_user=current_user, payload=payload)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "INVALID_CREDENTIALS"
+    assert "MT5 authorization failed" in exc.value.detail["message"]
+    mock_encrypt_secret.assert_not_called()
     mock_repo.create_account.assert_not_called()
     db_session.commit.assert_not_called()
 
