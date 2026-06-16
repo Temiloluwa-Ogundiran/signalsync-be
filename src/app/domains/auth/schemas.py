@@ -66,6 +66,16 @@ class RegisterResponse(BaseModel):
 
 class VerifyEmailResponse(BaseModel):
     message: str
+    # On a fresh verification we also log the user in (issue tokens + set the
+    # refresh cookie) so the frontend doesn't have to ask them to sign in again.
+    # These are None when the email was already verified (idempotent re-hit).
+    access_token: str | None = None
+    token_type: str = "bearer"
+    access_token_expiry_minutes: int | None = None
+    # Raw refresh token, returned only on fresh verification so the frontend can
+    # seed a long-lived session from the email link (see service.verify_email).
+    refresh_token: str | None = None
+    user: UserResponse | None = None
 
 
 class ResendVerificationResponse(BaseModel):

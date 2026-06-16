@@ -32,6 +32,7 @@ def test_send_verification_email_posts_resend_payload() -> None:
         settings_mock.EMAIL_FROM_NAME = "SyncTrades"
         settings_mock.FRONTEND_URL = "https://app.synctrades.com"
         settings_mock.EMAIL_VERIFY_EXPIRY_HOURS = 24
+        post_mock.return_value.status_code = 200
         post_mock.return_value.raise_for_status.return_value = None
 
         send_verification_email("user@example.com", "token-123")
@@ -41,6 +42,9 @@ def test_send_verification_email_posts_resend_payload() -> None:
     assert payload["to"] == ["user@example.com"]
     assert payload["from"] == "SyncTrades <hello@synctrades.com>"
     assert "verify-email?token=token-123" in payload["html"]
+    # Branded redesign: logo image + CTA button present.
+    assert "tradepartna-logo-full.png" in payload["html"]
+    assert "Verify email" in payload["html"]
 
 
 def test_send_verification_email_raises_when_resend_is_unconfigured() -> None:
@@ -168,17 +172,27 @@ def test_verify_email_success() -> None:
     user.is_email_verified = False
     
     db.execute.return_value.scalar_one_or_none.return_value = token
-    
+
     with (
         patch("app.domains.auth.service.user_repo.get_by_id", return_value=user),
         patch("app.domains.auth.service.token_repo.revoke") as revoke_mock,
+        patch(
+            "app.domains.auth.service._issue_session",
+            return_value=("access-token", 30, "raw-refresh"),
+        ) as issue_mock,
+        patch(
+            "app.domains.auth.service.UserResponse.model_validate",
+            return_value=None,
+        ),
     ):
-        res = auth_service.verify_email(db, "raw-token")
-        
+        res = auth_service.verify_email(db, "raw-token", MagicMock())
+
     assert res.message == "Email verified successfully."
+    # Fresh verification auto-logs the user in (issues a session).
+    assert res.access_token == "access-token"
     assert user.is_email_verified is True
     revoke_mock.assert_called_once_with(db, token)
-    db.commit.assert_called_once()
+    issue_mock.assert_called_once()
 
 
 def test_verify_email_idempotent_success() -> None:
@@ -198,8 +212,8 @@ def test_verify_email_idempotent_success() -> None:
         patch("app.domains.auth.service.user_repo.get_by_id", return_value=user),
         patch("app.domains.auth.service.token_repo.revoke") as revoke_mock,
     ):
-        res = auth_service.verify_email(db, "raw-token")
-        
+        res = auth_service.verify_email(db, "raw-token", MagicMock())
+
     assert res.message == "Email is already verified."
     revoke_mock.assert_not_called()
     db.commit.assert_not_called()
@@ -222,8 +236,8 @@ def test_verify_email_token_expired_fails() -> None:
         patch("app.domains.auth.service.user_repo.get_by_id", return_value=user),
     ):
         with pytest.raises(HTTPException) as exc:
-            auth_service.verify_email(db, "raw-token")
-            
+            auth_service.verify_email(db, "raw-token", MagicMock())
+
     assert exc.value.status_code == 400
     assert "expired" in exc.value.detail
 
@@ -233,7 +247,7 @@ def test_verify_email_token_not_found_fails() -> None:
     db.execute.return_value.scalar_one_or_none.return_value = None
     
     with pytest.raises(HTTPException) as exc:
-        auth_service.verify_email(db, "non-existent-token")
+        auth_service.verify_email(db, "non-existent-token", MagicMock())
         
     assert exc.value.status_code == 400
     assert "Invalid or expired" in exc.value.detail

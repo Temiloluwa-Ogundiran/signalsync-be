@@ -109,6 +109,41 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
     )
 
 
+def _issue_session(db: Session, user, response: Response) -> tuple[str, int, str]:
+    """Issue an access token + rotating refresh cookie for `user`.
+
+    Shared by login and email-verification auto-login so both establish a
+    session identically. Returns
+    (access_token, access_token_expiry_minutes, raw_refresh_token).
+    """
+    access_token = create_access_token(str(user.id))
+
+    raw_refresh = str(uuid.uuid4())
+    refresh_expires_at = datetime.now(timezone.utc) + timedelta(
+        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
+    )
+    token_repo.create(
+        db,
+        user_id=user.id,
+        hashed_token=hash_token(raw_refresh),
+        token_type=TokenType.REFRESH,
+        expires_at=refresh_expires_at,
+    )
+    db.commit()
+
+    response.set_cookie(
+        key="refresh_token",
+        value=raw_refresh,
+        httponly=True,
+        secure=settings.IS_PRODUCTION,
+        samesite="lax",
+        max_age=60 * 60 * 24 * settings.REFRESH_TOKEN_EXPIRE_DAYS,
+        path="/",
+    )
+
+    return access_token, settings.ACCESS_TOKEN_EXPIRE_MINUTES, raw_refresh
+
+
 def login(db: Session, email: str, password: str, response: Response) -> LoginResponse:
     # ── credential checks ────────────────────────────────────────────
     # Always call verify_password — even for unknown emails — so response time
@@ -127,41 +162,17 @@ def login(db: Session, email: str, password: str, response: Response) -> LoginRe
             detail="Please verify your email before logging in.",
         )
 
-    # ── issue tokens ─────────────────────────────────────────────────────────
-    access_token = create_access_token(str(user.id))
-
-    raw_refresh = str(uuid.uuid4())
-    refresh_expires_at = datetime.now(timezone.utc) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
-    token_repo.create(
-        db,
-        user_id=user.id,
-        hashed_token=hash_token(raw_refresh),
-        token_type=TokenType.REFRESH,
-        expires_at=refresh_expires_at,
-    )
-    db.commit()
-
-    # ── set refresh token as httponly cookie ─────────────────────────────────
-    response.set_cookie(
-        key="refresh_token",
-        value=raw_refresh,
-        httponly=True,
-        secure=settings.IS_PRODUCTION,
-        samesite="lax",
-        max_age=60 * 60 * 24 * settings.REFRESH_TOKEN_EXPIRE_DAYS,
-        path="/",
-    )
+    # ── issue tokens + refresh cookie ────────────────────────────────────────
+    access_token, expiry_minutes, _raw_refresh = _issue_session(db, user, response)
 
     return LoginResponse(
         access_token=access_token,
-        access_token_expiry_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
+        access_token_expiry_minutes=expiry_minutes,
         user=UserResponse.model_validate(user),
     )
 
 
-def verify_email(db: Session, raw_token: str) -> VerifyEmailResponse:
+def verify_email(db: Session, raw_token: str, response: Response) -> VerifyEmailResponse:
     """Verify the email token and mark the user as verified."""
     hashed = hash_token(raw_token)
 
@@ -215,7 +226,21 @@ def verify_email(db: Session, raw_token: str) -> VerifyEmailResponse:
     token_repo.revoke(db, token)
     db.commit()
 
-    return VerifyEmailResponse(message="Email verified successfully.")
+    # Auto-login: issue a session so the user lands signed in straight from the
+    # email link (no second manual login). _issue_session commits internally.
+    # We also return the raw refresh token here (in addition to the httponly
+    # cookie) so the frontend's NextAuth session can refresh long-term — the
+    # browser JS can't read the cookie, and login from an email link is a
+    # one-time, user-initiated action.
+    access_token, expiry_minutes, raw_refresh = _issue_session(db, user, response)
+
+    return VerifyEmailResponse(
+        message="Email verified successfully.",
+        access_token=access_token,
+        access_token_expiry_minutes=expiry_minutes,
+        refresh_token=raw_refresh,
+        user=UserResponse.model_validate(user),
+    )
 
 
 def resend_verification(

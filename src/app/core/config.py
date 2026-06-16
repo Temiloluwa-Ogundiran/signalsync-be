@@ -55,7 +55,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
+    # Rolling 30-day window: each refresh rotates this forward, so an active
+    # user effectively never has to sign in again (a journal should be sticky).
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     PASSWORD_RESET_EXPIRY_MINUTES: int = 15
     EMAIL_VERIFY_EXPIRY_HOURS: int = 24
 
@@ -79,7 +81,7 @@ class Settings(BaseSettings):
     # Email
     RESEND_API_KEY: str = ""
     EMAIL_FROM: str = ""
-    EMAIL_FROM_NAME: str = "SyncTrades"
+    EMAIL_FROM_NAME: str = "TradePartna"
 
     # S3 key prefixes per media kind (folders within the one bucket).
     S3_PREFIX_STREAM_AVATARS: str = "stream-avatars"

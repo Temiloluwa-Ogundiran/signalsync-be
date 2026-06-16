@@ -62,10 +62,11 @@ def register(request: Request, response: Response, payload: RegisterRequest, db:
     ),
 )
 def verify_email(
+    response: Response,
     token: str = Query(..., description="Raw verification token from the email link"),
     db: Session = Depends(get_db),
 ):
-    return auth_service.verify_email(db, token)
+    return auth_service.verify_email(db, token, response)
 
 
 @router.post(
