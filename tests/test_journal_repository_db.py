@@ -874,3 +874,104 @@ def test_multi_account_timezone_dashboard_analytics_db() -> None:
         db.close()
         transaction.rollback()
         connection.close()
+
+
+def test_analytics_curve_accepts_nonnumeric_broker_trade_ids_db() -> None:
+    from app.domains.journal.service._analytics import get_analytics_curve
+    from datetime import date
+
+    connection = engine.connect()
+    transaction = connection.begin()
+    db = Session(bind=connection)
+    try:
+        user = User(
+            id=uuid.uuid4(),
+            username=f"user-{uuid.uuid4()}",
+            email=f"test-{uuid.uuid4()}@example.com",
+            hashed_password="hash",
+            display_name="Test User",
+            is_email_verified=True,
+        )
+        db.add(user)
+        db.flush()
+
+        account = TradingAccount(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            meta_account_id=f"acct-{uuid.uuid4()}",
+            broker_name="Test Broker",
+            broker_login="123456",
+            broker_server="Server",
+            account_type=TradingAccountType.live,
+            platform=TradingPlatform.mt5,
+            encrypted_investor_password="encrypted",
+            timezone="UTC",
+        )
+        db.add(account)
+        db.flush()
+
+        close_time = datetime(2026, 6, 12, 12, 0, tzinfo=timezone.utc)
+        trades = [
+            Trade(
+                id=uuid.uuid4(),
+                account_id=account.id,
+                broker_trade_id="demo-0005",
+                symbol="EURUSD",
+                direction=TradeDirection.buy,
+                open_price=Decimal("1.0"),
+                close_price=Decimal("1.1"),
+                volume=Decimal("0.1"),
+                profit=Decimal("10.0"),
+                commission=Decimal("0.0"),
+                swap=Decimal("0.0"),
+                net_profit=Decimal("10.0"),
+                duration_seconds=60,
+                session=TradeSession.london,
+                opened_at=close_time,
+                closed_at=close_time,
+                is_missed=False,
+                is_manual=False,
+            ),
+            Trade(
+                id=uuid.uuid4(),
+                account_id=account.id,
+                broker_trade_id="demo-0000",
+                symbol="EURUSD",
+                direction=TradeDirection.sell,
+                open_price=Decimal("1.1"),
+                close_price=Decimal("1.0"),
+                volume=Decimal("0.1"),
+                profit=Decimal("-4.0"),
+                commission=Decimal("0.0"),
+                swap=Decimal("0.0"),
+                net_profit=Decimal("-4.0"),
+                duration_seconds=60,
+                session=TradeSession.london,
+                opened_at=close_time,
+                closed_at=close_time,
+                is_missed=False,
+                is_manual=False,
+            ),
+        ]
+        db.add_all(trades)
+        db.flush()
+
+        curve = get_analytics_curve(
+            db,
+            account_id=account.id,
+            user_id=user.id,
+            from_date=date(2026, 6, 12),
+            to_date=date(2026, 6, 12),
+            granularity="intraday",
+            include_manual=True,
+        )
+
+        assert curve.intraday_curve is not None
+        assert len(curve.intraday_curve.days) == 1
+        points = curve.intraday_curve.days[0].points
+        assert [point.symbol for point in points[1:]] == ["EURUSD", "EURUSD"]
+
+    finally:
+        db.close()
+        transaction.rollback()
+        connection.close()

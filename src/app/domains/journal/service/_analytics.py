@@ -275,15 +275,16 @@ def get_analytics_curve(
 ):
     """Unified curve endpoint supporting both daily and intraday granularities.
     
-    Deterministic sort: close_time ASC, broker_trade_id (cast to BIGINT) ASC NULLS LAST, id ASC.
-    This ensures: same input → same curve, every time. True execution order when the
+    Deterministic sort: close_time ASC, numeric broker_trade_id ASC NULLS LAST,
+    broker_trade_id ASC, id ASC.
+    This ensures: same input -> same curve, every time. True execution order when the
     broker ticket exists; stable order when it doesn't.
     
     - granularity="daily": daily P&L bars + cumulative curve (range-scoped reset)
     - granularity="intraday": per-day sequences with trades, cumulative resets daily,
                               downsampled to ~20 points per day.
     """
-    from sqlalchemy import BigInteger, cast
+    from sqlalchemy import BigInteger, case, cast
     from app.domains.accounts.models import Trade
     from app.domains.journal.schemas import (
         AnalyticsCurveDailyPointResponse,
@@ -297,7 +298,8 @@ def get_analytics_curve(
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
     
-    # Fetch trades with deterministic sort: close_time, broker_trade_id (as BIGINT), id
+    # Fetch trades with deterministic sort. MT5 tickets are numeric, but CSV/demo
+    # imports and manual fixtures can carry ids like "demo-0005"; guard the cast.
     stmt = (
         db.query(Trade)
         .filter(
@@ -314,10 +316,19 @@ def get_analytics_curve(
     if end_utc is not None:
         stmt = stmt.filter(Trade.closed_at < end_utc)
     
-    # Deterministic sort: close_time → broker_trade_id (BIGINT, NULLS LAST) → id
+    # Deterministic sort: close_time -> numeric ticket -> raw id -> UUID.
+    numeric_broker_trade_id = case(
+        (
+            Trade.broker_trade_id.op("~")(r"^[0-9]+$"),
+            cast(Trade.broker_trade_id, BigInteger),
+        ),
+        else_=None,
+    )
+
     stmt = stmt.order_by(
         Trade.closed_at.asc(),
-        cast(Trade.broker_trade_id, BigInteger).asc().nullslast(),
+        numeric_broker_trade_id.asc().nullslast(),
+        Trade.broker_trade_id.asc(),
         Trade.id.asc(),
     )
     
@@ -395,7 +406,7 @@ def _build_intraday_curve(trades, account_timezone):
     days = []
     for day in sorted(by_day.keys()):
         # Trades already arrive in the deterministic shared order
-        # (close_time ASC, broker_trade_id BIGINT NULLS LAST, id ASC); bucketing
+        # (close_time ASC, numeric ticket NULLS LAST, raw id ASC, id ASC); bucketing
         # preserves it, so no per-day re-sort is needed.
         day_trades = by_day[day]
         running = Decimal("0")
