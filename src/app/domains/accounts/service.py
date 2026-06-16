@@ -6,8 +6,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domains.accounts import repository as account_repo
+from app.core.config import settings
 from app.domains.accounts.models import SyncProvider, TradingAccount
+from app.domains.accounts.mt5_core_client import (
+    Mt5CoreClient,
+    Mt5CoreClientError,
+    Mt5CoreClientJobFailed,
+    Mt5CoreClientTimeout,
+)
 from app.domains.accounts.schemas import AccountBalanceResponse, AccountConnectRequest
+from app.domains.accounts.sync import ingest_mt5_snapshots
 from app.domains.users.models import User
 from app.shared.utils.encryption import encrypt_secret
 from app.shared.utils.timezone import validate_timezone_name
@@ -41,6 +49,17 @@ def _build_pseudo_meta_account_id(
     return f"{platform}:{broker_server.strip()}:{broker_login.strip()}"
 
 
+def _verification_snapshot(result: dict) -> dict:
+    from datetime import datetime, timezone
+
+    return {
+        "captured_at": datetime.now(timezone.utc),
+        "balance": result.get("balance"),
+        "equity": result.get("equity"),
+        "floating_pnl": 0,
+    }
+
+
 async def connect_account(
     db: Session,
     *,
@@ -63,9 +82,62 @@ async def connect_account(
     if existing is not None and not existing.is_deleted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already connected.")
 
-    # Generate or reuse the account ID. Verification happens asynchronously so
-    # the request/response path stays sub-second instead of waiting on MT5/Wine.
+    # Verify before persisting. Bad credentials should never create a green
+    # account row; only slow history import is pushed to the background.
     account_id_to_verify = str(existing.id) if existing is not None else str(uuid.uuid4())
+
+    client = Mt5CoreClient(poll_timeout=settings.MT5_CORE_VERIFY_TIMEOUT_SECONDS)
+    try:
+        verification_result = await client.verify_credentials(
+            account_id=account_id_to_verify,
+            login=payload.broker_login,
+            password=payload.investor_password,
+            server=payload.broker_server,
+            broker=broker_name,
+        )
+    except Mt5CoreClientJobFailed as exc:
+        logger.warning(
+            "MT5 account verification rejected credentials | login=%s server=%s error=%s",
+            payload.broker_login,
+            payload.broker_server,
+            str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_mt5_invalid_credentials_message(),
+        ) from exc
+    except Mt5CoreClientTimeout as exc:
+        logger.warning(
+            "MT5 account verification timed out | login=%s server=%s timeout=%s",
+            payload.broker_login,
+            payload.broker_server,
+            settings.MT5_CORE_VERIFY_TIMEOUT_SECONDS,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="MT5 verification timed out. Please try again in a moment.",
+        ) from exc
+    except Mt5CoreClientError as exc:
+        logger.warning(
+            "MT5 account verification unavailable | login=%s server=%s error=%s",
+            payload.broker_login,
+            payload.broker_server,
+            str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"MT5 verification failed: {str(exc)[:450]}",
+        ) from exc
+
+    if not is_valid_mt5_verification_result(
+        verification_result,
+        requested_login=payload.broker_login,
+        requested_server=payload.broker_server,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_mt5_invalid_credentials_message(),
+        )
 
     try:
         encrypted_investor_password = encrypt_secret(payload.investor_password)
@@ -122,6 +194,12 @@ async def connect_account(
         )
 
     try:
+        ingest_mt5_snapshots(
+            db,
+            account=account,
+            snapshots=[_verification_snapshot(verification_result)],
+        )
+        account_repo.mark_account_bootstrapping(db, account)
         db.commit()
     except IntegrityError as exc:
         db.rollback()

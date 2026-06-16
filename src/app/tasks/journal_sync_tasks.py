@@ -9,7 +9,10 @@ from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.accounts import repository as account_repo
-from app.domains.accounts.models import TradingAccountStatus
+from app.domains.accounts.models import (
+    TradingAccountConnectionState,
+    TradingAccountStatus,
+)
 from app.domains.accounts.mt5_core_client import (
     Mt5CoreClient,
     Mt5CoreClientError,
@@ -98,54 +101,55 @@ def bootstrap_account(self, account_id: str) -> dict:
             db.commit()
             return {"status": "verification_failed", "reason": "credential_decrypt_failed"}
 
-        client = Mt5CoreClient()
-        try:
-            verification_result = asyncio.run(
-                client.verify_credentials(
-                    account_id=str(account.id),
-                    login=account.broker_login,
-                    password=investor_password,
-                    server=account.broker_server,
-                    broker=account.broker_name,
+        if account.connection_state == TradingAccountConnectionState.pending_verification:
+            client = Mt5CoreClient(poll_timeout=settings.MT5_CORE_VERIFY_TIMEOUT_SECONDS)
+            try:
+                verification_result = asyncio.run(
+                    client.verify_credentials(
+                        account_id=str(account.id),
+                        login=account.broker_login,
+                        password=investor_password,
+                        server=account.broker_server,
+                        broker=account.broker_name,
+                    )
                 )
-            )
-            if not is_valid_mt5_verification_result(
-                verification_result,
-                requested_login=account.broker_login,
-                requested_server=account.broker_server,
-            ):
+                if not is_valid_mt5_verification_result(
+                    verification_result,
+                    requested_login=account.broker_login,
+                    requested_server=account.broker_server,
+                ):
+                    message = _mt5_invalid_credentials_message()
+                    account_repo.mark_account_verification_failed(db, account, message)
+                    db.commit()
+                    return {"status": "verification_failed", "reason": "invalid_credentials"}
+
+                ingest_mt5_snapshots(
+                    db,
+                    account=account,
+                    snapshots=[_verification_snapshot(verification_result)],
+                )
+                account_repo.mark_account_bootstrapping(db, account)
+                db.commit()
+            except Mt5CoreClientJobFailed as exc:
                 message = _mt5_invalid_credentials_message()
+                logger.warning(
+                    "Account bootstrap verification failed | account_id=%s error=%s",
+                    account.id,
+                    str(exc),
+                )
                 account_repo.mark_account_verification_failed(db, account, message)
                 db.commit()
                 return {"status": "verification_failed", "reason": "invalid_credentials"}
-
-            ingest_mt5_snapshots(
-                db,
-                account=account,
-                snapshots=[_verification_snapshot(verification_result)],
-            )
-            account_repo.mark_account_bootstrapping(db, account)
-            db.commit()
-        except Mt5CoreClientJobFailed as exc:
-            message = _mt5_invalid_credentials_message()
-            logger.warning(
-                "Account bootstrap verification failed | account_id=%s error=%s",
-                account.id,
-                str(exc),
-            )
-            account_repo.mark_account_verification_failed(db, account, message)
-            db.commit()
-            return {"status": "verification_failed", "reason": "invalid_credentials"}
-        except (Mt5CoreClientTimeout, Mt5CoreClientError) as exc:
-            message = f"Credential verification failed: {str(exc)[:450]}"
-            logger.warning(
-                "Account bootstrap verification unavailable | account_id=%s error=%s",
-                account.id,
-                str(exc),
-            )
-            account_repo.mark_account_verification_failed(db, account, message)
-            db.commit()
-            return {"status": "verification_failed", "reason": "verification_unavailable"}
+            except (Mt5CoreClientTimeout, Mt5CoreClientError) as exc:
+                message = f"Credential verification failed: {str(exc)[:450]}"
+                logger.warning(
+                    "Account bootstrap verification unavailable | account_id=%s error=%s",
+                    account.id,
+                    str(exc),
+                )
+                account_repo.mark_account_verification_failed(db, account, message)
+                db.commit()
+                return {"status": "verification_failed", "reason": "verification_unavailable"}
 
         try:
             result = asyncio.run(
@@ -153,6 +157,9 @@ def bootstrap_account(self, account_id: str) -> dict:
                     db,
                     account=account,
                     lookback_days=settings.INITIAL_SYNC_LOOKBACK_DAYS,
+                    client=Mt5CoreClient(
+                        poll_timeout=settings.MT5_CORE_BOOTSTRAP_SYNC_TIMEOUT_SECONDS
+                    ),
                 )
             )
             account_repo.mark_account_ready_for_stats(
