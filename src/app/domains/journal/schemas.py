@@ -156,6 +156,9 @@ class DailyJournalResponse(BaseModel):
     id: uuid.UUID
     trading_date: date
     account_timezone: str
+    # The broker account's currency (ISO-4217, e.g. "USD", "NGN") so the UI can
+    # format monetary amounts in the account's own currency.
+    account_currency: str
     reviewed_at: Optional[datetime] = None
     note_html: Optional[str] = None
     note_updated_at: Optional[datetime] = None

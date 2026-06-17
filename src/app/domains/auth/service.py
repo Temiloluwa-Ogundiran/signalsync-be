@@ -19,6 +19,7 @@ from app.core.security import (
 from app.domains.auth.models import Token, TokenType
 from app.domains.auth import repository as token_repo
 from app.domains.users import repository as user_repo
+from app.domains.users.models import AuthProvider
 from app.domains.users.schemas import UserResponse
 from app.domains.auth.schemas import (
     ForgotPasswordRequest,
@@ -233,7 +234,8 @@ def google_auth(db: Session, id_token: str, response: Response) -> LoginResponse
 
     if user is None:
         # New user — create the account with an unusable password (they can set
-        # one later via forgot-password) and the standard default stream.
+        # one later via set-password) and the standard default stream. The
+        # account is marked Google-provider with no usable password.
         display_name = (
             claims.get("name") or claims.get("given_name") or email.split("@")[0]
         )
@@ -242,6 +244,8 @@ def google_auth(db: Session, id_token: str, response: Response) -> LoginResponse
             email=email,
             hashed_password=get_password_hash(uuid.uuid4().hex),
             display_name=display_name,
+            auth_provider=AuthProvider.GOOGLE,
+            has_usable_password=False,
         )
         if claims.get("picture") and not user.avatar_url:
             user.avatar_url = claims["picture"]
@@ -593,6 +597,9 @@ def reset_password(db: Session, payload: ResetPasswordRequest) -> ResetPasswordR
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found.")
 
     user.hashed_password = get_password_hash(payload.new_password)
+    # A reset always yields a real, user-chosen password (e.g. a Google user who
+    # never set one can now sign in with email too).
+    user.has_usable_password = True
     token_repo.revoke(db, token_record)
     # Revoke all refresh tokens — force re-login everywhere
     token_repo.revoke_all_by_user_and_type(

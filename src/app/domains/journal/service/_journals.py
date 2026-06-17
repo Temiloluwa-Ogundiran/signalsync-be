@@ -275,6 +275,7 @@ def get_or_create_daily_journal(
         id=daily_journal.id,
         trading_date=daily_journal.trading_date,
         account_timezone=account.timezone,
+        account_currency=account.currency,
         reviewed_at=daily_journal.reviewed_at,
         note_html=daily_journal.note_html,
         note_updated_at=daily_journal.note_updated_at,

@@ -15,15 +15,23 @@ import app.domains.streams.models  # noqa: F401
 
 from app.core.security import get_password_hash, hash_token
 from app.domains.users import service as user_service
+from app.domains.users.models import AuthProvider
 from app.domains.users.schemas import (
     ChangeEmailRequest,
     ChangePasswordRequest,
     DeleteAccountRequest,
+    SetPasswordRequest,
+    UpdatePreferencesRequest,
     UpdateProfileRequest,
 )
 
 
-def _make_user(password: str = "Password123") -> MagicMock:
+def _make_user(
+    password: str = "Password123",
+    *,
+    auth_provider: AuthProvider = AuthProvider.EMAIL,
+    has_usable_password: bool = True,
+) -> MagicMock:
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "user@example.com"
@@ -33,7 +41,17 @@ def _make_user(password: str = "Password123") -> MagicMock:
     user.avatar_url = None
     user.is_email_verified = True
     user.is_deleted = False
+    user.auth_provider = auth_provider
+    user.has_usable_password = has_usable_password
+    user.display_timezone = None
     return user
+
+
+def _make_google_user() -> MagicMock:
+    # A Google sign-up: random unusable password, no usable password set.
+    return _make_user(
+        auth_provider=AuthProvider.GOOGLE, has_usable_password=False
+    )
 
 
 # ── update_profile ───────────────────────────────────────────────────────────
@@ -265,3 +283,111 @@ def test_list_sessions_flags_current_device():
     by_id = {s.id: s for s in sessions}
     assert by_id[current.id].is_current is True
     assert by_id[other.id].is_current is False
+
+
+# ── social-user (Google) behavior ────────────────────────────────────────────
+
+def test_change_password_blocked_without_usable_password():
+    db = MagicMock()
+    user = _make_google_user()
+    with pytest.raises(HTTPException) as exc:
+        user_service.change_password(
+            db,
+            current_user=user,
+            payload=ChangePasswordRequest(
+                current_password="anything", new_password="NewPass123"
+            ),
+        )
+    assert exc.value.status_code == 400
+    assert "no password yet" in exc.value.detail.lower()
+    db.commit.assert_not_called()
+
+
+def test_set_password_sets_and_flips_flag():
+    db = MagicMock()
+    user = _make_google_user()
+    old_hash = user.hashed_password
+    user_service.set_password(
+        db, current_user=user, payload=SetPasswordRequest(new_password="NewPass123")
+    )
+    assert user.hashed_password != old_hash
+    assert user.has_usable_password is True
+    db.commit.assert_called_once()
+
+
+def test_set_password_rejected_when_already_has_password():
+    db = MagicMock()
+    user = _make_user()  # has_usable_password=True
+    with pytest.raises(HTTPException) as exc:
+        user_service.set_password(
+            db,
+            current_user=user,
+            payload=SetPasswordRequest(new_password="NewPass123"),
+        )
+    assert exc.value.status_code == 400
+    db.commit.assert_not_called()
+
+
+def test_change_email_blocked_for_google_user():
+    db = MagicMock()
+    user = _make_google_user()
+    with pytest.raises(HTTPException) as exc:
+        user_service.change_email(
+            db,
+            current_user=user,
+            payload=ChangeEmailRequest(
+                new_email="new@example.com", current_password="whatever"
+            ),
+        )
+    assert exc.value.status_code == 400
+    assert "managed by google" in exc.value.detail.lower()
+    db.commit.assert_not_called()
+
+
+def test_delete_account_no_password_required_for_social_user():
+    db = MagicMock()
+    user = _make_google_user()
+    with (
+        patch("app.domains.users.service.token_repo.revoke_all_by_user_and_type"),
+        patch("app.domains.users.service.auth_service.clear_refresh_cookie"),
+    ):
+        user_service.delete_account(
+            db,
+            current_user=user,
+            payload=DeleteAccountRequest(),  # no current_password
+            response=Response(),
+        )
+    assert user.is_deleted is True
+    db.commit.assert_called_once()
+
+
+# ── display preferences ──────────────────────────────────────────────────────
+
+def test_update_preferences_sets_timezone():
+    db = MagicMock()
+    user = _make_user()
+    user_service.update_preferences(
+        db,
+        current_user=user,
+        payload=UpdatePreferencesRequest(display_timezone="America/New_York"),
+    )
+    assert user.display_timezone == "America/New_York"
+    db.commit.assert_called_once()
+
+
+def test_update_preferences_null_timezone_clears_it():
+    db = MagicMock()
+    user = _make_user()
+    user.display_timezone = "Europe/London"
+    user_service.update_preferences(
+        db,
+        current_user=user,
+        payload=UpdatePreferencesRequest(display_timezone=None),
+    )
+    assert user.display_timezone is None
+
+
+def test_update_preferences_rejects_invalid_timezone():
+    # Validation happens at the schema layer.
+    with pytest.raises(Exception):
+        UpdatePreferencesRequest(display_timezone="Not/ARealZone")

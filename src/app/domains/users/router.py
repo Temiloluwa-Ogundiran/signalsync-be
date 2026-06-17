@@ -24,6 +24,8 @@ from app.domains.users.schemas import (
     DeleteAccountRequest,
     MessageResponse,
     SessionResponse,
+    SetPasswordRequest,
+    UpdatePreferencesRequest,
     UpdateProfileRequest,
     UserResponse,
 )
@@ -51,6 +53,23 @@ def update_me(
     db: Session = Depends(get_db),
 ) -> UserResponse:
     user = user_service.update_profile(db, current_user=current_user, payload=payload)
+    return UserResponse.model_validate(user)
+
+
+@router.patch(
+    "/me/preferences",
+    response_model=UserResponse,
+    summary="Update the current user's display preferences",
+    description="Set display timezone and/or currency (formatting only — no conversion).",
+)
+def update_my_preferences(
+    payload: UpdatePreferencesRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserResponse:
+    user = user_service.update_preferences(
+        db, current_user=current_user, payload=payload
+    )
     return UserResponse.model_validate(user)
 
 
@@ -83,6 +102,24 @@ def change_my_password(
 ) -> MessageResponse:
     user_service.change_password(db, current_user=current_user, payload=payload)
     return MessageResponse(message="Password changed successfully.")
+
+
+@router.post(
+    "/me/set-password",
+    response_model=MessageResponse,
+    summary="Set an initial password for the current user",
+    description=(
+        "For accounts with no usable password (e.g. created via Google). No "
+        "current password is required. Fails if the account already has one."
+    ),
+)
+def set_my_password(
+    payload: SetPasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    user_service.set_password(db, current_user=current_user, payload=payload)
+    return MessageResponse(message="Password set successfully.")
 
 
 @router.post(

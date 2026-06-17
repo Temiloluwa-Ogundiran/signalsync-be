@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select, update as sa_update
 from sqlalchemy.orm import Session
 
-from app.domains.users.models import User
+from app.domains.users.models import AuthProvider, User
 
 
 def get_by_id(db: Session, user_id: UUID) -> Optional[User]:
@@ -25,11 +25,15 @@ def create(
     email: str,
     hashed_password: str,
     display_name: Optional[str] = None,
+    auth_provider: AuthProvider = AuthProvider.EMAIL,
+    has_usable_password: bool = True,
 ) -> User:
     user = User(
         email=email.lower(),
         hashed_password=hashed_password,
         display_name=display_name,
+        auth_provider=auth_provider,
+        has_usable_password=has_usable_password,
     )
     db.add(user)
     db.flush()

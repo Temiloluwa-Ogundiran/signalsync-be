@@ -23,13 +23,15 @@ from app.domains.auth.models import TokenType
 from app.domains.auth import repository as token_repo
 from app.domains.auth import service as auth_service
 from app.domains.uploads import service as upload_service
-from app.domains.users.models import User
+from app.domains.users.models import AuthProvider, User
 from app.domains.users import repository as user_repo
 from app.domains.users.schemas import (
     ChangeEmailRequest,
     ChangePasswordRequest,
     DeleteAccountRequest,
     SessionResponse,
+    SetPasswordRequest,
+    UpdatePreferencesRequest,
     UpdateProfileRequest,
 )
 from app.tasks.auth_tasks import send_verification_email_task
@@ -62,6 +64,25 @@ def update_profile(
     return current_user
 
 
+def update_preferences(
+    db: Session, *, current_user: User, payload: UpdatePreferencesRequest
+) -> User:
+    """Patch the user's display preferences (timezone).
+
+    PATCH semantics: only fields present in the request are changed. Timezone
+    validity is enforced at the schema layer.
+    """
+    fields = payload.model_dump(exclude_unset=True)
+
+    if "display_timezone" in fields:
+        # Already validated/normalized by the schema (None clears the preference).
+        current_user.display_timezone = fields["display_timezone"]
+
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
 def update_avatar(db: Session, *, current_user: User, file: UploadFile) -> User:
     """Upload a new avatar image and point the user at it."""
     url = upload_service.upload_user_avatar(file, current_user.id)
@@ -75,6 +96,12 @@ def change_password(
     db: Session, *, current_user: User, payload: ChangePasswordRequest
 ) -> None:
     """Verify the current password, then set a new one and end other sessions."""
+    if not current_user.has_usable_password:
+        # No existing password to verify — the caller should use set_password.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your account has no password yet. Set one instead.",
+        )
     if not verify_password(payload.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -94,10 +121,42 @@ def change_password(
     db.commit()
 
 
+def set_password(
+    db: Session, *, current_user: User, payload: SetPasswordRequest
+) -> None:
+    """Set an initial password for an account that has none (e.g. Google).
+
+    No current-password check: there is no usable password to verify, and the
+    authenticated session is the proof of identity. Idempotency guard: if the
+    account already has a usable password, require the change flow instead.
+    """
+    if current_user.has_usable_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your account already has a password. Change it instead.",
+        )
+
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    current_user.has_usable_password = True
+    # Other sessions stay valid — setting a first password is additive, not a
+    # credential reset, so there's no reason to sign the user out elsewhere.
+    db.commit()
+
+
 def change_email(
     db: Session, *, current_user: User, payload: ChangeEmailRequest
 ) -> None:
     """Re-authenticate, swap the email, and require re-verification of the new one."""
+    if current_user.auth_provider == AuthProvider.GOOGLE:
+        # The email is owned by Google — changing it here would desync from the
+        # provider used to sign in. They must change it with Google instead.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Your email is managed by Google. To change it, update your "
+                "email with that provider."
+            ),
+        )
     if not verify_password(payload.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -192,12 +251,20 @@ def delete_account(
     payload: DeleteAccountRequest,
     response: Response,
 ) -> None:
-    """Re-authenticate, soft-delete the account, and revoke every session."""
-    if not verify_password(payload.current_password, current_user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect.",
-        )
+    """Re-authenticate (if a password exists) and soft-delete the account.
+
+    Accounts with a usable password must confirm with it. Accounts without one
+    (e.g. a Google user who never set a password) are confirmed by the session
+    alone — there is no password to check.
+    """
+    if current_user.has_usable_password:
+        if not payload.current_password or not verify_password(
+            payload.current_password, current_user.hashed_password
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect.",
+            )
 
     current_user.is_deleted = True
     current_user.deleted_at = datetime.now(timezone.utc)

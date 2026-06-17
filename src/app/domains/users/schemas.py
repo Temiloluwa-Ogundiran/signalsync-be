@@ -5,6 +5,9 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.domains.users.models import AuthProvider
+from app.shared.utils.timezone import validate_timezone_name
+
 PASSWORD_POLICY_MESSAGE = (
     "Password must be at least 8 characters and include uppercase, "
     "lowercase, and a number."
@@ -33,6 +36,15 @@ class UserResponse(BaseModel):
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     is_email_verified: bool
+    # How the account signs in, and whether it has a real password yet. The
+    # Security page uses these to decide what to show (set vs change password,
+    # and whether email is editable in-app or managed by the provider).
+    auth_provider: AuthProvider = AuthProvider.EMAIL
+    has_usable_password: bool = True
+    # Display preference (Global settings): null when the user has no timezone
+    # preference. Currency is not a user preference — amounts use the broker
+    # account's currency.
+    display_timezone: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -68,8 +80,38 @@ class UpdateProfileRequest(BaseModel):
     bio: Optional[str] = Field(default=None, max_length=500)
 
 
+class UpdatePreferencesRequest(BaseModel):
+    # PATCH semantics: only fields present in the request are touched (the
+    # service uses model_fields_set). display_timezone may be set to null to
+    # clear the preference.
+    display_timezone: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("display_timezone")
+    @classmethod
+    def validate_timezone(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        return validate_timezone_name(value)  # raises ValueError if invalid
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        return _validate_password_strength(value)
+
+
+class SetPasswordRequest(BaseModel):
+    # For accounts with no usable password yet (e.g. Google sign-up). No current
+    # password is required because there isn't one — the session is the proof of
+    # identity. Once set, has_usable_password flips true and the user can also
+    # sign in with email/password.
     new_password: str = Field(min_length=8)
 
     @field_validator("new_password")
@@ -86,5 +128,7 @@ class ChangeEmailRequest(BaseModel):
 
 
 class DeleteAccountRequest(BaseModel):
-    # Confirm with the password before a (soft) account deletion.
-    current_password: str = Field(min_length=1)
+    # Confirm with the password before a (soft) account deletion. Optional
+    # because accounts with no usable password (e.g. Google) confirm by session
+    # alone — the service enforces the password when the account has one.
+    current_password: Optional[str] = Field(default=None)

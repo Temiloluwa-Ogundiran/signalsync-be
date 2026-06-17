@@ -69,6 +69,9 @@ def test_register_swallows_email_delivery_failure() -> None:
     user.bio = None
     user.avatar_url = None
     user.is_email_verified = False
+    user.auth_provider = "email"
+    user.has_usable_password = True
+    user.display_timezone = None
     user.created_at = datetime.now(timezone.utc)
     with (
         patch("app.domains.auth.service.user_repo.get_by_email", return_value=None),
