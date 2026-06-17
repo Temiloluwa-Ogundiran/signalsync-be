@@ -14,7 +14,6 @@ import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts.models import TradingAccount, TradingPlatform, TradingAccountType
 from app.domains.accounts.models import Trade
-from app.domains.accounts.mt5_core_client import Mt5CoreClientError
 from app.domains.accounts.sync import SyncResult, ingest_mt5_core_history_result, sync_account_deals_mt5
 
 @pytest.fixture
@@ -195,7 +194,9 @@ async def test_manual_mt5_sync_default_window_matches_journal_range(
 @patch("app.domains.accounts.mt5_core_client.Mt5CoreClient")
 @patch("app.shared.utils.encryption.decrypt_secret")
 @patch("app.domains.accounts.sync.account_repo")
-async def test_initial_mt5_sync_empty_raw_history_is_not_marked_ready(
+@patch("app.domains.accounts.sync.ingest_mt5_core_history_result")
+async def test_initial_mt5_sync_empty_raw_history_completes_with_zero_trades(
+    mock_ingest,
     mock_repo,
     mock_decrypt_secret,
     mock_client_cls,
@@ -206,6 +207,7 @@ async def test_initial_mt5_sync_empty_raw_history_is_not_marked_ready(
     mock_account.last_synced_at = None
     mock_decrypt_secret.return_value = "investor-password"
     mock_repo.try_acquire_account_sync_lock.return_value = True
+    mock_ingest.return_value = SyncResult(inserted_trades=0, touched_trading_dates=0)
     mock_client = AsyncMock()
     mock_client.submit_history_sync.return_value = {
         "deals": [],
@@ -214,7 +216,8 @@ async def test_initial_mt5_sync_empty_raw_history_is_not_marked_ready(
     }
     mock_client_cls.return_value = mock_client
 
-    with pytest.raises(Mt5CoreClientError) as exc:
-        await sync_account_deals_mt5(db_session, mock_account)
+    result = await sync_account_deals_mt5(db_session, mock_account)
 
-    assert "No MT5 trade history" in str(exc.value)
+    assert result.inserted_trades == 0
+    assert result.touched_trading_dates == 0
+    mock_ingest.assert_called_once()

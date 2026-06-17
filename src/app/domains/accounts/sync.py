@@ -459,7 +459,7 @@ async def sync_account_deals_mt5(
     lookback_days: Optional[int] = None,
     client=None,
 ) -> SyncResult:
-    from app.domains.accounts.mt5_core_client import Mt5CoreClient, Mt5CoreClientError
+    from app.domains.accounts.mt5_core_client import Mt5CoreClient
     from app.shared.utils.encryption import decrypt_secret
     
     if not account_repo.try_acquire_account_sync_lock(db, account.id):
@@ -501,17 +501,6 @@ async def sync_account_deals_mt5(
             "broker": account.broker_name,
         }
     )
-    history_meta = sync_result.get("history") or {}
-    if (
-        account.last_synced_at is None
-        and history_meta.get("raw_deals_count") == 0
-        and history_meta.get("raw_orders_count") == 0
-    ):
-        raise Mt5CoreClientError(
-            "No MT5 trade history was returned for the initial import window. "
-            "Confirm the account has closed trades in MT5 history, then retry sync."
-        )
-
     # 4. Ingest normalized results
     return ingest_mt5_core_history_result(
         db,
