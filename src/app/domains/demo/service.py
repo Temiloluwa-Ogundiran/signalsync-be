@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import logging
 import uuid
-import zlib
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import (
+    AccountSnapshot,
     Trade,
     TradeDirection,
     TradeSession,
@@ -36,15 +36,24 @@ logger = logging.getLogger(__name__)
 
 # Sentinel that marks the seeded account as demo data, independent of name.
 DEMO_META_ACCOUNT_ID = "DEMO-SEED"
-DEMO_DISPLAY_NAME = "FTMO Demo $25K"
+DEMO_DISPLAY_NAME = "Demo Account"
 DEMO_BROKER_NAME = "TradePartna Demo"
-DEMO_STARTING_BALANCE = 25_000.0
+DEMO_BROKER_LOGIN = "34567890"  # the displayed account number
+DEMO_STARTING_BALANCE = 25_000.0  # used only for trade-risk sizing in the generator
+# The account balance shown in the UI — a realistic standalone figure, not
+# derived from starting balance + P&L.
+DEMO_ACCOUNT_BALANCE = 5_840.34
+
+
+# Fixed seed so every user gets the exact same demo history (identical trades,
+# P&L, and days). Change this value to roll a new canonical demo dataset.
+DEMO_SEED = 424242
 
 
 def _seed_for_user(user_id: uuid.UUID) -> int:
-    """Stable per-user seed so two users don't get identical histories, while a
-    given user's demo is reproducible (idempotent re-generation)."""
-    return zlib.crc32(str(user_id).encode("utf-8"))
+    """Return the demo seed. Fixed for all users so everyone sees the identical
+    demo history. (`user_id` accepted for signature stability.)"""
+    return DEMO_SEED
 
 
 def get_demo_account(db: Session, user_id: uuid.UUID) -> TradingAccount | None:
@@ -119,7 +128,7 @@ def seed_demo_account(
         user_id=user_id,
         meta_account_id=DEMO_META_ACCOUNT_ID,
         broker_name=DEMO_BROKER_NAME,
-        broker_login="0000000",
+        broker_login=DEMO_BROKER_LOGIN,
         broker_server="TradePartna-Demo",
         encrypted_investor_password="",  # no credentials — synthetic account
         account_type=TradingAccountType.demo,
@@ -130,13 +139,31 @@ def seed_demo_account(
         display_name=DEMO_DISPLAY_NAME,
         status=TradingAccountStatus.synced,
         provisioning_status=TradingAccountProvisioningStatus.provisioned,
-        sync_provider=SyncProvider.csv_import,
+        sync_provider=SyncProvider.metaapi,  # API connection
         connection_state=TradingAccountConnectionState.ready,
         is_data_ready_for_stats=True,
         last_synced_at=datetime.now(timezone.utc),
     )
     db.add(account)
     db.flush()  # need account.id
+
+    # Balance snapshot — a realistic standalone account balance (NOT derived from
+    # starting balance + cumulative net). Dated to the last trading day; the
+    # account's last_synced_at is set to match so the journal's default 30-day
+    # window anchors to the data instead of "today".
+    last_trading_day = max(
+        (d.day for d in data.days if d.trades), default=signup_date
+    )
+    db.add(AccountSnapshot(
+        account_id=account.id,
+        balance=DEMO_ACCOUNT_BALANCE,
+        equity=DEMO_ACCOUNT_BALANCE,
+        floating_pnl=0,
+        snapshot_date=last_trading_day,
+    ))
+    account.last_synced_at = datetime.combine(
+        last_trading_day, datetime.min.time(), tzinfo=timezone.utc
+    )
 
     # Insert trades, keeping a TradeSpec→Trade map for the per-trade journals.
     trade_objs: list[tuple[Trade, TradeSpec]] = []

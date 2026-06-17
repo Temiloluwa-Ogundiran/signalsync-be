@@ -1,8 +1,12 @@
 """Deterministic demo-trade generator.
 
-Pure (no DB): given a seed + signup date + starting balance, produce a realistic,
-internally-consistent month of forex day-trading for a prop-eval persona, with
-behavioral leaks planted on purpose so the coach has real material.
+Pure (no DB): given a seed, produce a realistic, internally-consistent ~4-month
+history (mid-July → end of October 2025) for a personal-funds forex day-trading
+account, ending with a strong cumulative run (~$8k on $25k). Each calendar month
+has 11–15 active trading days; most days run 1–4 trades, with 1–2 high-volume
+"scaling" days reaching 10–14 independent tickets (same symbol/direction,
+clustered entries and exits — a manual scale-in, not linked positions).
+Behavioral leaks are planted on purpose so the coach has real material.
 
 Everything a TradeSpec carries is computed so downstream analytics reconcile:
 lots are derived from risk ÷ stop, net_profit = profit + commission + swap, etc.
@@ -116,6 +120,11 @@ def _money(x: float) -> Decimal:
     return Decimal(str(round(x, 2))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def _dec2(x: float) -> Decimal:
+    """Quantize to 2dp (used for lot sizes)."""
+    return Decimal(str(round(x, 2))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def _price(x: float, digits: int) -> Decimal:
     q = Decimal(10) ** -digits
     return Decimal(str(x)).quantize(q, rounding=ROUND_HALF_UP)
@@ -161,6 +170,7 @@ def _build_trade(
     session: str | None = None,
     instrument: Instrument | None = None,
     hold_minutes: int | None = None,
+    win_prob: float = 0.50,  # base win probability for random outcomes
 ) -> TradeSpec:
     inst = instrument or _pick_instrument(rng)
     session = session or rng.choices(
@@ -177,13 +187,13 @@ def _build_trade(
 
     open_price_f = rng.uniform(inst.price_lo, inst.price_hi)
 
-    # Outcome: ~50% win, but winners pay more R than losers cost.
+    # Outcome: win_prob win chance, but winners pay more R than losers cost.
     if forced_outcome == "win":
         is_win = True
     elif forced_outcome == "loss":
         is_win = False
     else:
-        is_win = rng.random() < 0.50
+        is_win = rng.random() < win_prob
 
     if is_win:
         realized_r = rng.uniform(1.3, 2.6)  # let winners run
@@ -344,15 +354,88 @@ def _overtrade_day(rng, day, balance) -> DaySpec:
                    mood="neutral")
 
 
-def _clean_day(rng, day, balance) -> DaySpec:
+def _clean_day(rng, day, balance, win_prob=0.50) -> DaySpec:
     """A single disciplined trade."""
     t = _build_trade(rng, day=day, balance=balance, setup=rng.choice(GOOD_SETUPS),
-                     plan_followed=True)
+                     plan_followed=True, win_prob=win_prob)
     return DaySpec(day=day, trades=[t], discipline_score=rng.randint(6, 8),
                    label="clean")
 
 
-def _normal_day(rng, day, balance) -> DaySpec:
+def _scaled_cluster(rng, day, balance, *, instrument, direction, setup,
+                    n, base_open_dt, outcome) -> list[TradeSpec]:
+    """N independent trades on one symbol+direction, clustered in time.
+
+    A trader scaling into a position fires several tickets within a few minutes
+    at slightly different prices, then exits them around the same time. They are
+    NOT linked — each is its own trade with its own position_id and P&L — they
+    just share the symbol, direction, and a tight entry/exit window.
+    """
+    trades: list[TradeSpec] = []
+    # All tickets aim at the same outcome (the position works or it doesn't).
+    exit_anchor_min = rng.randint(25, 120)  # minutes after the first entry
+    for k in range(n):
+        t = _build_trade(
+            rng, day=day, balance=balance, setup=setup, plan_followed=True,
+            forced_outcome=outcome, instrument=instrument,
+            risk_pct=rng.uniform(0.003, 0.006),  # each tranche risks less
+        )
+        # Force same direction and cluster the entry/exit times.
+        t.direction = direction
+        entry = base_open_dt + timedelta(minutes=k * rng.randint(1, 4))
+        exit_dt = base_open_dt + timedelta(
+            minutes=exit_anchor_min + rng.randint(-4, 4)
+        )
+        if exit_dt <= entry:
+            exit_dt = entry + timedelta(minutes=rng.randint(5, 15))
+        t.open_time = entry
+        t.close_time = exit_dt
+        t.session = _session_for_hour(entry.hour)
+        t.duration_seconds = int((exit_dt - entry).total_seconds())
+        trades.append(t)
+    return trades
+
+
+def _scaling_day(rng, day, balance) -> DaySpec:
+    """A high-volume conviction day: 10–14 tickets from scaling into positions.
+
+    Built as one big scale-in (and sometimes a second smaller cluster) so the
+    ticket count is high but coherent — same symbol/direction, clustered times.
+    """
+    total = rng.randint(10, 14)
+    direction = rng.choice(["buy", "sell"])
+    inst = _pick_instrument(rng)
+    setup = rng.choice(GOOD_SETUPS)
+    outcome = "win" if rng.random() < 0.6 else "loss"
+
+    # Most tickets in the primary scale; optionally a second cluster.
+    if rng.random() < 0.5:
+        primary_n = total
+        clusters = [(inst, direction, setup, primary_n, outcome)]
+    else:
+        primary_n = rng.randint(6, total - 4)
+        inst2 = _pick_instrument(rng)
+        dir2 = rng.choice(["buy", "sell"])
+        out2 = "win" if rng.random() < 0.6 else "loss"
+        clusters = [
+            (inst, direction, setup, primary_n, outcome),
+            (inst2, dir2, rng.choice(GOOD_SETUPS), total - primary_n, out2),
+        ]
+
+    trades: list[TradeSpec] = []
+    base = _open_dt(rng, day, rng.choice(list(SESSION_WINDOWS.keys())))
+    for ci, (cinst, cdir, cset, cn, cout) in enumerate(clusters):
+        cbase = base + timedelta(hours=ci * rng.randint(1, 3))
+        trades.extend(_scaled_cluster(
+            rng, day, balance, instrument=cinst, direction=cdir, setup=cset,
+            n=cn, base_open_dt=cbase, outcome=cout,
+        ))
+    trades.sort(key=lambda t: t.open_time)
+    return DaySpec(day=day, trades=trades, discipline_score=rng.randint(6, 7),
+                   label="scaling")
+
+
+def _normal_day(rng, day, balance, win_prob=0.50) -> DaySpec:
     n = rng.randint(1, 4)
     trades = []
     for _ in range(n):
@@ -360,53 +443,105 @@ def _normal_day(rng, day, balance) -> DaySpec:
         trades.append(_build_trade(
             rng, day=day, balance=balance,
             setup=rng.choice(GOOD_SETUPS) if plan else SETUP_NO_SETUP,
-            plan_followed=plan,
+            plan_followed=plan, win_prob=win_prob,
         ))
     trades.sort(key=lambda t: t.open_time)
     disc = 7 if all(t.plan_followed for t in trades) else 6
     return DaySpec(day=day, trades=trades, discipline_score=disc, label="normal")
 
 
-def _trading_days(signup: date, weeks: int, rng: random.Random) -> list[date]:
-    """Weekday dates over the window, with some days skipped (no-trade days)."""
-    start = signup - timedelta(weeks=weeks)
-    days = []
+# Per calendar month, how many days are actually traded. Floor of 11 so every
+# month looks active; some months run hot at 14–15.
+MIN_TRADING_DAYS_PER_MONTH = 11
+MAX_TRADING_DAYS_PER_MONTH = 15
+
+
+def _trading_days(end: date, weeks: int, rng: random.Random) -> list[date]:
+    """Active trading-day dates over the window ending at `end`.
+
+    Selection is per calendar month: each month gets 11–15 active days (capped at
+    the weekdays it actually contains), spread across the month, leaving the rest
+    as no-trade days. This guarantees every month reads as active.
+    """
+    start = end - timedelta(weeks=weeks)
+
+    # Bucket weekdays by (year, month).
+    by_month: dict[tuple[int, int], list[date]] = {}
     d = start
-    while d <= signup:
+    while d <= end:
         if d.weekday() < 5:  # Mon-Fri
-            days.append(d)
+            by_month.setdefault((d.year, d.month), []).append(d)
         d += timedelta(days=1)
-    # Keep ~55% of weekdays as active trading days (leaves no-trade days, lands
-    # ~14–20 active days over a ~6–7 week window).
-    active = [d for d in days if rng.random() < 0.55]
+
+    active: list[date] = []
+    for _key, weekdays in by_month.items():
+        target = rng.randint(MIN_TRADING_DAYS_PER_MONTH, MAX_TRADING_DAYS_PER_MONTH)
+        target = min(target, len(weekdays))
+        active.extend(rng.sample(weekdays, target))
+
+    active.sort()
     return active
+
+
+# Fixed end of the demo track record (a personal-funds account's history that
+# ends in late October 2025 — not anchored to signup, so it reads as a real
+# past stretch). Last full trading week of Oct 2025.
+DEFAULT_END_DATE = date(2025, 10, 31)
+# Personal account (not a prop eval): target a strong winning run.
+DEFAULT_TARGET_NET = 8_470.26
 
 
 def generate_demo_data(
     *,
     seed: int,
-    signup_date: date,
+    signup_date: date | None = None,  # kept for call compatibility; unused
+    end_date: date = DEFAULT_END_DATE,
     starting_balance: float = 25_000.0,
-    weeks: int = 6,
+    weeks: int = 16,
+    target_net: float = DEFAULT_TARGET_NET,
 ) -> DemoData:
-    """Generate a deterministic, prop-safe demo month for one account."""
+    """Generate a deterministic ~4-month personal-account history for one account.
+
+    Spread across ~16 weeks ending `end_date`; realistic equity that drifts up
+    with drawdowns to a cumulative ~`target_net`. Behavioral leaks are planted so
+    the coach has material; this is a personal account so prop daily/drawdown
+    caps do not apply.
+    """
     rng = random.Random(seed)
-    weekdays = _trading_days(signup_date, weeks, rng)
+    weekdays = _trading_days(end_date, weeks, rng)
 
     # Choose which special-leak days to place (spread across the window).
     n = len(weekdays)
     if n < 6:
         weeks += 2
-        weekdays = _trading_days(signup_date, weeks, rng)
+        weekdays = _trading_days(end_date, weeks, rng)
         n = len(weekdays)
 
-    # Reserve distinct indices for the planted days.
-    idxs = list(range(n))
-    rng.shuffle(idxs)
+    # The final calendar month runs hot — a standout green month. Keep the
+    # red-heavy leak days (tilt, overtrade) out of it; bias its other days to win.
+    final_month = (end_date.year, end_date.month)
+    non_final_idxs = [i for i in range(n)
+                      if (weekdays[i].year, weekdays[i].month) != final_month]
+
+    # Reserve distinct indices for the planted days. Includes 1–2 high-volume
+    # "scaling" conviction days (10–14 tickets from scaling into positions).
+    rng.shuffle(non_final_idxs)
+    pool = list(non_final_idxs)
+    all_idxs = list(range(n))
+    rng.shuffle(all_idxs)
     special = {}
-    for label in ("tilt", "chase", "model", "overtrade"):
-        if idxs:
-            special[idxs.pop()] = label
+    # Red-leak days are placed only outside the final month.
+    for label in ("tilt", "overtrade"):
+        if pool:
+            special[pool.pop()] = label
+    # The rest can land anywhere (chase is net-green; model/scaling are fine).
+    remaining = [i for i in all_idxs if i not in special]
+    planted = ["chase", "model", "scaling"]
+    if rng.random() < 0.5:
+        planted.append("scaling")
+    for label in planted:
+        if remaining:
+            special[remaining.pop()] = label
 
     balance = starting_balance
     days: list[DaySpec] = []
@@ -416,20 +551,25 @@ def generate_demo_data(
         "chase": _chase_day,
         "model": _model_day,
         "overtrade": _overtrade_day,
+        "scaling": _scaling_day,
     }
 
     for i, day in enumerate(weekdays):
+        is_final_month = (day.year, day.month) == final_month
+        # Hot final month → high win probability; otherwise the balanced ~50%.
+        win_prob = 0.74 if is_final_month else 0.50
         label = special.get(i)
         if label:
             spec = builders[label](rng, day, balance)
         else:
             # Mostly normal days, a few clean single-trade days.
-            spec = _clean_day(rng, day, balance) if rng.random() < 0.3 \
-                else _normal_day(rng, day, balance)
+            spec = _clean_day(rng, day, balance, win_prob) if rng.random() < 0.3 \
+                else _normal_day(rng, day, balance, win_prob)
 
-        # Prop-safety clamp: cap any single day's net loss at ~3% of balance.
+        # Personal account (not a prop eval): allow real losing days, but cap the
+        # worst at ~6% of balance so the curve has drawdowns without a blowup.
         day_net = sum(float(t.net_profit) for t in spec.trades)
-        max_day_loss = -0.03 * balance
+        max_day_loss = -0.06 * balance
         if day_net < max_day_loss and spec.trades:
             scale = max_day_loss / day_net
             for t in spec.trades:
@@ -444,45 +584,96 @@ def generate_demo_data(
         days.append(spec)
 
     data = DemoData(starting_balance=_money(starting_balance), days=days)
-    return _retune_to_target(data, rng)
+    _reduce_single_trade_days(data, rng)
+    return _retune_to_target(data, rng, target_net=target_net)
 
 
-def _retune_to_target(data: DemoData, rng: random.Random) -> DemoData:
-    """Nudge the overall result into the +4%..+9% band without breaking days.
-
-    Scales the magnitude of winning trades slightly if the period is too flat or
-    too hot, leaving losers (the coachable material) intact.
+def _split_trade(rng: random.Random, t: TradeSpec) -> list[TradeSpec]:
+    """Split one trade into two separate trades (a scale-in/out of the same idea):
+    same symbol/direction/setup, lots and P&L split, entries/exits clustered.
+    The two nets sum to the original (to the cent), so the day total is unchanged.
     """
-    start = float(data.starting_balance)
-    net = sum(float(t.net_profit) for t in data.trades)
-    target_lo, target_hi = 0.04 * start, 0.09 * start
+    import copy
 
-    if net <= 0 or net < target_lo:
-        # Too cold — scale up winners to reach ~6.5%.
-        desired = 0.065 * start
-        winners = [t for t in data.trades if float(t.net_profit) > 0]
-        win_sum = sum(float(t.net_profit) for t in winners)
-        loss_sum = net - win_sum
-        if win_sum > 0:
-            needed_win = desired - loss_sum
-            factor = max(1.0, needed_win / win_sum)
-            for t in winners:
-                t.net_profit = _money(float(t.net_profit) * factor)
-                t.gross_profit = _money(
-                    float(t.net_profit) - float(t.commission) - float(t.swap)
-                )
-    elif net > target_hi:
-        # Too hot — trim winners down to ~7%.
-        desired = 0.07 * start
-        winners = [t for t in data.trades if float(t.net_profit) > 0]
-        win_sum = sum(float(t.net_profit) for t in winners)
-        loss_sum = net - win_sum
-        if win_sum > 0:
-            needed_win = max(0.0, desired - loss_sum)
-            factor = needed_win / win_sum
-            for t in winners:
-                t.net_profit = _money(float(t.net_profit) * factor)
-                t.gross_profit = _money(
-                    float(t.net_profit) - float(t.commission) - float(t.swap)
-                )
+    a, b = copy.copy(t), copy.copy(t)
+    # Split lots ~50/50 (min 0.01 each).
+    half_lots = max(0.01, round(float(t.lots) / 2, 2))
+    a.lots = _dec2(half_lots)
+    b.lots = _dec2(round(float(t.lots) - half_lots, 2))
+
+    # Split each money field so the pair sums exactly to the original.
+    def split_money(total):
+        first = _money(float(total) / 2)
+        second = _money(float(total) - float(first))
+        return first, second
+
+    a.commission, b.commission = split_money(t.commission)
+    a.swap, b.swap = split_money(t.swap)
+    a.gross_profit, b.gross_profit = split_money(t.gross_profit)
+    a.net_profit, b.net_profit = split_money(t.net_profit)
+
+    # Distinct tickets, clustered: second opens a few min after the first; both
+    # close around the original close (independent position_ids).
+    a.position_id = str(rng.randint(10_000_000, 99_999_999))
+    b.position_id = str(rng.randint(10_000_000, 99_999_999))
+    b.open_time = t.open_time + timedelta(minutes=rng.randint(1, 6))
+    if b.open_time >= t.close_time:
+        b.open_time = t.open_time + timedelta(minutes=1)
+    a.duration_seconds = max(60, int((a.close_time - a.open_time).total_seconds()))
+    b.duration_seconds = max(60, int((b.close_time - b.open_time).total_seconds()))
+    return [a, b]
+
+
+def _reduce_single_trade_days(data: DemoData, rng: random.Random) -> None:
+    """Keep single-trade days under ~20% of active days by splitting some of them
+    into two clustered trades (day net unchanged)."""
+    active = [d for d in data.days if d.trades]
+    if not active:
+        return
+    singles = [d for d in active if len(d.trades) == 1]
+    max_singles = int(0.20 * len(active))
+    # Split the excess single-trade days (deterministic order via shuffle on rng).
+    rng.shuffle(singles)
+    to_split = singles[: max(0, len(singles) - max_singles)]
+    for d in to_split:
+        d.trades = _split_trade(rng, d.trades[0])
+        d.trades.sort(key=lambda x: x.open_time)
+
+
+def _retune_to_target(
+    data: DemoData, rng: random.Random, *, target_net: float
+) -> DemoData:
+    """Scale winners so the cumulative net lands EXACTLY on `target_net`.
+
+    Only winning trades are scaled; losers — the coachable material — are left
+    intact, so the leak days and drawdown shape survive. After scaling, any
+    sub-cent residual is absorbed into the single largest winner so the total
+    matches the target to the penny.
+    """
+    net = sum(float(t.net_profit) for t in data.trades)
+    winners = [t for t in data.trades if float(t.net_profit) > 0]
+    win_sum = sum(float(t.net_profit) for t in winners)
+    loss_sum = net - win_sum  # negative
+
+    if win_sum <= 0:
+        return data
+
+    # net = win_sum + loss_sum ; want win_sum' + loss_sum = target_net
+    needed_win = target_net - loss_sum
+    factor = max(0.1, needed_win / win_sum)
+    for t in winners:
+        t.net_profit = _money(float(t.net_profit) * factor)
+        t.gross_profit = _money(
+            float(t.net_profit) - float(t.commission) - float(t.swap)
+        )
+
+    # Absorb the rounding residual into the biggest winner so net == target.
+    new_net = sum(float(t.net_profit) for t in data.trades)
+    residual = round(target_net - new_net, 2)
+    if residual and winners:
+        biggest = max(winners, key=lambda t: float(t.net_profit))
+        biggest.net_profit = _money(float(biggest.net_profit) + residual)
+        biggest.gross_profit = _money(
+            float(biggest.net_profit) - float(biggest.commission) - float(biggest.swap)
+        )
     return data
