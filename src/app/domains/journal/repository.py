@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -15,10 +15,10 @@ from app.domains.journal.models import (
     JournalMessageType,
     JournalTemplate,
     JournalTemplateType,
-    TagCategory,
-    TagOption,
+    Tag,
+    TagGroup,
     TradeJournal,
-    TradeTagSelection,
+    TradeTag,
 )
 
 
@@ -696,15 +696,13 @@ def list_trade_setups(
           AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
         UNION
         SELECT
-            lower(topt.value) AS tag,
+            lower(tg.name) AS tag,
             t.id AS trade_id,
             t.net_profit AS net_profit
         FROM trades t
-        JOIN trade_tag_selections tts ON tts.trade_id = t.id
-        JOIN tag_options topt ON topt.id = tts.option_id
-        JOIN tag_categories tc ON tc.id = topt.category_id
+        JOIN trade_tags tt ON tt.trade_id = t.id
+        JOIN tags tg ON tg.id = tt.tag_id
         WHERE t.account_id = :account_id
-          AND tc.title = 'Strategy'
           AND t.is_missed = FALSE
           AND (:include_manual OR t.is_manual = FALSE)
           AND (:closed_from_utc IS NULL OR t.closed_at >= :closed_from_utc)
@@ -737,137 +735,233 @@ def list_trade_setups(
 # Tag repository (merged from repository_tags.py)
 # ---------------------------------------------------------------------------
 
+_SYSTEM_TAG_DEFAULTS = [
+    ("Timeframe", [
+        ("Daily", "#3b82f6"),
+        ("4H", "#6366f1"),
+        ("1H", "#8b5cf6"),
+        ("30 min", "#a855f7"),
+        ("15 min", "#d946ef"),
+    ]),
+    ("Confluence", [
+        ("Trend", "#10b981"),
+        ("Support / Resistance", "#14b8a6"),
+        ("Liquidity", "#0ea5e9"),
+        ("Volume", "#f59e0b"),
+        ("News", "#ef4444"),
+    ]),
+    ("Pattern", [
+        ("Head and Shoulders", "#3b82f6"),
+        ("Flag", "#10b981"),
+        ("Wedge", "#8b5cf6"),
+        ("Range", "#f59e0b"),
+        ("Triangle", "#ec4899"),
+        ("No Pattern", "#64748b"),
+    ]),
+    ("Preparation", [
+        ("Well Prepared", "#10b981"),
+        ("Feel Rushed", "#f59e0b"),
+        ("No Preparation", "#ef4444"),
+    ]),
+    ("Mental", [
+        ("Good Mood", "#10b981"),
+        ("Stressed", "#ef4444"),
+        ("Slept Bad", "#f59e0b"),
+        ("Hectic", "#f97316"),
+        ("Did Exercise", "#22c55e"),
+    ]),
+    ("Indicator", [
+        ("RSI OB", "#ef4444"),
+        ("RSI OS", "#10b981"),
+        ("Above 50 EMA", "#3b82f6"),
+        ("Below 50 EMA", "#8b5cf6"),
+    ]),
+]
+
+
 def seed_system_tags(db: Session) -> tuple[int, int]:
-    """Seeds system-wide default categories and options. Returns (categories_created, options_created)."""
-    categories_created = 0
-    options_created = 0
+    """Seeds system-wide default groups and tags. Returns (groups_created, tags_created)."""
+    groups_created = 0
+    tags_created = 0
 
-    defaults = {
-        "Strategy": [
-            ("Breakout", "#3b82f6"),
-            ("Trend Following", "#10b981"),
-            ("Mean Reversion", "#8b5cf6"),
-            ("Scalping", "#f59e0b"),
-            ("Momentum", "#ec4899"),
-        ],
-        "Mistakes": [
-            ("FOMO", "#ef4444"),
-            ("Overleveraging", "#b91c1c"),
-            ("Early Exit", "#f59e0b"),
-            ("Chasing Market", "#ec4899"),
-            ("No SL", "#7f1d1d"),
-        ],
-    }
-
-    for cat_title, opts in defaults.items():
-        stmt = select(TagCategory).where(
-            and_(TagCategory.title == cat_title, TagCategory.is_system.is_(True))
+    for group_pos, (group_name, tags) in enumerate(_SYSTEM_TAG_DEFAULTS):
+        stmt = select(TagGroup).where(
+            and_(TagGroup.name == group_name, TagGroup.is_system.is_(True))
         )
-        category = db.execute(stmt).scalar_one_or_none()
-        if not category:
-            category = TagCategory(title=cat_title, is_system=True, user_id=None)
-            db.add(category)
+        group = db.execute(stmt).scalar_one_or_none()
+        if not group:
+            group = TagGroup(name=group_name, is_system=True, user_id=None, position=group_pos)
+            db.add(group)
             db.flush()
-            categories_created += 1
+            groups_created += 1
 
-        for opt_val, opt_color in opts:
-            opt_stmt = select(TagOption).where(
+        for tag_pos, (tag_name, tag_color) in enumerate(tags):
+            tag_stmt = select(Tag).where(
                 and_(
-                    TagOption.category_id == category.id,
-                    TagOption.value == opt_val,
-                    TagOption.user_id.is_(None),
+                    Tag.group_id == group.id,
+                    Tag.name == tag_name,
+                    Tag.user_id.is_(None),
                 )
             )
-            if not db.execute(opt_stmt).scalar_one_or_none():
-                db.add(TagOption(category_id=category.id, value=opt_val, color=opt_color, user_id=None))
+            if not db.execute(tag_stmt).scalar_one_or_none():
+                db.add(Tag(
+                    group_id=group.id,
+                    name=tag_name,
+                    color=tag_color,
+                    user_id=None,
+                    is_system=True,
+                    position=tag_pos,
+                ))
                 db.flush()
-                options_created += 1
+                tags_created += 1
 
-    return categories_created, options_created
+    return groups_created, tags_created
 
 
-def list_categories_with_options(db: Session, user_id: uuid.UUID) -> list[TagCategory]:
+def list_groups_with_tags(db: Session, user_id: uuid.UUID) -> list[TagGroup]:
     stmt = (
-        select(TagCategory)
-        .where(or_(TagCategory.is_system.is_(True), TagCategory.user_id == user_id))
-        .order_by(TagCategory.is_system.desc(), TagCategory.created_at.asc())
+        select(TagGroup)
+        .where(or_(TagGroup.is_system.is_(True), TagGroup.user_id == user_id))
+        .order_by(TagGroup.position.asc(), TagGroup.created_at.asc())
     )
-    categories = list(db.execute(stmt).scalars())
+    groups = list(db.execute(stmt).scalars())
 
-    opt_stmt = (
-        select(TagOption)
-        .where(or_(TagOption.user_id.is_(None), TagOption.user_id == user_id))
-        .order_by(TagOption.created_at.asc())
+    tag_stmt = (
+        select(Tag)
+        .where(or_(Tag.user_id.is_(None), Tag.user_id == user_id))
+        .order_by(Tag.position.asc(), Tag.created_at.asc())
     )
-    options_by_cat: dict[uuid.UUID, list[TagOption]] = {}
-    for opt in db.execute(opt_stmt).scalars():
-        options_by_cat.setdefault(opt.category_id, []).append(opt)
+    tags_by_group: dict[uuid.UUID, list[Tag]] = {}
+    for tag in db.execute(tag_stmt).scalars():
+        tags_by_group.setdefault(tag.group_id, []).append(tag)
 
-    for cat in categories:
-        cat.options = options_by_cat.get(cat.id, [])
-    return categories
-
-
-def get_category_by_id(db: Session, category_id: uuid.UUID) -> TagCategory | None:
-    return db.execute(select(TagCategory).where(TagCategory.id == category_id)).scalar_one_or_none()
+    for group in groups:
+        group.tags = tags_by_group.get(group.id, [])
+    return groups
 
 
-def create_category(db: Session, user_id: uuid.UUID, title: str) -> TagCategory:
-    category = TagCategory(user_id=user_id, title=title, is_system=False)
-    db.add(category)
+def get_group_by_id(db: Session, group_id: uuid.UUID) -> TagGroup | None:
+    return db.execute(select(TagGroup).where(TagGroup.id == group_id)).scalar_one_or_none()
+
+
+def _next_group_position(db: Session, user_id: uuid.UUID) -> int:
+    stmt = select(func.coalesce(func.max(TagGroup.position), -1)).where(TagGroup.user_id == user_id)
+    return int(db.execute(stmt).scalar_one()) + 1
+
+
+def create_group(db: Session, user_id: uuid.UUID, name: str) -> TagGroup:
+    group = TagGroup(
+        user_id=user_id,
+        name=name,
+        is_system=False,
+        position=_next_group_position(db, user_id),
+    )
+    db.add(group)
     db.flush()
-    return category
+    return group
 
 
-def delete_category(db: Session, user_id: uuid.UUID, category_id: uuid.UUID) -> bool:
-    stmt = select(TagCategory).where(and_(TagCategory.id == category_id, TagCategory.user_id == user_id))
-    category = db.execute(stmt).scalar_one_or_none()
-    if not category:
+def update_group(db: Session, group: TagGroup, name: str) -> TagGroup:
+    group.name = name
+    db.flush()
+    return group
+
+
+def delete_group(db: Session, user_id: uuid.UUID, group_id: uuid.UUID) -> bool:
+    stmt = select(TagGroup).where(and_(TagGroup.id == group_id, TagGroup.user_id == user_id))
+    group = db.execute(stmt).scalar_one_or_none()
+    if not group:
         return False
-    db.delete(category)
+    db.delete(group)
     db.flush()
     return True
 
 
-def get_option_by_id(db: Session, option_id: uuid.UUID) -> TagOption | None:
-    return db.execute(select(TagOption).where(TagOption.id == option_id)).scalar_one_or_none()
+def reorder_groups(db: Session, user_id: uuid.UUID, ids: list[uuid.UUID]) -> None:
+    for pos, gid in enumerate(ids):
+        db.execute(
+            update(TagGroup)
+            .where(and_(TagGroup.id == gid, TagGroup.user_id == user_id))
+            .values(position=pos)
+        )
+    db.flush()
 
 
-def create_option(
+def get_tag_by_id(db: Session, tag_id: uuid.UUID) -> Tag | None:
+    return db.execute(select(Tag).where(Tag.id == tag_id)).scalar_one_or_none()
+
+
+def _next_tag_position(db: Session, group_id: uuid.UUID) -> int:
+    stmt = select(func.coalesce(func.max(Tag.position), -1)).where(Tag.group_id == group_id)
+    return int(db.execute(stmt).scalar_one()) + 1
+
+
+def create_tag(
     db: Session,
     user_id: uuid.UUID,
-    category_id: uuid.UUID,
-    value: str,
+    group_id: uuid.UUID,
+    name: str,
     color: str | None = None,
-) -> TagOption:
-    option = TagOption(category_id=category_id, user_id=user_id, value=value, color=color)
-    db.add(option)
+) -> Tag:
+    tag = Tag(
+        group_id=group_id,
+        user_id=user_id,
+        name=name,
+        color=color,
+        is_system=False,
+        position=_next_tag_position(db, group_id),
+    )
+    db.add(tag)
     db.flush()
-    return option
+    return tag
 
 
-def delete_option(db: Session, user_id: uuid.UUID, option_id: uuid.UUID) -> bool:
-    stmt = select(TagOption).where(and_(TagOption.id == option_id, TagOption.user_id == user_id))
-    option = db.execute(stmt).scalar_one_or_none()
-    if not option:
+def update_tag(
+    db: Session,
+    tag: Tag,
+    name: str | None = None,
+    color: str | None = None,
+) -> Tag:
+    if name is not None:
+        tag.name = name
+    if color is not None:
+        tag.color = color
+    db.flush()
+    return tag
+
+
+def delete_tag(db: Session, user_id: uuid.UUID, tag_id: uuid.UUID) -> bool:
+    stmt = select(Tag).where(and_(Tag.id == tag_id, Tag.user_id == user_id))
+    tag = db.execute(stmt).scalar_one_or_none()
+    if not tag:
         return False
-    db.delete(option)
+    db.delete(tag)
     db.flush()
     return True
 
 
-def get_trade_tag_options(db: Session, trade_id: uuid.UUID) -> list[TagOption]:
+def reorder_tags(db: Session, user_id: uuid.UUID, ids: list[uuid.UUID]) -> None:
+    for pos, tid in enumerate(ids):
+        db.execute(
+            update(Tag)
+            .where(and_(Tag.id == tid, Tag.user_id == user_id))
+            .values(position=pos)
+        )
+    db.flush()
+
+
+def get_trade_tags(db: Session, trade_id: uuid.UUID) -> list[Tag]:
     stmt = (
-        select(TagOption)
-        .join(TradeTagSelection, TradeTagSelection.option_id == TagOption.id)
-        .where(TradeTagSelection.trade_id == trade_id)
-        .order_by(TagOption.value.asc())
+        select(Tag)
+        .join(TradeTag, TradeTag.tag_id == Tag.id)
+        .where(TradeTag.trade_id == trade_id)
+        .order_by(Tag.position.asc(), Tag.name.asc())
     )
     return list(db.execute(stmt).scalars())
 
 
-def update_trade_tags(db: Session, trade_id: uuid.UUID, option_ids: list[uuid.UUID]) -> None:
-    db.execute(delete(TradeTagSelection).where(TradeTagSelection.trade_id == trade_id))
-    for opt_id in option_ids:
-        db.add(TradeTagSelection(trade_id=trade_id, option_id=opt_id))
+def update_trade_tags(db: Session, trade_id: uuid.UUID, tag_ids: list[uuid.UUID]) -> None:
+    db.execute(delete(TradeTag).where(TradeTag.trade_id == trade_id))
+    for tag_id in tag_ids:
+        db.add(TradeTag(trade_id=trade_id, tag_id=tag_id))
     db.flush()

@@ -714,14 +714,14 @@ def analytics_tagged_trades(
         f"""
         WITH tagged AS (
             SELECT
-                topt.value             AS tag,
-                tc.title               AS category,
+                tg.name                AS tag,
+                grp.name               AS category,
                 t.id                   AS trade_id,
                 t.net_profit
             FROM trades t
-            JOIN trade_tag_selections tts ON tts.trade_id = t.id
-            JOIN tag_options topt         ON topt.id = tts.option_id
-            JOIN tag_categories tc        ON tc.id = topt.category_id
+            JOIN trade_tags tt   ON tt.trade_id = t.id
+            JOIN tags tg         ON tg.id = tt.tag_id
+            JOIN tag_groups grp  ON grp.id = tg.group_id
             WHERE t.account_id = ANY(:aids_placeholder)
               {date_filter}
         )

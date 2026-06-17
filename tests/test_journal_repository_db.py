@@ -14,7 +14,7 @@ import app.domains.users.models  # noqa: F401
 
 from app.domains.users.models import User
 from app.domains.accounts.models import TradingAccount, Trade, TradeDirection, TradeSession, TradingAccountType, TradingPlatform, TradingAccountConnectionState
-from app.domains.journal.models import TagCategory, TagOption, TradeTagSelection
+from app.domains.journal.models import TagGroup, Tag, TradeTag
 from app.domains.journal.repository import list_trade_setups
 
 def test_list_trade_setups_sql_query() -> None:
@@ -71,29 +71,29 @@ def test_list_trade_setups_sql_query() -> None:
         )
         db.add(trade)
         
-        # Create tag category
-        category = TagCategory(
+        # Create tag group
+        group = TagGroup(
             id=uuid.uuid4(),
             user_id=user.id,
-            title="Strategy",
+            name="Pattern",
             is_system=False,
         )
-        db.add(category)
-        
-        # Create tag option
-        option = TagOption(
+        db.add(group)
+
+        # Create tag
+        tag = Tag(
             id=uuid.uuid4(),
-            category_id=category.id,
+            group_id=group.id,
             user_id=user.id,
-            value="Breakout",
+            name="Breakout",
         )
-        db.add(option)
+        db.add(tag)
         db.flush()
-        
-        # Create selection
-        selection = TradeTagSelection(
+
+        # Link tag to trade
+        selection = TradeTag(
             trade_id=trade.id,
-            option_id=option.id,
+            tag_id=tag.id,
         )
         db.add(selection)
         db.flush()

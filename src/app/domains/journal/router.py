@@ -19,7 +19,6 @@ from app.domains.journal.schemas import (
     AnalyticsIntradayCurvesResponse,
     AnalyticsSummaryResponse,
     AnalyticsTimePerformanceResponse,
-    CategoryCreateRequest,
     DailyJournalFeedItemResponse,
     DailyJournalFeedResponse,
     DailyJournalResponse,
@@ -33,9 +32,13 @@ from app.domains.journal.schemas import (
     JournalTemplateResponse,
     JournalTradeListResponse,
     JournalTradeResponse,
-    OptionCreateRequest,
-    TagCategoryResponse,
-    TagOptionResponse,
+    ReorderRequest,
+    TagCreateRequest,
+    TagGroupCreateRequest,
+    TagGroupResponse,
+    TagGroupUpdateRequest,
+    TagResponse,
+    TagUpdateRequest,
     TradeAssessmentUpdateRequest,
     TradeRatingUpdateRequest,
     TradeTagUpdateRequest,
@@ -568,87 +571,131 @@ def get_dashboard(
 
 
 # ---------------------------------------------------------------------------
-# Tags (merged from router_tags.py)
+# Tags
 # ---------------------------------------------------------------------------
 
 tags_router = APIRouter(tags=["journal-tags"])
 
 
-@tags_router.get("/journal/tags/config", response_model=list[TagCategoryResponse])
+@tags_router.get("/journal/tags/config", response_model=list[TagGroupResponse])
 def get_tags_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[TagCategoryResponse]:
-    categories = journal_service.list_user_tags_config(db, user=current_user)
-    return [TagCategoryResponse.model_validate(c) for c in categories]
+) -> list[TagGroupResponse]:
+    groups = journal_service.list_user_tags_config(db, user=current_user)
+    return [TagGroupResponse.model_validate(g) for g in groups]
 
 
-@tags_router.post("/journal/tags/categories", response_model=TagCategoryResponse, status_code=status.HTTP_201_CREATED)
-def create_category(
-    payload: CategoryCreateRequest,
+@tags_router.post("/journal/tags/groups", response_model=TagGroupResponse, status_code=status.HTTP_201_CREATED)
+def create_tag_group(
+    payload: TagGroupCreateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> TagCategoryResponse:
-    category = journal_service.create_custom_category(db, user=current_user, title=payload.title)
-    return TagCategoryResponse.model_validate(category)
+) -> TagGroupResponse:
+    group = journal_service.create_tag_group(db, user=current_user, name=payload.name)
+    return TagGroupResponse.model_validate(group)
 
 
-@tags_router.delete("/journal/tags/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_category(
-    category_id: uuid.UUID,
+@tags_router.put("/journal/tags/groups/reorder", status_code=status.HTTP_204_NO_CONTENT)
+def reorder_tag_groups(
+    payload: ReorderRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Response:
-    journal_service.delete_custom_category(db, user=current_user, category_id=category_id)
+    journal_service.reorder_tag_groups(db, user=current_user, ids=payload.ids)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@tags_router.put("/journal/tags/groups/{group_id}", response_model=TagGroupResponse)
+def update_tag_group(
+    group_id: uuid.UUID,
+    payload: TagGroupUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TagGroupResponse:
+    group = journal_service.update_tag_group(db, user=current_user, group_id=group_id, name=payload.name)
+    return TagGroupResponse.model_validate(group)
+
+
+@tags_router.delete("/journal/tags/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_tag_group(
+    group_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    journal_service.delete_tag_group(db, user=current_user, group_id=group_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @tags_router.post(
-    "/journal/tags/categories/{category_id}/options",
-    response_model=TagOptionResponse,
+    "/journal/tags/groups/{group_id}/tags",
+    response_model=TagResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_option(
-    category_id: uuid.UUID,
-    payload: OptionCreateRequest,
+def create_tag(
+    group_id: uuid.UUID,
+    payload: TagCreateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> TagOptionResponse:
-    option = journal_service.create_custom_option(
-        db, user=current_user, category_id=category_id, value=payload.value, color=payload.color,
+) -> TagResponse:
+    tag = journal_service.create_tag(
+        db, user=current_user, group_id=group_id, name=payload.name, color=payload.color,
     )
-    return TagOptionResponse.model_validate(option)
+    return TagResponse.model_validate(tag)
 
 
-@tags_router.delete("/journal/tags/options/{option_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_option(
-    option_id: uuid.UUID,
+@tags_router.put("/journal/tags/reorder", status_code=status.HTTP_204_NO_CONTENT)
+def reorder_tags(
+    payload: ReorderRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Response:
-    journal_service.delete_custom_option(db, user=current_user, option_id=option_id)
+    journal_service.reorder_tags(db, user=current_user, ids=payload.ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@tags_router.get("/journal/trades/{trade_id}/tags", response_model=list[TagOptionResponse])
+@tags_router.put("/journal/tags/{tag_id}", response_model=TagResponse)
+def update_tag(
+    tag_id: uuid.UUID,
+    payload: TagUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TagResponse:
+    tag = journal_service.update_tag(
+        db, user=current_user, tag_id=tag_id, name=payload.name, color=payload.color,
+    )
+    return TagResponse.model_validate(tag)
+
+
+@tags_router.delete("/journal/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_tag(
+    tag_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    journal_service.delete_tag(db, user=current_user, tag_id=tag_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@tags_router.get("/journal/trades/{trade_id}/tags", response_model=list[TagResponse])
 def get_trade_tags(
     trade_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[TagOptionResponse]:
-    options = journal_service.get_trade_tags(db, user=current_user, trade_id=trade_id)
-    return [TagOptionResponse.model_validate(o) for o in options]
+) -> list[TagResponse]:
+    tags = journal_service.get_trade_tags(db, user=current_user, trade_id=trade_id)
+    return [TagResponse.model_validate(t) for t in tags]
 
 
-@tags_router.put("/journal/trades/{trade_id}/tags", response_model=list[TagOptionResponse])
+@tags_router.put("/journal/trades/{trade_id}/tags", response_model=list[TagResponse])
 def update_trade_tags(
     trade_id: uuid.UUID,
     payload: TradeTagUpdateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[TagOptionResponse]:
-    options = journal_service.update_trade_tags(db, user=current_user, trade_id=trade_id, option_ids=payload.option_ids)
-    return [TagOptionResponse.model_validate(o) for o in options]
+) -> list[TagResponse]:
+    tags = journal_service.update_trade_tags(db, user=current_user, trade_id=trade_id, tag_ids=payload.tag_ids)
+    return [TagResponse.model_validate(t) for t in tags]
 
 
 @tags_router.put("/journal/trades/{trade_id}/rating")

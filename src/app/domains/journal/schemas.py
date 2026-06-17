@@ -370,35 +370,53 @@ class AnalyticsDashboardResponse(BaseModel):
 # Tag schemas (merged from schemas_tags.py)
 # ---------------------------------------------------------------------------
 
-class TagOptionResponse(BaseModel):
+class TagResponse(BaseModel):
     id: uuid.UUID
-    category_id: uuid.UUID
-    value: str
+    group_id: uuid.UUID
+    name: str
     color: Optional[str] = None
+    position: int = 0
+    is_system: bool = False
 
     model_config = {"from_attributes": True}
 
 
-class TagCategoryResponse(BaseModel):
+class TagGroupResponse(BaseModel):
     id: uuid.UUID
-    title: str
-    is_system: bool
-    options: list[TagOptionResponse] = []
+    name: str
+    position: int = 0
+    is_system: bool = False
+    tags: list[TagResponse] = []
 
     model_config = {"from_attributes": True}
 
 
-class CategoryCreateRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=100)
+class TagGroupCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
 
 
-class OptionCreateRequest(BaseModel):
-    value: str = Field(..., min_length=1, max_length=100)
+class TagGroupUpdateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class TagCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
     color: Optional[str] = Field(default=None, max_length=7, pattern="^#([A-Fa-f0-9]{6})$")
 
 
+class TagUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    color: Optional[str] = Field(default=None, max_length=7, pattern="^#([A-Fa-f0-9]{6})$")
+
+
+class ReorderRequest(BaseModel):
+    """Ordered list of ids; index in the list becomes the new position."""
+
+    ids: list[uuid.UUID]
+
+
 class TradeTagUpdateRequest(BaseModel):
-    option_ids: list[uuid.UUID]
+    tag_ids: list[uuid.UUID]
 
 
 class TradeRatingUpdateRequest(BaseModel):

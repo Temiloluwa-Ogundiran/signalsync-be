@@ -44,13 +44,19 @@ from ._manual_trades import (  # noqa: F401
     update_manual_trade,
 )
 from ._tags import (  # noqa: F401
-    create_custom_category,
-    create_custom_option,
-    delete_custom_category,
-    delete_custom_option,
+    create_tag,
+    create_tag_group,
+    delete_tag,
+    delete_tag_group,
     get_trade_tags,
     list_user_tags_config,
+    reorder_tag_groups,
+    reorder_tags,
+    update_tag,
+    update_tag_group,
+    update_trade_tags,
+)
+from ._assessment import (  # noqa: F401
     update_trade_assessment,
     update_trade_rating,
-    update_trade_tags,
 )

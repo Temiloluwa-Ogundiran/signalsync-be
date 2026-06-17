@@ -267,8 +267,10 @@ class JournalTemplate(Base):
     owner: Mapped[Optional["User"]] = relationship(back_populates="journal_templates")  # noqa: F821
 
 
-class TagCategory(Base):
-    __tablename__ = "tag_categories"
+class TagGroup(Base):
+    """A user-defined group of tags (e.g. Timeframe, Confluence, Pattern)."""
+
+    __tablename__ = "tag_groups"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -281,7 +283,8 @@ class TagCategory(Base):
         nullable=True,
         index=True,
     )
-    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -295,23 +298,25 @@ class TagCategory(Base):
         nullable=False,
     )
 
-    options: Mapped[List["TagOption"]] = relationship(
-        back_populates="category",
+    tags: Mapped[List["Tag"]] = relationship(
+        back_populates="group",
         cascade="all, delete-orphan",
     )
 
 
-class TagOption(Base):
-    __tablename__ = "tag_options"
+class Tag(Base):
+    """An individual tag value belonging to a group; applied to trades."""
+
+    __tablename__ = "tags"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
-    category_id: Mapped[uuid.UUID] = mapped_column(
+    group_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tag_categories.id", ondelete="CASCADE"),
+        ForeignKey("tag_groups.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -321,8 +326,10 @@ class TagOption(Base):
         nullable=True,
         index=True,
     )
-    value: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)  # HEX code
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -335,20 +342,22 @@ class TagOption(Base):
         nullable=False,
     )
 
-    category: Mapped["TagCategory"] = relationship(back_populates="options")
+    group: Mapped["TagGroup"] = relationship(back_populates="tags")
 
 
-class TradeTagSelection(Base):
-    __tablename__ = "trade_tag_selections"
+class TradeTag(Base):
+    """Join table linking a trade to a tag (many-to-many)."""
+
+    __tablename__ = "trade_tags"
 
     trade_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("trades.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    option_id: Mapped[uuid.UUID] = mapped_column(
+    tag_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tag_options.id", ondelete="CASCADE"),
+        ForeignKey("tags.id", ondelete="CASCADE"),
         primary_key=True,
     )
 
