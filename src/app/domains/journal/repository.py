@@ -986,6 +986,16 @@ def delete_setup(db: Session, user_id: uuid.UUID, setup_id: uuid.UUID) -> bool:
     return True
 
 
+def reorder_setups(db: Session, user_id: uuid.UUID, ids: list[uuid.UUID]) -> None:
+    for pos, sid in enumerate(ids):
+        db.execute(
+            update(Setup)
+            .where(and_(Setup.id == sid, Setup.user_id == user_id))
+            .values(position=pos)
+        )
+    db.flush()
+
+
 # ---------------------------------------------------------------------------
 # Per-trade note + setup assignment
 # ---------------------------------------------------------------------------

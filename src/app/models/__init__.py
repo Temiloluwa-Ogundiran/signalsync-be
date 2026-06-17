@@ -36,6 +36,7 @@ from app.domains.ai.models import (
     AiUsage,
     AiUserMemory,
 )
+from app.domains.notifications.models import Notification, NotificationType
 
 __all__ = [
     "User",
@@ -68,4 +69,6 @@ __all__ = [
     "AiMessageRole",
     "AiUsage",
     "AiUserMemory",
+    "Notification",
+    "NotificationType",
 ]

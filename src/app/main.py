@@ -13,6 +13,7 @@ from app.domains.ai.checkpointer import init_checkpointer
 from app.domains.ai.agent import build_compiled
 from app.domains.auth.router import router as auth_router
 from app.domains.users.router import router as users_router
+from app.domains.notifications.router import router as notifications_router
 from app.domains.accounts.router import router as accounts_router
 from app.domains.csv_import.router import router as csv_import_router
 from app.domains.journal.router import (
@@ -127,6 +128,7 @@ def health_check():
 # ── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(users_router)
+app.include_router(notifications_router)
 app.include_router(accounts_router)
 app.include_router(csv_import_router)
 app.include_router(journal_trades_router)

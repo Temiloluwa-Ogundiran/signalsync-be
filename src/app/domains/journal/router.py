@@ -783,6 +783,16 @@ def create_setup(
     return SetupResponse.model_validate(setup)
 
 
+@tags_router.put("/journal/setups/reorder", status_code=status.HTTP_204_NO_CONTENT)
+def reorder_setups(
+    payload: ReorderRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    journal_service.reorder_setups(db, user=current_user, ids=payload.ids)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @tags_router.delete("/journal/setups/{setup_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_setup(
     setup_id: uuid.UUID,

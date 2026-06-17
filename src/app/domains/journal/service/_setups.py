@@ -53,6 +53,11 @@ def delete_setup(db: Session, user: User, setup_id: uuid.UUID) -> None:
     db.commit()
 
 
+def reorder_setups(db: Session, user: User, ids: list[uuid.UUID]) -> None:
+    journal_repo.reorder_setups(db, user_id=user.id, ids=ids)
+    db.commit()
+
+
 def update_trade_setup(db: Session, user: User, trade_id: uuid.UUID, setup: Optional[str]) -> Optional[str]:
     """Set (or clear) the trade's setup. A new name is also added to the user's
     setup list so it shows up in the picker next time."""

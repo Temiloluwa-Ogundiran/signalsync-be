@@ -66,5 +66,6 @@ from ._setups import (  # noqa: F401
     create_setup,
     delete_setup,
     list_setups,
+    reorder_setups,
     update_trade_setup,
 )
