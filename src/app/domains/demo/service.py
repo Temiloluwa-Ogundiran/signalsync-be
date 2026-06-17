@@ -43,7 +43,7 @@ DEMO_BROKER_LOGIN = "34567890"  # the displayed account number
 DEMO_STARTING_BALANCE = 25_000.0  # used only for trade-risk sizing in the generator
 # The account balance shown in the UI — a realistic standalone figure, not
 # derived from starting balance + P&L.
-DEMO_ACCOUNT_BALANCE = 7_000.0
+DEMO_ACCOUNT_BALANCE = 5_840.34
 
 
 def _seed_for_user(user_id: uuid.UUID) -> int:
