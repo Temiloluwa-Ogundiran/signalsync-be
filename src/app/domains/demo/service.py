@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-import zlib
 from datetime import date, datetime, timezone
 
 from sqlalchemy import select
@@ -46,10 +45,15 @@ DEMO_STARTING_BALANCE = 25_000.0  # used only for trade-risk sizing in the gener
 DEMO_ACCOUNT_BALANCE = 5_840.34
 
 
+# Fixed seed so every user gets the exact same demo history (identical trades,
+# P&L, and days). Change this value to roll a new canonical demo dataset.
+DEMO_SEED = 424242
+
+
 def _seed_for_user(user_id: uuid.UUID) -> int:
-    """Stable per-user seed so two users don't get identical histories, while a
-    given user's demo is reproducible (idempotent re-generation)."""
-    return zlib.crc32(str(user_id).encode("utf-8"))
+    """Return the demo seed. Fixed for all users so everyone sees the identical
+    demo history. (`user_id` accepted for signature stability.)"""
+    return DEMO_SEED
 
 
 def get_demo_account(db: Session, user_id: uuid.UUID) -> TradingAccount | None:
