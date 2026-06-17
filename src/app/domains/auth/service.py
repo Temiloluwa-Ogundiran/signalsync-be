@@ -427,6 +427,7 @@ def refresh_access_token(
         )
 
     hashed = hash_token(raw_refresh)
+    _tok_prefix = hashed[:10]  # TEMP debug: identify the token without leaking it
     token_record = token_repo.get_active(
         db,
         hashed_token=hashed,
@@ -437,12 +438,23 @@ def refresh_access_token(
             db, hashed_token=hashed, token_type=TokenType.REFRESH
         )
         if grace_record is None:
+            # TEMP debug: token neither active nor in grace → genuine 401/logout.
+            recently = token_repo.get_recently_revoked(
+                db, hashed_token=hashed, token_type=TokenType.REFRESH,
+                grace_seconds=86_400,
+            )
+            logger.warning(
+                "refresh: 401 reject prefix=%s reason=%s",
+                _tok_prefix,
+                "revoked_past_grace" if recently else "unknown_or_expired",
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired refresh token.",
             )
         # Concurrent-rotation race: token was just rotated by a parallel request.
         # Issue a fresh ACCESS token only — no new refresh token, no new cookie.
+        logger.info("refresh: grace-path hit prefix=%s", _tok_prefix)
         user = user_repo.get_by_id(db, grace_record.user_id)
         if not user:
             raise HTTPException(
@@ -477,6 +489,11 @@ def refresh_access_token(
     )
 
     new_access_token = create_access_token(str(user.id))
+    # TEMP debug: confirm rotation old→new so we can see if the client adopts it.
+    logger.info(
+        "refresh: rotated prefix=%s -> %s",
+        _tok_prefix, hash_token(new_raw_refresh)[:10],
+    )
     db.commit()
 
     response.set_cookie(
