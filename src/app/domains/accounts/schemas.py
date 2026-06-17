@@ -74,6 +74,7 @@ class AccountResponse(BaseModel):
     bootstrap_error_message: Optional[str]
     last_sync_attempted_at: Optional[datetime] = None
     last_sync_outcome: Optional[str] = None
+    closed_trade_count: int = 0
     next_sync_not_before: Optional[datetime] = None
     latest_balance: Optional[Decimal] = None
     latest_equity: Optional[Decimal] = None
@@ -94,6 +95,7 @@ class AccountResponse(BaseModel):
             connection_state=self.connection_state,
             sync_provider=self.sync_provider,
             last_sync_outcome=self.last_sync_outcome,
+            closed_trade_count=self.closed_trade_count,
             sync_error_message=self.sync_error_message,
             bootstrap_error_message=self.bootstrap_error_message,
         )

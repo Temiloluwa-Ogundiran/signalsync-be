@@ -96,6 +96,7 @@ def test_account_response_describes_empty_ready_account() -> None:
         "bootstrap_error_message": None,
         "last_sync_attempted_at": datetime.now(timezone.utc),
         "last_sync_outcome": "success_empty",
+        "closed_trade_count": 0,
         "next_sync_not_before": None,
         "latest_balance": None,
         "latest_equity": None,
@@ -111,6 +112,44 @@ def test_account_response_describes_empty_ready_account() -> None:
     assert response.sync_status.headline == "Connected"
     assert response.sync_status.detail == "No closed trades found yet."
     assert response.sync_status.action == "Close a trade in MT5, then resync."
+
+
+def test_account_response_ignores_stale_empty_outcome_when_trades_exist() -> None:
+    payload = {
+        "id": uuid.uuid4(),
+        "user_id": uuid.uuid4(),
+        "meta_account_id": "acct-with-trades",
+        "broker_name": "Broker",
+        "broker_login": "123456",
+        "broker_server": "Demo-Server",
+        "account_type": "live",
+        "platform": "MT5",
+        "currency": "USD",
+        "timezone": "UTC",
+        "broker_utc_offset": 0,
+        "display_name": "Has Trades",
+        "status": "synced",
+        "connection_state": "ready",
+        "is_data_ready_for_stats": True,
+        "last_synced_at": datetime.now(timezone.utc),
+        "last_bootstrap_synced_at": datetime.now(timezone.utc),
+        "sync_error_message": None,
+        "bootstrap_error_message": None,
+        "last_sync_attempted_at": datetime.now(timezone.utc),
+        "last_sync_outcome": "success_empty",
+        "closed_trade_count": 10,
+        "next_sync_not_before": None,
+        "latest_balance": Decimal("9836.65"),
+        "latest_equity": Decimal("9836.65"),
+        "is_deleted": False,
+        "sync_provider": "headless_mt5",
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    response = AccountResponse.model_validate(payload)
+
+    assert response.sync_status.code == "ready"
+    assert response.sync_status.detail == "Account is connected and ready."
 
 
 def test_account_response_describes_lifecycle_attention_states() -> None:
@@ -596,7 +635,7 @@ async def test_manual_sync_with_zero_new_inserts_is_success_not_empty(
 
 
 @patch("app.domains.accounts.service.account_repo")
-def test_list_accounts_includes_latest_snapshot_balance(
+def test_list_accounts_includes_latest_snapshot_balance_and_trade_count(
     mock_account_repo,
     db_session: MagicMock,
 ) -> None:
@@ -608,11 +647,15 @@ def test_list_accounts_includes_latest_snapshot_balance(
     mock_account_repo.get_latest_snapshots_for_accounts.return_value = {
         account.id: snapshot,
     }
+    mock_account_repo.count_closed_trades_for_accounts.return_value = {
+        account.id: 10,
+    }
 
     accounts = account_service.list_accounts(db_session, current_user=user)
 
     assert accounts[0].latest_balance == Decimal("10000.00")
     assert accounts[0].latest_equity == Decimal("10050.00")
+    assert accounts[0].closed_trade_count == 10
 
 
 @patch("app.domains.journal.service._trades.journal_repo")

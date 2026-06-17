@@ -232,10 +232,15 @@ def list_accounts(db: Session, *, current_user: User) -> list[TradingAccount]:
         db,
         account_ids=[account.id for account in accounts],
     )
+    trade_counts = account_repo.count_closed_trades_for_accounts(
+        db,
+        account_ids=[account.id for account in accounts],
+    )
     for account in accounts:
         snapshot = latest_snapshots.get(account.id)
         account.latest_balance = snapshot.balance if snapshot is not None else None
         account.latest_equity = snapshot.equity if snapshot is not None else None
+        account.closed_trade_count = trade_counts.get(account.id, 0)
     return accounts
 
 

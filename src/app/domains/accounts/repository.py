@@ -219,6 +219,20 @@ def list_accounts_for_user(db: Session, user_id: uuid.UUID) -> list[TradingAccou
     return list(db.execute(stmt).scalars().all())
 
 
+def count_closed_trades_for_accounts(
+    db: Session, *, account_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    if not account_ids:
+        return {}
+
+    stmt = (
+        select(Trade.account_id, func.count(Trade.id))
+        .where(Trade.account_id.in_(account_ids))
+        .group_by(Trade.account_id)
+    )
+    return {account_id: int(count) for account_id, count in db.execute(stmt).all()}
+
+
 def set_account_last_synced_at(
     db: Session, account: TradingAccount, synced_at: datetime
 ) -> None:

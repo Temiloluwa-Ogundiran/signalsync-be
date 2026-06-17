@@ -21,6 +21,7 @@ def describe_account_sync_status(
     connection_state: TradingAccountConnectionState,
     sync_provider: str,
     last_sync_outcome: str | None,
+    closed_trade_count: int,
     sync_error_message: str | None,
     bootstrap_error_message: str | None,
 ) -> AccountSyncStatus:
@@ -69,7 +70,7 @@ def describe_account_sync_status(
             action="Try resyncing the account.",
         )
 
-    if last_sync_outcome == "success_empty":
+    if last_sync_outcome == "success_empty" and closed_trade_count == 0:
         return AccountSyncStatus(
             code="ready_empty",
             severity="info",
