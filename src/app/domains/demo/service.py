@@ -30,7 +30,12 @@ from app.domains.accounts.models import (
     SyncProvider,
 )
 from app.domains.journal.models import DailyJournal, TradeJournal
-from app.domains.demo.generator import DemoData, TradeSpec, generate_demo_data
+from app.domains.demo.generator import (
+    DemoData,
+    SETUP_NO_SETUP,
+    TradeSpec,
+    generate_demo_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +105,6 @@ def _trade_to_row(spec: TradeSpec, account_id: uuid.UUID, idx: int) -> dict:
         "is_manual": True,
         "is_missed": False,
         "setup": spec.setup,
-        "plan_followed": spec.plan_followed,
     }
 
 
@@ -201,11 +205,14 @@ def seed_demo_account(
     for trade, spec in trade_objs:
         score10 = day_disc.get(id(spec), 6)
         score5 = max(1, min(5, round(score10 / 2)))
+        # A real playbook setup reads as a higher-quality trade than a "no setup"
+        # entry — mirrors the old plan-followed signal without a stored flag.
+        good = spec.setup != SETUP_NO_SETUP
         tj = TradeJournal(
             trade_id=trade.id,
             discipline_score=score5,
-            setup_quality=5 if spec.plan_followed else 2,
-            execution_quality=4 if spec.plan_followed else 2,
+            setup_quality=5 if good else 2,
+            execution_quality=4 if good else 2,
         )
         db.add(tj)
 

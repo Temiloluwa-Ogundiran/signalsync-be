@@ -25,6 +25,7 @@ from app.domains.journal.models import (
     TagGroup,
     Tag,
     TradeTag,
+    Setup,
 )
 from app.domains.ai.models import (
     AiAgent,
@@ -59,6 +60,7 @@ __all__ = [
     "TagGroup",
     "Tag",
     "TradeTag",
+    "Setup",
     "AiAgent",
     "AiChatMessage",
     "AiChatSession",

@@ -57,6 +57,14 @@ from ._tags import (  # noqa: F401
     update_trade_tags,
 )
 from ._assessment import (  # noqa: F401
+    get_trade_note,
+    save_trade_note,
     update_trade_assessment,
     update_trade_rating,
+)
+from ._setups import (  # noqa: F401
+    create_setup,
+    delete_setup,
+    list_setups,
+    update_trade_setup,
 )

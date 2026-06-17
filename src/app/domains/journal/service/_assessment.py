@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
@@ -48,4 +49,29 @@ def update_trade_assessment(
         "execution_quality": tj.execution_quality,
         "setup_quality": tj.setup_quality,
         "discipline_score": tj.discipline_score,
+    }
+
+
+def get_trade_note(db: Session, user: User, trade_id: uuid.UUID) -> dict:
+    _validate_trade_ownership(db, user_id=user.id, trade_id=trade_id)
+    tj, _ = journal_repo.get_or_create_trade_journal_by_trade_id(db, trade_id=trade_id, daily_journal_id=None)
+    db.commit()
+    return {
+        "trade_id": trade_id,
+        "note_html": tj.note_html,
+        "note_updated_at": tj.note_updated_at,
+    }
+
+
+def save_trade_note(db: Session, user: User, trade_id: uuid.UUID, note_html: Optional[str]) -> dict:
+    _validate_trade_ownership(db, user_id=user.id, trade_id=trade_id)
+    tj, _ = journal_repo.get_or_create_trade_journal_by_trade_id(db, trade_id=trade_id, daily_journal_id=None)
+    cleaned = note_html.strip() if note_html else None
+    tj.note_html = cleaned or None
+    tj.note_updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {
+        "trade_id": trade_id,
+        "note_html": tj.note_html,
+        "note_updated_at": tj.note_updated_at,
     }

@@ -106,6 +106,13 @@ class TradeJournal(Base):
     setup_quality: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     discipline_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Free-text per-trade note (plain text), mirroring the day note.
+    note_html: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    note_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     trade: Mapped["Trade"] = relationship(back_populates="journal")  # noqa: F821
     daily_journal: Mapped[Optional["DailyJournal"]] = relationship(back_populates="trade_journals")
     messages: Mapped[List["JournalMessage"]] = relationship(
@@ -359,5 +366,41 @@ class TradeTag(Base):
         UUID(as_uuid=True),
         ForeignKey("tags.id", ondelete="CASCADE"),
         primary_key=True,
+    )
+
+
+class Setup(Base):
+    """A user-defined playbook setup name (flat — like a tag, but no groups and
+    a trade has at most one). Trades store the chosen name on Trade.setup; this
+    table is the managed list for the picker/autocomplete."""
+
+    __tablename__ = "setups"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_setups_user_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
 

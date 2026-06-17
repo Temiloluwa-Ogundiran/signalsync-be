@@ -90,7 +90,6 @@ class TradeSpec:
     session: str
     duration_seconds: int
     setup: str
-    plan_followed: bool
     realized_r: float  # for verification/notes
     pip_value_per_lot: float
 
@@ -164,7 +163,6 @@ def _build_trade(
     day: date,
     balance: float,
     setup: str,
-    plan_followed: bool,
     forced_outcome: str | None = None,  # "win" | "loss" | None (random)
     risk_pct: float | None = None,
     session: str | None = None,
@@ -244,7 +242,6 @@ def _build_trade(
         session=_session_for_hour(open_dt.hour),
         duration_seconds=hold_min * 60,
         setup=setup,
-        plan_followed=plan_followed,
         realized_r=round(realized_r, 2),
         pip_value_per_lot=inst.pip_value_per_lot,
     )
@@ -254,11 +251,11 @@ def _build_trade(
 
 
 def _re_enter(rng, base: TradeSpec, day, balance, *, minutes_after, lots_mult,
-              setup, plan_followed, forced_outcome) -> TradeSpec:
+              setup, forced_outcome) -> TradeSpec:
     """A fast same-symbol re-entry after `base`, at scaled lots — the core leak."""
     inst = next(i for i in INSTRUMENTS if i.symbol == base.symbol)
     t = _build_trade(
-        rng, day=day, balance=balance, setup=setup, plan_followed=plan_followed,
+        rng, day=day, balance=balance, setup=setup,
         forced_outcome=forced_outcome, instrument=inst,
     )
     # Anchor it right after the base trade closed, on the same symbol.
@@ -283,10 +280,10 @@ def _tilt_day(rng, day, balance) -> DaySpec:
     """Loss → fast same-symbol re-entry at increased lots → another loss."""
     inst = _pick_instrument(rng)
     t1 = _build_trade(rng, day=day, balance=balance, setup=SETUP_NY_REVERSAL,
-                      plan_followed=True, forced_outcome="loss", instrument=inst)
+                      forced_outcome="loss", instrument=inst)
     t2 = _re_enter(rng, t1, day, balance, minutes_after=rng.randint(2, 5),
                    lots_mult=rng.uniform(1.8, 2.5), setup=SETUP_REVENGE,
-                   plan_followed=False, forced_outcome="loss")
+                   forced_outcome="loss")
     return DaySpec(
         day=day, trades=[t1, t2], discipline_score=3, label="tilt", mood="bad",
         journaled=True,
@@ -302,10 +299,10 @@ def _chase_day(rng, day, balance) -> DaySpec:
     """Clean A+ winner, then a no-setup re-entry minutes later that gives back."""
     inst = _pick_instrument(rng)
     t1 = _build_trade(rng, day=day, balance=balance, setup=SETUP_LONDON_BREAKOUT,
-                      plan_followed=True, forced_outcome="win", instrument=inst)
+                      forced_outcome="win", instrument=inst)
     t2 = _re_enter(rng, t1, day, balance, minutes_after=rng.randint(3, 8),
                    lots_mult=rng.uniform(0.8, 1.2), setup=SETUP_NO_SETUP,
-                   plan_followed=False, forced_outcome="loss")
+                   forced_outcome="loss")
     return DaySpec(
         day=day, trades=[t1, t2], discipline_score=6, label="chase", mood="neutral",
         journaled=True,
@@ -324,7 +321,6 @@ def _model_day(rng, day, balance) -> DaySpec:
     for _ in range(n):
         trades.append(_build_trade(
             rng, day=day, balance=balance, setup=rng.choice(GOOD_SETUPS),
-            plan_followed=True,
             forced_outcome="win" if rng.random() < 0.6 else "loss",
         ))
     trades.sort(key=lambda t: t.open_time)
@@ -346,7 +342,6 @@ def _overtrade_day(rng, day, balance) -> DaySpec:
         trades.append(_build_trade(
             rng, day=day, balance=balance,
             setup=rng.choice(GOOD_SETUPS + [SETUP_NO_SETUP]),
-            plan_followed=rng.random() < 0.5,
             risk_pct=rng.uniform(0.003, 0.006),  # smaller size, choppy
         ))
     trades.sort(key=lambda t: t.open_time)
@@ -357,7 +352,7 @@ def _overtrade_day(rng, day, balance) -> DaySpec:
 def _clean_day(rng, day, balance, win_prob=0.50) -> DaySpec:
     """A single disciplined trade."""
     t = _build_trade(rng, day=day, balance=balance, setup=rng.choice(GOOD_SETUPS),
-                     plan_followed=True, win_prob=win_prob)
+                     win_prob=win_prob)
     return DaySpec(day=day, trades=[t], discipline_score=rng.randint(6, 8),
                    label="clean")
 
@@ -376,7 +371,7 @@ def _scaled_cluster(rng, day, balance, *, instrument, direction, setup,
     exit_anchor_min = rng.randint(25, 120)  # minutes after the first entry
     for k in range(n):
         t = _build_trade(
-            rng, day=day, balance=balance, setup=setup, plan_followed=True,
+            rng, day=day, balance=balance, setup=setup,
             forced_outcome=outcome, instrument=instrument,
             risk_pct=rng.uniform(0.003, 0.006),  # each tranche risks less
         )
@@ -443,10 +438,10 @@ def _normal_day(rng, day, balance, win_prob=0.50) -> DaySpec:
         trades.append(_build_trade(
             rng, day=day, balance=balance,
             setup=rng.choice(GOOD_SETUPS) if plan else SETUP_NO_SETUP,
-            plan_followed=plan, win_prob=win_prob,
+            win_prob=win_prob,
         ))
     trades.sort(key=lambda t: t.open_time)
-    disc = 7 if all(t.plan_followed for t in trades) else 6
+    disc = 7 if all(t.setup != SETUP_NO_SETUP for t in trades) else 6
     return DaySpec(day=day, trades=trades, discipline_score=disc, label="normal")
 
 

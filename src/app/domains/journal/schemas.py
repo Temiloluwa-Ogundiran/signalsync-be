@@ -56,6 +56,8 @@ class JournalTradeResponse(BaseModel):
         ),
     )
 
+    setup: Optional[str] = None
+
     trade_reviewed_at: Optional[datetime] = None
     rating: Optional[int] = None
     execution_quality: Optional[int] = None
@@ -181,6 +183,40 @@ class DayNoteResponse(BaseModel):
     trading_date: date
     note_html: Optional[str] = None
     note_updated_at: Optional[datetime] = None
+
+
+class TradeNoteUpdateRequest(BaseModel):
+    """Save payload for a single trade's free-text note (plain text)."""
+
+    note_html: Optional[str] = None
+
+
+class TradeNoteResponse(BaseModel):
+    """The note for one trade."""
+
+    trade_id: uuid.UUID
+    note_html: Optional[str] = None
+    note_updated_at: Optional[datetime] = None
+
+
+class TradeSetupUpdateRequest(BaseModel):
+    """Set (or clear) the playbook setup name on a trade."""
+
+    setup: Optional[str] = Field(default=None, max_length=64)
+
+
+class SetupResponse(BaseModel):
+    """A user-defined playbook setup (flat list, for the picker)."""
+
+    id: uuid.UUID
+    name: str
+    position: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class SetupCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
 
 
 class DailyJournalFeedItemResponse(BaseModel):

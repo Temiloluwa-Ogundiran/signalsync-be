@@ -15,6 +15,7 @@ from app.domains.journal.models import (
     JournalMessageType,
     JournalTemplate,
     JournalTemplateType,
+    Setup,
     Tag,
     TagGroup,
     TradeJournal,
@@ -937,3 +938,63 @@ def update_trade_tags(db: Session, trade_id: uuid.UUID, tag_ids: list[uuid.UUID]
     for tag_id in tag_ids:
         db.add(TradeTag(trade_id=trade_id, tag_id=tag_id))
     db.flush()
+
+
+# ---------------------------------------------------------------------------
+# Setups (flat, user-defined playbook names)
+# ---------------------------------------------------------------------------
+
+def list_setups(db: Session, user_id: uuid.UUID) -> list[Setup]:
+    stmt = (
+        select(Setup)
+        .where(Setup.user_id == user_id)
+        .order_by(Setup.position.asc(), Setup.created_at.asc())
+    )
+    return list(db.execute(stmt).scalars())
+
+
+def get_setup_by_name(db: Session, user_id: uuid.UUID, name: str) -> Setup | None:
+    stmt = select(Setup).where(and_(Setup.user_id == user_id, Setup.name == name))
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def get_setup_by_id(db: Session, setup_id: uuid.UUID) -> Setup | None:
+    return db.execute(select(Setup).where(Setup.id == setup_id)).scalar_one_or_none()
+
+
+def create_setup(db: Session, user_id: uuid.UUID, name: str) -> Setup:
+    pos = int(
+        db.execute(
+            select(func.coalesce(func.max(Setup.position), -1)).where(
+                Setup.user_id == user_id
+            )
+        ).scalar_one()
+    ) + 1
+    setup = Setup(user_id=user_id, name=name, position=pos)
+    db.add(setup)
+    db.flush()
+    return setup
+
+
+def delete_setup(db: Session, user_id: uuid.UUID, setup_id: uuid.UUID) -> bool:
+    stmt = select(Setup).where(and_(Setup.id == setup_id, Setup.user_id == user_id))
+    setup = db.execute(stmt).scalar_one_or_none()
+    if not setup:
+        return False
+    db.delete(setup)
+    db.flush()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Per-trade note + setup assignment
+# ---------------------------------------------------------------------------
+
+def get_trade_by_id(db: Session, trade_id: uuid.UUID) -> Trade | None:
+    return db.execute(select(Trade).where(Trade.id == trade_id)).scalar_one_or_none()
+
+
+def set_trade_setup(db: Session, trade: Trade, setup: str | None) -> Trade:
+    trade.setup = setup
+    db.flush()
+    return trade

@@ -33,6 +33,8 @@ from app.domains.journal.schemas import (
     JournalTradeListResponse,
     JournalTradeResponse,
     ReorderRequest,
+    SetupCreateRequest,
+    SetupResponse,
     TagCreateRequest,
     TagGroupCreateRequest,
     TagGroupResponse,
@@ -40,7 +42,10 @@ from app.domains.journal.schemas import (
     TagResponse,
     TagUpdateRequest,
     TradeAssessmentUpdateRequest,
+    TradeNoteResponse,
+    TradeNoteUpdateRequest,
     TradeRatingUpdateRequest,
+    TradeSetupUpdateRequest,
     TradeTagUpdateRequest,
 )
 from app.domains.users.models import User
@@ -724,3 +729,78 @@ def update_trade_assessment(
         setup_quality=payload.setup_quality,
         discipline_score=payload.discipline_score,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-trade note (plain text)
+# ---------------------------------------------------------------------------
+
+@tags_router.get("/journal/trades/{trade_id}/note", response_model=TradeNoteResponse)
+def get_trade_note(
+    trade_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TradeNoteResponse:
+    return TradeNoteResponse(
+        **journal_service.get_trade_note(db, user=current_user, trade_id=trade_id)
+    )
+
+
+@tags_router.put("/journal/trades/{trade_id}/note", response_model=TradeNoteResponse)
+def save_trade_note(
+    trade_id: uuid.UUID,
+    payload: TradeNoteUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TradeNoteResponse:
+    return TradeNoteResponse(
+        **journal_service.save_trade_note(
+            db, user=current_user, trade_id=trade_id, note_html=payload.note_html
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Setups (flat playbook names) + per-trade setup assignment
+# ---------------------------------------------------------------------------
+
+@tags_router.get("/journal/setups", response_model=list[SetupResponse])
+def list_setups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[SetupResponse]:
+    setups = journal_service.list_setups(db, user=current_user)
+    return [SetupResponse.model_validate(s) for s in setups]
+
+
+@tags_router.post("/journal/setups", response_model=SetupResponse, status_code=status.HTTP_201_CREATED)
+def create_setup(
+    payload: SetupCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SetupResponse:
+    setup = journal_service.create_setup(db, user=current_user, name=payload.name)
+    return SetupResponse.model_validate(setup)
+
+
+@tags_router.delete("/journal/setups/{setup_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_setup(
+    setup_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    journal_service.delete_setup(db, user=current_user, setup_id=setup_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@tags_router.put("/journal/trades/{trade_id}/setup")
+def update_trade_setup(
+    trade_id: uuid.UUID,
+    payload: TradeSetupUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    setup = journal_service.update_trade_setup(
+        db, user=current_user, trade_id=trade_id, setup=payload.setup
+    )
+    return {"setup": setup}
