@@ -12,6 +12,15 @@ from app.domains.accounts.models import (
     TradingPlatform,
     TradeDirection,
 )
+from app.domains.accounts.status import describe_account_sync_status
+
+
+class AccountSyncStatusResponse(BaseModel):
+    code: str
+    severity: Literal["success", "info", "pending", "warning", "error"]
+    headline: str
+    detail: str
+    action: Optional[str] = None
 
 
 class AccountConnectRequest(BaseModel):
@@ -64,6 +73,7 @@ class AccountResponse(BaseModel):
     sync_error_message: Optional[str]
     bootstrap_error_message: Optional[str]
     last_sync_attempted_at: Optional[datetime] = None
+    last_sync_outcome: Optional[str] = None
     next_sync_not_before: Optional[datetime] = None
     latest_balance: Optional[Decimal] = None
     latest_equity: Optional[Decimal] = None
@@ -76,6 +86,24 @@ class AccountResponse(BaseModel):
     def is_demo(self) -> bool:
         """True for the seeded demo account (drives the demo banner + label)."""
         return self.meta_account_id == "DEMO-SEED"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def sync_status(self) -> AccountSyncStatusResponse:
+        status = describe_account_sync_status(
+            connection_state=self.connection_state,
+            sync_provider=self.sync_provider,
+            last_sync_outcome=self.last_sync_outcome,
+            sync_error_message=self.sync_error_message,
+            bootstrap_error_message=self.bootstrap_error_message,
+        )
+        return AccountSyncStatusResponse(
+            code=status.code,
+            severity=status.severity,
+            headline=status.headline,
+            detail=status.detail,
+            action=status.action,
+        )
 
     model_config = {"from_attributes": True}
 

@@ -244,6 +244,7 @@ async def orchestrate_mt5_sync(
         db,
         account=account,
         synced_at=attempted_at,
+        outcome="success" if result.inserted_trades > 0 else "success_empty",
         next_sync_not_before=(
             attempted_at + timedelta(seconds=settings.MANUAL_SYNC_COOLDOWN_SECONDS)
             if trigger == "manual"

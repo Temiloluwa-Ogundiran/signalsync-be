@@ -51,6 +51,7 @@ def test_account_response_exposes_sync_state_fields() -> None:
         "sync_error_message": None,
         "bootstrap_error_message": None,
         "last_sync_attempted_at": datetime.now(timezone.utc),
+        "last_sync_outcome": "success",
         "next_sync_not_before": datetime.now(timezone.utc),
         "latest_balance": Decimal("10000.00"),
         "latest_equity": Decimal("10050.00"),
@@ -65,6 +66,110 @@ def test_account_response_exposes_sync_state_fields() -> None:
     assert response.next_sync_not_before == payload["next_sync_not_before"]
     assert response.latest_balance == Decimal("10000.00")
     assert response.latest_equity == Decimal("10050.00")
+    assert response.sync_status.code == "ready"
+    assert response.sync_status.severity == "success"
+    assert response.sync_status.headline == "Connected"
+    assert response.sync_status.detail == "Account is connected and ready."
+    assert response.sync_status.action is None
+
+
+def test_account_response_describes_empty_ready_account() -> None:
+    payload = {
+        "id": uuid.uuid4(),
+        "user_id": uuid.uuid4(),
+        "meta_account_id": "acct-empty",
+        "broker_name": "Broker",
+        "broker_login": "123456",
+        "broker_server": "Demo-Server",
+        "account_type": "live",
+        "platform": "MT5",
+        "currency": "USD",
+        "timezone": "UTC",
+        "broker_utc_offset": 0,
+        "display_name": "Empty",
+        "status": "synced",
+        "connection_state": "ready",
+        "is_data_ready_for_stats": True,
+        "last_synced_at": datetime.now(timezone.utc),
+        "last_bootstrap_synced_at": datetime.now(timezone.utc),
+        "sync_error_message": None,
+        "bootstrap_error_message": None,
+        "last_sync_attempted_at": datetime.now(timezone.utc),
+        "last_sync_outcome": "success_empty",
+        "next_sync_not_before": None,
+        "latest_balance": None,
+        "latest_equity": None,
+        "is_deleted": False,
+        "sync_provider": "headless_mt5",
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    response = AccountResponse.model_validate(payload)
+
+    assert response.sync_status.code == "ready_empty"
+    assert response.sync_status.severity == "info"
+    assert response.sync_status.headline == "Connected"
+    assert response.sync_status.detail == "No closed trades found yet."
+    assert response.sync_status.action == "Close a trade in MT5, then resync."
+
+
+def test_account_response_describes_lifecycle_attention_states() -> None:
+    base_payload = {
+        "id": uuid.uuid4(),
+        "user_id": uuid.uuid4(),
+        "meta_account_id": "acct-state",
+        "broker_name": "Broker",
+        "broker_login": "123456",
+        "broker_server": "Demo-Server",
+        "account_type": "live",
+        "platform": "MT5",
+        "currency": "USD",
+        "timezone": "UTC",
+        "broker_utc_offset": 0,
+        "display_name": "State",
+        "status": "pending_sync",
+        "connection_state": "pending_verification",
+        "is_data_ready_for_stats": False,
+        "last_synced_at": None,
+        "last_bootstrap_synced_at": None,
+        "sync_error_message": None,
+        "bootstrap_error_message": None,
+        "last_sync_attempted_at": None,
+        "last_sync_outcome": None,
+        "next_sync_not_before": None,
+        "latest_balance": None,
+        "latest_equity": None,
+        "is_deleted": False,
+        "sync_provider": "headless_mt5",
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    verifying = AccountResponse.model_validate(base_payload)
+    assert verifying.sync_status.code == "pending_verification"
+    assert verifying.sync_status.severity == "pending"
+
+    failed = AccountResponse.model_validate(
+        {
+            **base_payload,
+            "status": "error",
+            "connection_state": "verification_failed",
+            "sync_error_message": "MT5 authorization failed.",
+        }
+    )
+    assert failed.sync_status.code == "verification_failed"
+    assert failed.sync_status.severity == "error"
+    assert failed.sync_status.detail == "MT5 authorization failed."
+
+    warning = AccountResponse.model_validate(
+        {
+            **base_payload,
+            "connection_state": "bootstrap_failed",
+            "bootstrap_error_message": "History sync timed out.",
+        }
+    )
+    assert warning.sync_status.code == "bootstrap_failed"
+    assert warning.sync_status.severity == "warning"
+    assert warning.sync_status.detail == "History sync timed out."
 
 
 def test_touch_last_active_at_if_stale_returns_true_when_row_updated(

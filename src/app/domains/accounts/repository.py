@@ -244,11 +244,12 @@ def mark_sync_success(
     account: TradingAccount,
     synced_at: datetime,
     next_sync_not_before: Optional[datetime] = None,
+    outcome: str = "success",
 ) -> None:
     account.last_synced_at = synced_at
     account.last_sync_attempted_at = synced_at
     account.next_sync_not_before = next_sync_not_before
-    account.last_sync_outcome = "success"
+    account.last_sync_outcome = outcome
     account.consecutive_sync_failures = 0
     account.status = TradingAccountStatus.synced
     account.sync_error_message = None
@@ -333,10 +334,19 @@ def mark_account_bootstrapping(db: Session, account: TradingAccount) -> None:
 
 
 def mark_account_ready_for_stats(
-    db: Session, account: TradingAccount, synced_at: datetime
+    db: Session,
+    account: TradingAccount,
+    synced_at: datetime,
+    sync_outcome: str = "success",
 ) -> None:
     account.connection_state = TradingAccountConnectionState.ready
     account.is_data_ready_for_stats = True
+    account.last_synced_at = synced_at
+    account.last_sync_attempted_at = synced_at
+    account.last_sync_outcome = sync_outcome
+    account.consecutive_sync_failures = 0
+    account.next_sync_not_before = None
+    account.sync_error_message = None
     account.last_bootstrap_synced_at = synced_at
     account.bootstrap_error_message = None
     db.flush()

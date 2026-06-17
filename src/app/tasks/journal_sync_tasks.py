@@ -166,6 +166,7 @@ def bootstrap_account(self, account_id: str) -> dict:
                 db,
                 account,
                 synced_at=datetime.now(timezone.utc),
+                sync_outcome="success" if result.inserted_trades > 0 else "success_empty",
             )
             db.commit()
             if result.inserted_trades > 0:
