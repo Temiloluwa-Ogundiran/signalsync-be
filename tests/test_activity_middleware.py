@@ -6,8 +6,6 @@ from datetime import datetime, timezone
 
 # Satisfy sqlalchemy mapper dependencies in tests
 import app.domains.journal.models  # noqa: F401
-import app.domains.streams.models  # noqa: F401
-import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
 from app.shared.activity import _should_touch, AuthActivityMiddleware

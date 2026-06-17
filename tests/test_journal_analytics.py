@@ -14,8 +14,6 @@ from zoneinfo import ZoneInfo
 
 # SQLAlchemy mapper dependencies — must be imported before app service modules
 import app.domains.journal.models   # noqa: F401
-import app.domains.streams.models   # noqa: F401
-import app.domains.posts.models     # noqa: F401
 import app.domains.auth.models      # noqa: F401
 
 from app.domains.journal.service._analytics import (

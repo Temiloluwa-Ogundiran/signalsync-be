@@ -6,8 +6,6 @@ import openpyxl
 
 # Import domain models to satisfy SQLAlchemy mapper dependencies in tests
 import app.domains.journal.models  # noqa: F401
-import app.domains.streams.models  # noqa: F401
-import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
 from app.domains.csv_import.parsers.mt5_report import MT5ReportParser

@@ -10,8 +10,6 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key")
 
 import app.domains.auth.models  # noqa: F401
 import app.domains.journal.models  # noqa: F401
-import app.domains.posts.models  # noqa: F401
-import app.domains.streams.models  # noqa: F401
 
 from app.core.security import get_password_hash, hash_token
 from app.domains.users import service as user_service

@@ -90,22 +90,7 @@ class User(Base):
     )
 
     # Relationships
-    streams: Mapped[List["Stream"]] = relationship(  # noqa: F821
-        back_populates="owner",
-        cascade="all, delete-orphan",
-    )
-
-    posts: Mapped[List["Post"]] = relationship(  # noqa: F821
-        back_populates="author",
-        cascade="all, delete-orphan",
-    )
-
     tokens: Mapped[List["Token"]] = relationship(  # noqa: F821
-        back_populates="user",
-        cascade="all, delete-orphan",
-    )
-
-    stream_memberships: Mapped[List["StreamMember"]] = relationship(  # noqa: F821
         back_populates="user",
         cascade="all, delete-orphan",
     )

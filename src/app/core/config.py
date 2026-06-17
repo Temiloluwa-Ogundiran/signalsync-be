@@ -87,10 +87,7 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = "TradePartna"
 
     # S3 key prefixes per media kind (folders within the one bucket).
-    S3_PREFIX_STREAM_AVATARS: str = "stream-avatars"
-    S3_PREFIX_STREAM_BANNERS: str = "stream-banners"
     S3_PREFIX_USER_AVATARS: str = "user-avatars"
-    S3_PREFIX_POST_MEDIA: str = "post-media"
     S3_PREFIX_JOURNAL_VOICE: str = "journal-voice-notes"
     S3_PREFIX_JOURNAL_IMAGES: str = "journal-images"
     # How long generated presigned GET URLs remain valid (seconds).

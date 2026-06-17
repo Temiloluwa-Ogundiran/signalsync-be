@@ -7,8 +7,6 @@ from fastapi import HTTPException
 
 # Import domain models so SQLAlchemy mappers resolve when the app is imported.
 import app.domains.journal.models  # noqa: F401
-import app.domains.streams.models  # noqa: F401
-import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
 from app.shared.utils.uploads import read_upload_within_limit

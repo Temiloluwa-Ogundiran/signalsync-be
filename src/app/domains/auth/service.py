@@ -34,8 +34,6 @@ from app.domains.auth.schemas import (
     ResetPasswordResponse,
     VerifyEmailResponse,
 )
-from app.domains.streams.models import StreamPrivacy
-from app.domains.streams import repository as stream_repo
 from app.tasks.auth_tasks import send_verification_email_task, send_password_reset_email_task
 
 # Module-level dummy hash — ensures bcrypt always runs on login even for unknown
@@ -45,24 +43,6 @@ _DUMMY_HASH: str = get_password_hash(uuid.uuid4().hex)
 # Google's tokeninfo endpoint — verifies an ID token's signature, expiry, and
 # issuer server-side and returns its claims. Avoids adding a google-auth dep.
 _GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
-
-
-def _create_default_stream(db: Session, user) -> None:
-    """Create the user's default public stream. Shared by all sign-up paths."""
-    stream_repo.create(
-        db,
-        owner_id=user.id,
-        name=f"{user.display_name}'s Stream",
-        description=None,
-        privacy=StreamPrivacy.public,
-        forum_enabled=True,
-        tags=None,
-        price=None,
-        avatar_url=None,
-        banner_url=None,
-        require_join_approval=False,
-        is_default=True,
-    )
 
 
 def _seed_demo_data(db: Session, user) -> None:
@@ -94,9 +74,6 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
         hashed_password=get_password_hash(payload.password),
         display_name=payload.display_name,
     )
-
-    # ── create default stream ────────────────────────────────────────────────
-    _create_default_stream(db, user)
 
     # ── seed demo data so the app isn't empty on first login ─────────────────
     _seed_demo_data(db, user)
@@ -252,7 +229,6 @@ def google_auth(db: Session, id_token: str, response: Response) -> LoginResponse
         # Google has verified the email for us.
         user.is_email_verified = True
         db.flush()
-        _create_default_stream(db, user)
         _seed_demo_data(db, user)
         db.commit()
         db.refresh(user)

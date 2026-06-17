@@ -2,8 +2,6 @@
 # before Alembic autogenerate or engine.create_all() is called.
 
 from app.domains.users.models import User
-from app.domains.streams.models import Stream, StreamPrivacy, StreamMember, MemberStatus
-from app.domains.posts.models import Post, PostMedia, PostMediaType, PostType, PostUpvote
 from app.domains.auth.models import Token, TokenType
 from app.domains.accounts.models import (
     AccountSnapshot,
@@ -40,15 +38,6 @@ from app.domains.ai.models import (
 
 __all__ = [
     "User",
-    "Stream",
-    "StreamPrivacy",
-    "StreamMember",
-    "MemberStatus",
-    "Post",
-    "PostMedia",
-    "PostMediaType",
-    "PostType",
-    "PostUpvote",
     "Token",
     "TokenType",
     "TradingAccount",

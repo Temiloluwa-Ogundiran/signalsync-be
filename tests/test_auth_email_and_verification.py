@@ -11,8 +11,6 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key")
 
 import app.domains.auth.models  # noqa: F401
 import app.domains.journal.models  # noqa: F401
-import app.domains.posts.models  # noqa: F401
-import app.domains.streams.models  # noqa: F401
 
 from app.domains.auth import service as auth_service
 from app.domains.auth.schemas import (
@@ -76,7 +74,6 @@ def test_register_swallows_email_delivery_failure() -> None:
     with (
         patch("app.domains.auth.service.user_repo.get_by_email", return_value=None),
         patch("app.domains.auth.service.user_repo.create", return_value=user),
-        patch("app.domains.auth.service.stream_repo.create"),
         patch("app.domains.auth.service.token_repo.create"),
         patch(
             "app.domains.auth.service.send_verification_email_task.delay",

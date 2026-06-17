@@ -3,13 +3,13 @@ Object storage — AWS S3 (direct, via boto3). Private bucket; reads are served
 via short-lived presigned GET URLs. Keys are `{prefix}/{uuid}.{ext}`.
 """
 
+import enum
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, UploadFile, status
 
 from app.core.s3 import delete_object, presigned_get_url, put_object, s3_enabled
-from app.domains.posts.models import PostMediaType
 from app.shared.utils.uploads import validate_audio_magic_bytes, validate_image_magic_bytes
 
 _MAGIC_PEEK_BYTES = 16
@@ -23,16 +23,23 @@ _MIME_TO_EXT = {
     "image/gif": "gif",
 }
 
-# Media MIME → (extension, PostMediaType)
-_MEDIA_MIME_MAP: dict[str, tuple[str, PostMediaType]] = {
-    "image/jpeg": ("jpg", PostMediaType.image),
-    "image/png": ("png", PostMediaType.image),
-    "image/webp": ("webp", PostMediaType.image),
-    "image/gif": ("gif", PostMediaType.image),
-    "video/mp4": ("mp4", PostMediaType.video),
-    "video/quicktime": ("mov", PostMediaType.video),
-    "video/webm": ("webm", PostMediaType.video),
-    "application/pdf": ("pdf", PostMediaType.document),
+
+class MediaType(str, enum.Enum):
+    image = "image"
+    video = "video"
+    document = "document"
+
+
+# Media MIME → (extension, MediaType)
+_MEDIA_MIME_MAP: dict[str, tuple[str, MediaType]] = {
+    "image/jpeg": ("jpg", MediaType.image),
+    "image/png": ("png", MediaType.image),
+    "image/webp": ("webp", MediaType.image),
+    "image/gif": ("gif", MediaType.image),
+    "video/mp4": ("mp4", MediaType.video),
+    "video/quicktime": ("mov", MediaType.video),
+    "video/webm": ("webm", MediaType.video),
+    "application/pdf": ("pdf", MediaType.document),
 }
 
 JOURNAL_VOICE_ALLOWED_MIME_TYPES = frozenset(
@@ -89,11 +96,11 @@ def upload_image(file: UploadFile, *, prefix: str) -> str:
     return key
 
 
-def upload_media(file: UploadFile, *, prefix: str) -> tuple[str, PostMediaType, str]:
+def upload_media(file: UploadFile, *, prefix: str) -> tuple[str, MediaType, str]:
     """
-    Upload post or journal attachment media to S3.
+    Upload journal attachment media to S3.
 
-    Returns (storage_path, PostMediaType, mime_type) where storage_path is the
+    Returns (storage_path, MediaType, mime_type) where storage_path is the
     S3 object key.
     """
     _require_storage()
@@ -106,7 +113,7 @@ def upload_media(file: UploadFile, *, prefix: str) -> tuple[str, PostMediaType, 
         )
 
     ext, media_type = _MEDIA_MIME_MAP[content_type]
-    if media_type == PostMediaType.image:
+    if media_type == MediaType.image:
         file.file.seek(0)
         header = file.file.read(_MAGIC_PEEK_BYTES)
         validate_image_magic_bytes(header)

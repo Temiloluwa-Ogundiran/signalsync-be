@@ -10,8 +10,6 @@ from starlette.responses import Response
 
 # Import domain models to satisfy SQLAlchemy mapper dependencies in tests
 import app.domains.journal.models  # noqa: F401
-import app.domains.streams.models  # noqa: F401
-import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts import repository as account_repo

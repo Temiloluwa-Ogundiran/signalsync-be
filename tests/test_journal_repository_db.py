@@ -7,8 +7,6 @@ from app.core.database import engine
 
 # Import domain models to satisfy SQLAlchemy mapper dependencies in tests
 import app.domains.journal.models  # noqa: F401
-import app.domains.streams.models  # noqa: F401
-import app.domains.posts.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 import app.domains.users.models  # noqa: F401
 
