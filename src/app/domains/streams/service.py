@@ -293,7 +293,7 @@ def get_stream_members(
         items=[
             MemberListResponse(
                 user_id=m.user_id,
-                username=m.user.username,
+                display_name=m.user.display_name,
                 avatar_url=m.user.avatar_url,
                 status=m.status if is_owner else None,
                 joined_at=m.joined_at if is_owner else None,

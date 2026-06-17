@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from app.domains.accounts.models import (
     TradingAccountConnectionState,
@@ -70,6 +70,12 @@ class AccountResponse(BaseModel):
     is_deleted: bool
     sync_provider: str
     created_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_demo(self) -> bool:
+        """True for the seeded demo account (drives the demo banner + label)."""
+        return self.meta_account_id == "DEMO-SEED"
 
     model_config = {"from_attributes": True}
 

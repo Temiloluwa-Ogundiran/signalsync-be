@@ -54,7 +54,7 @@ class TestComputeSummary:
         r = _compute_summary(trades=[], starting_balance=Decimal("10000"))
         assert r.total_trades == 0
         assert r.win_rate == 0.0
-        assert r.profit_factor == float("inf")
+        assert r.profit_factor is None  # no losses → ∞, surfaced as None (JSON-safe)
         assert r.avg_win == 0.0
         assert r.avg_loss == 0.0
         assert r.total_net_pnl == 0.0
@@ -67,7 +67,7 @@ class TestComputeSummary:
         trades = [_trade(+5, _dt(2025, 1, 1)), _trade(+10, _dt(2025, 1, 2))]
         r = _compute_summary(trades=trades, starting_balance=Decimal("100"))
         assert r.win_rate == 100.0
-        assert r.profit_factor == float("inf")
+        assert r.profit_factor is None  # no losses → ∞, surfaced as None (JSON-safe)
         assert r.avg_win == pytest.approx(7.5)
         assert r.avg_loss == 0.0
         assert r.total_net_pnl == pytest.approx(15.0)

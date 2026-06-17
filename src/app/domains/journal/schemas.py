@@ -239,7 +239,7 @@ class AnalyticsBestWorstDay(BaseModel):
 class AnalyticsSummaryResponse(BaseModel):
     total_trades: int
     win_rate: float
-    profit_factor: float
+    profit_factor: float | None  # gross win / |gross loss|; None when no losses (∞)
     avg_win: float
     avg_loss: float
     avg_trade_duration_seconds: float

@@ -19,21 +19,14 @@ def get_by_email(db: Session, email: str) -> Optional[User]:
     return db.execute(stmt).scalar_one_or_none()
 
 
-def get_by_username(db: Session, username: str) -> Optional[User]:
-    stmt = select(User).where(User.username == username, User.is_deleted.is_(False))
-    return db.execute(stmt).scalar_one_or_none()
-
-
 def create(
     db: Session,
     *,
-    username: str,
     email: str,
     hashed_password: str,
     display_name: Optional[str] = None,
 ) -> User:
     user = User(
-        username=username,
         email=email.lower(),
         hashed_password=hashed_password,
         display_name=display_name,

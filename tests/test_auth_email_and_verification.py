@@ -65,14 +65,12 @@ def test_register_swallows_email_delivery_failure() -> None:
     user = MagicMock()
     user.id = uuid.uuid4()
     user.email = "user@example.com"
-    user.username = "trader"
     user.display_name = "Trader"
     user.avatar_url = None
     user.is_email_verified = False
     user.created_at = datetime.now(timezone.utc)
     with (
         patch("app.domains.auth.service.user_repo.get_by_email", return_value=None),
-        patch("app.domains.auth.service.user_repo.get_by_username", return_value=None),
         patch("app.domains.auth.service.user_repo.create", return_value=user),
         patch("app.domains.auth.service.stream_repo.create"),
         patch("app.domains.auth.service.token_repo.create"),
@@ -85,7 +83,6 @@ def test_register_swallows_email_delivery_failure() -> None:
             db,
             RegisterRequest(
                 email="user@example.com",
-                username="trader",
                 display_name="Trader",
                 password="Password123",
             ),
@@ -141,7 +138,6 @@ def test_register_request_rejects_weak_password() -> None:
     with pytest.raises(ValidationError) as exc:
         RegisterRequest(
             email="user@example.com",
-            username="trader",
             display_name="Trader",
             password="password",
         )
@@ -152,7 +148,6 @@ def test_register_request_rejects_weak_password() -> None:
 def test_register_request_accepts_strong_password() -> None:
     payload = RegisterRequest(
         email="user@example.com",
-        username="trader",
         display_name="Trader",
         password="Password123",
     )

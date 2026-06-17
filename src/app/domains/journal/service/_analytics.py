@@ -68,7 +68,10 @@ def _compute_summary(*, trades, starting_balance: Decimal) -> AnalyticsSummaryRe
     gross_loss_abs = abs(gross_loss_negative)
 
     win_rate = (wins / total_trades) * 100 if total_trades else 0.0
-    profit_factor = float(gross_win / gross_loss_abs) if gross_loss_abs else float("inf")
+    # Trade-level PF: gross win / |gross loss| over individual closed trades.
+    # None when there are no losing trades — the client renders that as "∞".
+    # (Returning float("inf") here is not JSON-safe and breaks the response.)
+    profit_factor = float(gross_win / gross_loss_abs) if gross_loss_abs else None
     avg_win = float(gross_win / wins) if wins else 0.0
     avg_loss = float(gross_loss_negative / losses) if losses else 0.0
     avg_duration_seconds = (

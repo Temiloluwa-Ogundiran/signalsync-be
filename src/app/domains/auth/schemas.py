@@ -17,7 +17,6 @@ PASSWORD_NUMBER_PATTERN = re.compile(r"\d")
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    username: str = Field(min_length=3, max_length=50)
     display_name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=8)
 
@@ -31,6 +30,11 @@ class RegisterRequest(BaseModel):
         ):
             raise ValueError(PASSWORD_POLICY_MESSAGE)
         return value
+
+
+class GoogleAuthRequest(BaseModel):
+    # The Google ID token (JWT) obtained client-side via Google Identity Services.
+    id_token: str = Field(min_length=1)
 
 
 class ResendVerificationRequest(BaseModel):

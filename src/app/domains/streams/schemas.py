@@ -98,12 +98,12 @@ class ApproveRejectRequest(BaseModel):
 class MemberListResponse(BaseModel):
     """Response shape for GET /streams/{id}/members.
 
-    All callers receive: user_id, username, avatar_url.
+    All callers receive: user_id, display_name, avatar_url.
     Stream owners additionally receive: status, joined_at.
     """
 
     user_id: uuid.UUID
-    username: str
+    display_name: Optional[str] = None
     avatar_url: Optional[str] = None
     # Owner-only fields — None for regular callers
     status: Optional[MemberStatus] = None

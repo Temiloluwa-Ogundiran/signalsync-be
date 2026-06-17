@@ -200,6 +200,14 @@ async def connect_account(
             snapshots=[_verification_snapshot(verification_result)],
         )
         account_repo.mark_account_bootstrapping(db, account)
+        # First real account replaces the demo data (cascade-deletes it). Isolated
+        # so a demo-clear hiccup never blocks connecting a real account.
+        try:
+            from app.domains.demo.service import clear_demo_account
+
+            clear_demo_account(db, current_user.id)
+        except Exception:
+            logger.exception("Failed to clear demo data on connect for user %s", current_user.id)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
