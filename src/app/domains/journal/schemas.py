@@ -374,7 +374,6 @@ class TagResponse(BaseModel):
     id: uuid.UUID
     group_id: uuid.UUID
     name: str
-    color: Optional[str] = None
     position: int = 0
     is_system: bool = False
 
@@ -384,6 +383,7 @@ class TagResponse(BaseModel):
 class TagGroupResponse(BaseModel):
     id: uuid.UUID
     name: str
+    color: Optional[str] = None
     position: int = 0
     is_system: bool = False
     tags: list[TagResponse] = []
@@ -393,20 +393,20 @@ class TagGroupResponse(BaseModel):
 
 class TagGroupCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
+    color: Optional[str] = Field(default=None, max_length=7, pattern="^#([A-Fa-f0-9]{6})$")
 
 
 class TagGroupUpdateRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    color: Optional[str] = Field(default=None, max_length=7, pattern="^#([A-Fa-f0-9]{6})$")
 
 
 class TagCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    color: Optional[str] = Field(default=None, max_length=7, pattern="^#([A-Fa-f0-9]{6})$")
 
 
 class TagUpdateRequest(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    color: Optional[str] = Field(default=None, max_length=7, pattern="^#([A-Fa-f0-9]{6})$")
+    name: str = Field(..., min_length=1, max_length=100)
 
 
 class ReorderRequest(BaseModel):

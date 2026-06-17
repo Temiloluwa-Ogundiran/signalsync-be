@@ -18,30 +18,39 @@ def list_user_tags_config(db: Session, user: User) -> list:
     return journal_repo.list_groups_with_tags(db, user_id=user.id)
 
 
-def create_tag_group(db: Session, user: User, name: str):
+def create_tag_group(db: Session, user: User, name: str, color: Optional[str] = None):
     name = name.strip()
     if not name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name cannot be empty.")
     if len(name) > 100:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name cannot exceed 100 characters.")
-    group = journal_repo.create_group(db, user_id=user.id, name=name)
+    color = _normalize_color(color)
+    group = journal_repo.create_group(db, user_id=user.id, name=name, color=color)
     db.commit()
     db.refresh(group)
     return group
 
 
-def update_tag_group(db: Session, user: User, group_id: uuid.UUID, name: str):
+def update_tag_group(
+    db: Session,
+    user: User,
+    group_id: uuid.UUID,
+    name: Optional[str] = None,
+    color: Optional[str] = None,
+):
     group = journal_repo.get_group_by_id(db, group_id)
     if not group:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found.")
     if group.is_system or group.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this group.")
-    name = name.strip()
-    if not name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name cannot be empty.")
-    if len(name) > 100:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name cannot exceed 100 characters.")
-    group = journal_repo.update_group(db, group, name=name)
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name cannot be empty.")
+        if len(name) > 100:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Group name cannot exceed 100 characters.")
+    color = _normalize_color(color)
+    group = journal_repo.update_group(db, group, name=name, color=color)
     db.commit()
     db.refresh(group)
     return group
@@ -71,7 +80,6 @@ def create_tag(
     user: User,
     group_id: uuid.UUID,
     name: str,
-    color: Optional[str] = None,
 ):
     group = journal_repo.get_group_by_id(db, group_id)
     if not group:
@@ -83,8 +91,7 @@ def create_tag(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag name cannot be empty.")
     if len(name) > 100:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag name cannot exceed 100 characters.")
-    color = _normalize_color(color)
-    tag = journal_repo.create_tag(db, user_id=user.id, group_id=group_id, name=name, color=color)
+    tag = journal_repo.create_tag(db, user_id=user.id, group_id=group_id, name=name)
     db.commit()
     db.refresh(tag)
     return tag
@@ -94,22 +101,19 @@ def update_tag(
     db: Session,
     user: User,
     tag_id: uuid.UUID,
-    name: Optional[str] = None,
-    color: Optional[str] = None,
+    name: str,
 ):
     tag = journal_repo.get_tag_by_id(db, tag_id)
     if not tag:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tag not found.")
     if tag.user_id is None or tag.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this tag.")
-    if name is not None:
-        name = name.strip()
-        if not name:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag name cannot be empty.")
-        if len(name) > 100:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag name cannot exceed 100 characters.")
-    color = _normalize_color(color)
-    tag = journal_repo.update_tag(db, tag, name=name, color=color)
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag name cannot be empty.")
+    if len(name) > 100:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag name cannot exceed 100 characters.")
+    tag = journal_repo.update_tag(db, tag, name=name)
     db.commit()
     db.refresh(tag)
     return tag

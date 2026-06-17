@@ -735,47 +735,15 @@ def list_trade_setups(
 # Tag repository (merged from repository_tags.py)
 # ---------------------------------------------------------------------------
 
+# Each entry: (group_name, group_color, [tag_name, ...]). Color lives on the
+# group; every tag in the group inherits it for display.
 _SYSTEM_TAG_DEFAULTS = [
-    ("Timeframe", [
-        ("Daily", "#3b82f6"),
-        ("4H", "#6366f1"),
-        ("1H", "#8b5cf6"),
-        ("30 min", "#a855f7"),
-        ("15 min", "#d946ef"),
-    ]),
-    ("Confluence", [
-        ("Trend", "#10b981"),
-        ("Support / Resistance", "#14b8a6"),
-        ("Liquidity", "#0ea5e9"),
-        ("Volume", "#f59e0b"),
-        ("News", "#ef4444"),
-    ]),
-    ("Pattern", [
-        ("Head and Shoulders", "#3b82f6"),
-        ("Flag", "#10b981"),
-        ("Wedge", "#8b5cf6"),
-        ("Range", "#f59e0b"),
-        ("Triangle", "#ec4899"),
-        ("No Pattern", "#64748b"),
-    ]),
-    ("Preparation", [
-        ("Well Prepared", "#10b981"),
-        ("Feel Rushed", "#f59e0b"),
-        ("No Preparation", "#ef4444"),
-    ]),
-    ("Mental", [
-        ("Good Mood", "#10b981"),
-        ("Stressed", "#ef4444"),
-        ("Slept Bad", "#f59e0b"),
-        ("Hectic", "#f97316"),
-        ("Did Exercise", "#22c55e"),
-    ]),
-    ("Indicator", [
-        ("RSI OB", "#ef4444"),
-        ("RSI OS", "#10b981"),
-        ("Above 50 EMA", "#3b82f6"),
-        ("Below 50 EMA", "#8b5cf6"),
-    ]),
+    ("Timeframe", "#3b82f6", ["Daily", "4H", "1H", "30 min", "15 min"]),
+    ("Confluence", "#10b981", ["Trend", "Support / Resistance", "Liquidity", "Volume", "News"]),
+    ("Pattern", "#8b5cf6", ["Head and Shoulders", "Flag", "Wedge", "Range", "Triangle", "No Pattern"]),
+    ("Preparation", "#f59e0b", ["Well Prepared", "Feel Rushed", "No Preparation"]),
+    ("Mental", "#ec4899", ["Good Mood", "Stressed", "Slept Bad", "Hectic", "Did Exercise"]),
+    ("Indicator", "#0ea5e9", ["RSI OB", "RSI OS", "Above 50 EMA", "Below 50 EMA"]),
 ]
 
 
@@ -784,18 +752,24 @@ def seed_system_tags(db: Session) -> tuple[int, int]:
     groups_created = 0
     tags_created = 0
 
-    for group_pos, (group_name, tags) in enumerate(_SYSTEM_TAG_DEFAULTS):
+    for group_pos, (group_name, group_color, tags) in enumerate(_SYSTEM_TAG_DEFAULTS):
         stmt = select(TagGroup).where(
             and_(TagGroup.name == group_name, TagGroup.is_system.is_(True))
         )
         group = db.execute(stmt).scalar_one_or_none()
         if not group:
-            group = TagGroup(name=group_name, is_system=True, user_id=None, position=group_pos)
+            group = TagGroup(
+                name=group_name,
+                color=group_color,
+                is_system=True,
+                user_id=None,
+                position=group_pos,
+            )
             db.add(group)
             db.flush()
             groups_created += 1
 
-        for tag_pos, (tag_name, tag_color) in enumerate(tags):
+        for tag_pos, tag_name in enumerate(tags):
             tag_stmt = select(Tag).where(
                 and_(
                     Tag.group_id == group.id,
@@ -807,7 +781,6 @@ def seed_system_tags(db: Session) -> tuple[int, int]:
                 db.add(Tag(
                     group_id=group.id,
                     name=tag_name,
-                    color=tag_color,
                     user_id=None,
                     is_system=True,
                     position=tag_pos,
@@ -849,10 +822,11 @@ def _next_group_position(db: Session, user_id: uuid.UUID) -> int:
     return int(db.execute(stmt).scalar_one()) + 1
 
 
-def create_group(db: Session, user_id: uuid.UUID, name: str) -> TagGroup:
+def create_group(db: Session, user_id: uuid.UUID, name: str, color: str | None = None) -> TagGroup:
     group = TagGroup(
         user_id=user_id,
         name=name,
+        color=color,
         is_system=False,
         position=_next_group_position(db, user_id),
     )
@@ -861,8 +835,16 @@ def create_group(db: Session, user_id: uuid.UUID, name: str) -> TagGroup:
     return group
 
 
-def update_group(db: Session, group: TagGroup, name: str) -> TagGroup:
-    group.name = name
+def update_group(
+    db: Session,
+    group: TagGroup,
+    name: str | None = None,
+    color: str | None = None,
+) -> TagGroup:
+    if name is not None:
+        group.name = name
+    if color is not None:
+        group.color = color
     db.flush()
     return group
 
@@ -901,13 +883,11 @@ def create_tag(
     user_id: uuid.UUID,
     group_id: uuid.UUID,
     name: str,
-    color: str | None = None,
 ) -> Tag:
     tag = Tag(
         group_id=group_id,
         user_id=user_id,
         name=name,
-        color=color,
         is_system=False,
         position=_next_tag_position(db, group_id),
     )
@@ -916,16 +896,8 @@ def create_tag(
     return tag
 
 
-def update_tag(
-    db: Session,
-    tag: Tag,
-    name: str | None = None,
-    color: str | None = None,
-) -> Tag:
-    if name is not None:
-        tag.name = name
-    if color is not None:
-        tag.color = color
+def update_tag(db: Session, tag: Tag, name: str) -> Tag:
+    tag.name = name
     db.flush()
     return tag
 

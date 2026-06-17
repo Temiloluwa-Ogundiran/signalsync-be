@@ -284,6 +284,7 @@ class TagGroup(Base):
         index=True,
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)  # HEX code; all tags in the group inherit it
     position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -327,7 +328,6 @@ class Tag(Base):
         index=True,
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    color: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)  # HEX code
     position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

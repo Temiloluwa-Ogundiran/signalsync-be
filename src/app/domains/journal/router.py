@@ -592,7 +592,7 @@ def create_tag_group(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TagGroupResponse:
-    group = journal_service.create_tag_group(db, user=current_user, name=payload.name)
+    group = journal_service.create_tag_group(db, user=current_user, name=payload.name, color=payload.color)
     return TagGroupResponse.model_validate(group)
 
 
@@ -613,7 +613,7 @@ def update_tag_group(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> TagGroupResponse:
-    group = journal_service.update_tag_group(db, user=current_user, group_id=group_id, name=payload.name)
+    group = journal_service.update_tag_group(db, user=current_user, group_id=group_id, name=payload.name, color=payload.color)
     return TagGroupResponse.model_validate(group)
 
 
@@ -639,7 +639,7 @@ def create_tag(
     current_user: User = Depends(get_current_user),
 ) -> TagResponse:
     tag = journal_service.create_tag(
-        db, user=current_user, group_id=group_id, name=payload.name, color=payload.color,
+        db, user=current_user, group_id=group_id, name=payload.name,
     )
     return TagResponse.model_validate(tag)
 
@@ -662,7 +662,7 @@ def update_tag(
     current_user: User = Depends(get_current_user),
 ) -> TagResponse:
     tag = journal_service.update_tag(
-        db, user=current_user, tag_id=tag_id, name=payload.name, color=payload.color,
+        db, user=current_user, tag_id=tag_id, name=payload.name,
     )
     return TagResponse.model_validate(tag)
 
