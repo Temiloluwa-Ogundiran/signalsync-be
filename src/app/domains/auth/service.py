@@ -512,6 +512,21 @@ def refresh_access_token(
     )
 
 
+def clear_refresh_cookie(response: Response) -> None:
+    """Clear the refresh-token cookie (logout, account deletion, …).
+
+    Mirrors the attributes used when the cookie is set so the browser actually
+    drops it.
+    """
+    response.delete_cookie(
+        key="refresh_token",
+        httponly=True,
+        secure=settings.IS_PRODUCTION,
+        samesite="lax",
+        path="/",
+    )
+
+
 def logout(db: Session, raw_refresh: str | None, response: Response) -> dict:
     """
     Revoke the refresh token (if present) and clear the cookie.
@@ -528,13 +543,7 @@ def logout(db: Session, raw_refresh: str | None, response: Response) -> dict:
             token_repo.revoke(db, token_record)
             db.commit()
 
-    response.delete_cookie(
-        key="refresh_token",
-        httponly=True,
-        secure=settings.IS_PRODUCTION,
-        samesite="lax",
-        path="/",
-    )
+    clear_refresh_cookie(response)
 
     return {"message": "Logged out successfully."}
 

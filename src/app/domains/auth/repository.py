@@ -84,3 +84,44 @@ def get_recently_revoked(
         Token.revoked_at >= datetime.now(timezone.utc) - timedelta(seconds=grace_seconds),
     )
     return db.execute(stmt).scalar_one_or_none()
+
+
+def list_active_by_user_and_type(
+    db: Session,
+    *,
+    user_id: UUID,
+    token_type: TokenType,
+) -> list[Token]:
+    """All non-revoked, non-expired tokens of a type, newest first.
+
+    Used to surface a user's active refresh-token sessions on the Security page.
+    """
+    stmt = (
+        select(Token)
+        .where(
+            Token.user_id == user_id,
+            Token.type == token_type,
+            Token.is_revoked.is_(False),
+            Token.expires_at > datetime.now(timezone.utc),
+        )
+        .order_by(Token.created_at.desc())
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_active_by_id_for_user(
+    db: Session,
+    *,
+    token_id: UUID,
+    user_id: UUID,
+    token_type: TokenType,
+) -> Optional[Token]:
+    """Fetch one active token by id, scoped to its owner (revoke authorization)."""
+    stmt = select(Token).where(
+        Token.id == token_id,
+        Token.user_id == user_id,
+        Token.type == token_type,
+        Token.is_revoked.is_(False),
+        Token.expires_at > datetime.now(timezone.utc),
+    )
+    return db.execute(stmt).scalar_one_or_none()

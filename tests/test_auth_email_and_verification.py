@@ -66,6 +66,7 @@ def test_register_swallows_email_delivery_failure() -> None:
     user.id = uuid.uuid4()
     user.email = "user@example.com"
     user.display_name = "Trader"
+    user.bio = None
     user.avatar_url = None
     user.is_email_verified = False
     user.created_at = datetime.now(timezone.utc)
