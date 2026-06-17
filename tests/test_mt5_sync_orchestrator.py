@@ -563,6 +563,38 @@ async def test_orchestrate_mt5_sync_sets_manual_cooldown_after_success(
     )
 
 
+@pytest.mark.anyio
+@patch("app.domains.accounts.sync_orchestrator.account_repo")
+@patch("app.domains.accounts.sync_orchestrator.sync_account_deals_mt5")
+async def test_manual_sync_with_zero_new_inserts_is_success_not_empty(
+    mock_sync_account_deals_mt5,
+    mock_account_repo,
+    db_session: MagicMock,
+) -> None:
+    from app.domains.accounts.sync_orchestrator import orchestrate_mt5_sync
+
+    mock_account_repo.is_account_sync_locked.return_value = False
+
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    account.user_id = uuid.uuid4()
+    account.next_sync_not_before = None
+    mock_account_repo.list_recent_sync_attempts_for_user.return_value = []
+    mock_sync_account_deals_mt5.return_value = SimpleNamespace(
+        inserted_trades=0,
+        touched_trading_dates=0,
+    )
+
+    result = await orchestrate_mt5_sync(
+        db_session,
+        account=account,
+        trigger="manual",
+    )
+
+    assert result.outcome == "success"
+    assert mock_account_repo.mark_sync_success.call_args.kwargs["outcome"] == "success"
+
+
 @patch("app.domains.accounts.service.account_repo")
 def test_list_accounts_includes_latest_snapshot_balance(
     mock_account_repo,
