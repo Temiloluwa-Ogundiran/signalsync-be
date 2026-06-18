@@ -14,6 +14,7 @@ from app.domains.accounts.models import (
     TradingAccountType,
     TradingPlatform,
 )
+from app.domains.accounts.mt5_server_catalog import Mt5ServerCatalog
 from app.domains.journal.models import (
     DailyJournal,
     JournalAttachment,
@@ -51,6 +52,7 @@ __all__ = [
     "TradeDirection",
     "TradeSession",
     "AccountSnapshot",
+    "Mt5ServerCatalog",
     "DailyJournal",
     "TradeJournal",
     "JournalMessage",
