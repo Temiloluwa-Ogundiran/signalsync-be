@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, cast, func, select
+from sqlalchemy import Date, cast, func, or_, select
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
@@ -21,11 +21,58 @@ from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingAccountStatus,
 )
+from app.domains.accounts.mt5_server_catalog import (
+    Mt5ServerCatalog,
+    normalize_mt5_server_key,
+)
 from app.shared.utils.timezone import classify_session
 
 # ---------------------------------------------------------------------------
 # TradingAccount
 # ---------------------------------------------------------------------------
+
+def search_mt5_servers(db: Session, *, query: str, limit: int = 25) -> list[Mt5ServerCatalog]:
+    query = query.strip()
+    normalized_query = normalize_mt5_server_key(query)
+
+    stmt = select(Mt5ServerCatalog).where(Mt5ServerCatalog.active.is_(True))
+    if query:
+        like_query = f"%{query}%"
+        filters = [Mt5ServerCatalog.canonical_server_name.ilike(like_query)]
+        if normalized_query:
+            filters.append(Mt5ServerCatalog.normalized_server_key.ilike(f"%{normalized_query}%"))
+        stmt = stmt.where(or_(*filters))
+
+    stmt = stmt.order_by(Mt5ServerCatalog.canonical_server_name.asc()).limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+def resolve_mt5_server_name(db: Session, server_name: str) -> str:
+    trimmed = server_name.strip()
+    if not trimmed:
+        return trimmed
+
+    exact_stmt = select(Mt5ServerCatalog).where(
+        Mt5ServerCatalog.active.is_(True),
+        func.lower(Mt5ServerCatalog.canonical_server_name) == trimmed.lower(),
+    )
+    exact = db.execute(exact_stmt).scalar_one_or_none()
+    if exact is not None:
+        return exact.canonical_server_name
+
+    normalized_key = normalize_mt5_server_key(trimmed)
+    if not normalized_key:
+        return trimmed
+
+    normalized_stmt = select(Mt5ServerCatalog).where(
+        Mt5ServerCatalog.active.is_(True),
+        Mt5ServerCatalog.normalized_server_key == normalized_key,
+    ).limit(2)
+    matches = list(db.execute(normalized_stmt).scalars().all())
+    if len(matches) == 1:
+        return matches[0].canonical_server_name
+
+    return trimmed
 
 def create_account(
     db: Session,

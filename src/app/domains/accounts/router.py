@@ -12,6 +12,7 @@ from app.domains.accounts.schemas import (
     AccountConnectRequest,
     AccountResponse,
     AccountUpdateRequest,
+    Mt5ServerSearchItem,
 )
 from app.domains.accounts.models import SyncProvider
 from app.domains.accounts.sync_orchestrator import check_manual_sync_admission
@@ -20,6 +21,22 @@ from app.shared.deps import get_current_user
 from app.tasks.journal_sync_tasks import sync_account as sync_account_task
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+
+@router.get("/mt5-servers", response_model=list[Mt5ServerSearchItem])
+def search_mt5_servers(
+    q: str = "",
+    limit: int = 25,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[Mt5ServerSearchItem]:
+    del current_user
+    safe_limit = max(1, min(limit, 50))
+    servers = account_repo.search_mt5_servers(db, query=q, limit=safe_limit)
+    return [
+        Mt5ServerSearchItem(server_name=server.canonical_server_name)
+        for server in servers
+    ]
 
 
 @router.post("", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)

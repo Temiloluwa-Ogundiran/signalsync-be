@@ -37,6 +37,10 @@ class AccountConnectRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=120)
 
 
+class Mt5ServerSearchItem(BaseModel):
+    server_name: str
+
+
 class AccountBalanceResponse(BaseModel):
     """Latest known account balance/equity from the most recent synced snapshot.
 

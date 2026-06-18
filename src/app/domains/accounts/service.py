@@ -67,10 +67,11 @@ async def connect_account(
     payload: AccountConnectRequest,
 ) -> TradingAccount:
     validate_timezone_name(payload.timezone)
-    broker_name = (payload.broker_name or "").strip() or payload.broker_server
+    broker_server = account_repo.resolve_mt5_server_name(db, payload.broker_server)
+    broker_name = (payload.broker_name or "").strip() or broker_server
     meta_account_id = _build_pseudo_meta_account_id(
         broker_login=payload.broker_login,
-        broker_server=payload.broker_server,
+        broker_server=broker_server,
         platform=payload.platform.value,
     )
 
@@ -92,14 +93,14 @@ async def connect_account(
             account_id=account_id_to_verify,
             login=payload.broker_login,
             password=payload.investor_password,
-            server=payload.broker_server,
+            server=broker_server,
             broker=broker_name,
         )
     except Mt5CoreClientJobFailed as exc:
         logger.warning(
             "MT5 account verification rejected credentials | login=%s server=%s error=%s",
             payload.broker_login,
-            payload.broker_server,
+            broker_server,
             str(exc),
         )
         raise HTTPException(
@@ -110,7 +111,7 @@ async def connect_account(
         logger.warning(
             "MT5 account verification timed out | login=%s server=%s timeout=%s",
             payload.broker_login,
-            payload.broker_server,
+            broker_server,
             settings.MT5_CORE_VERIFY_TIMEOUT_SECONDS,
         )
         raise HTTPException(
@@ -121,7 +122,7 @@ async def connect_account(
         logger.warning(
             "MT5 account verification unavailable | login=%s server=%s error=%s",
             payload.broker_login,
-            payload.broker_server,
+            broker_server,
             str(exc),
         )
         raise HTTPException(
@@ -132,7 +133,7 @@ async def connect_account(
     if not is_valid_mt5_verification_result(
         verification_result,
         requested_login=payload.broker_login,
-        requested_server=payload.broker_server,
+        requested_server=broker_server,
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -162,7 +163,7 @@ async def connect_account(
             meta_account_id=meta_account_id,
             broker_name=broker_name,
             broker_login=payload.broker_login,
-            broker_server=payload.broker_server,
+            broker_server=broker_server,
             encrypted_investor_password=encrypted_investor_password,
             encrypted_trader_password=encrypted_trader_password,
             account_type=payload.account_type,
@@ -180,7 +181,7 @@ async def connect_account(
             meta_account_id=meta_account_id,
             broker_name=broker_name,
             broker_login=payload.broker_login,
-            broker_server=payload.broker_server,
+            broker_server=broker_server,
             encrypted_investor_password=encrypted_investor_password,
             encrypted_trader_password=encrypted_trader_password,
             account_type=payload.account_type,
