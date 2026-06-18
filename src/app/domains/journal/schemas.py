@@ -32,8 +32,6 @@ class JournalTradeResponse(BaseModel):
     opened_at: datetime
     closed_at: datetime
     trading_date: Optional[date] = None
-    is_manual: bool = False
-    is_missed: bool = False
     balance_before_trade: Decimal | None = None
     net_roi_percent: Decimal | None = None
     created_at: datetime
@@ -150,8 +148,6 @@ class DailyTradeChipResponse(BaseModel):
     net_profit: Decimal
     outcome: str
     journal_message_count: int
-    is_manual: bool = False
-    is_missed: bool = False
 
 
 class DailyJournalResponse(BaseModel):

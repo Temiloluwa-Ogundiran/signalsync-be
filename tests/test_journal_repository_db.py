@@ -64,8 +64,6 @@ def test_list_trade_setups_sql_query() -> None:
             session=TradeSession.london,
             opened_at=datetime.now(timezone.utc),
             closed_at=datetime.now(timezone.utc),
-            is_missed=False,
-            is_manual=False,
         )
         db.add(trade)
         
@@ -102,7 +100,6 @@ def test_list_trade_setups_sql_query() -> None:
             account_id=account.id,
             closed_from_utc=None,
             closed_to_utc_exclusive=None,
-            include_manual=True,
         )
         
         assert len(results) == 1
@@ -268,8 +265,6 @@ def test_bulk_upsert_closed_trades_db() -> None:
                 "session": TradeSession.london,
                 "opened_at": datetime.now(timezone.utc),
                 "closed_at": datetime.now(timezone.utc),
-                "is_manual": False,
-                "is_missed": False,
                 "created_at": datetime.now(timezone.utc),
             }
         ]
@@ -299,8 +294,6 @@ def test_bulk_upsert_closed_trades_db() -> None:
             "session": TradeSession.new_york,
             "opened_at": datetime.now(timezone.utc),
             "closed_at": datetime.now(timezone.utc),
-            "is_manual": False,
-            "is_missed": False,
             "created_at": datetime.now(timezone.utc),
         })
         
@@ -585,8 +578,6 @@ def test_delete_trades_outside_valid_broker_ids_in_window_returning_db() -> None
             session=TradeSession.london,
             opened_at=datetime.now(timezone.utc),
             closed_at=datetime.now(timezone.utc),
-            is_missed=False,
-            is_manual=False,
         )
         t2 = Trade(
             id=uuid.uuid4(),
@@ -605,8 +596,6 @@ def test_delete_trades_outside_valid_broker_ids_in_window_returning_db() -> None
             session=TradeSession.london,
             opened_at=datetime.now(timezone.utc),
             closed_at=datetime.now(timezone.utc),
-            is_missed=False,
-            is_manual=False,
         )
         db.add_all([t1, t2])
         db.flush()
@@ -678,8 +667,6 @@ def test_list_trade_rows_for_analytics_db() -> None:
             session=TradeSession.london,
             opened_at=datetime.now(timezone.utc),
             closed_at=datetime.now(timezone.utc),
-            is_missed=False,
-            is_manual=False,
         )
         db.add(t1)
         db.flush()
@@ -689,7 +676,6 @@ def test_list_trade_rows_for_analytics_db() -> None:
             account_ids=[account.id],
             closed_from_utc=None,
             closed_to_utc_exclusive=None,
-            include_manual=True,
         )
         
         assert len(rows) == 1
@@ -753,8 +739,6 @@ def test_list_recent_trades_for_dashboard_db() -> None:
             session=TradeSession.london,
             opened_at=datetime.now(timezone.utc),
             closed_at=datetime.now(timezone.utc),
-            is_missed=False,
-            is_manual=False,
         )
         db.add(t1)
         db.flush()
@@ -764,7 +748,6 @@ def test_list_recent_trades_for_dashboard_db() -> None:
             account_ids=[account.id],
             closed_from_utc=None,
             closed_to_utc_exclusive=None,
-            include_manual=True,
             limit=5,
         )
         
@@ -846,8 +829,6 @@ def test_multi_account_timezone_dashboard_analytics_db() -> None:
             session=TradeSession.london,
             opened_at=close_time,
             closed_at=close_time,
-            is_missed=False,
-            is_manual=False,
         )
         db.add(t1)
         db.flush()
@@ -860,7 +841,6 @@ def test_multi_account_timezone_dashboard_analytics_db() -> None:
             to_date=None,
             recent_limit=8,
             time_basis="close",
-            include_manual=True,
         )
         
         calendar_days = dashboard.calendar.days
@@ -927,8 +907,6 @@ def test_analytics_curve_accepts_nonnumeric_broker_trade_ids_db() -> None:
                 session=TradeSession.london,
                 opened_at=close_time,
                 closed_at=close_time,
-                is_missed=False,
-                is_manual=False,
             ),
             Trade(
                 id=uuid.uuid4(),
@@ -947,8 +925,6 @@ def test_analytics_curve_accepts_nonnumeric_broker_trade_ids_db() -> None:
                 session=TradeSession.london,
                 opened_at=close_time,
                 closed_at=close_time,
-                is_missed=False,
-                is_manual=False,
             ),
         ]
         db.add_all(trades)
@@ -961,7 +937,6 @@ def test_analytics_curve_accepts_nonnumeric_broker_trade_ids_db() -> None:
             from_date=date(2026, 6, 12),
             to_date=date(2026, 6, 12),
             granularity="intraday",
-            include_manual=True,
         )
 
         assert curve.intraday_curve is not None

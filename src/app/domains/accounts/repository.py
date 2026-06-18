@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.domains.accounts.models import (
     AccountSnapshot,
-    SyncProvider,
+    ImportMethod,
     Trade,
     TradeDirection,
     TradeSession,
@@ -90,7 +90,7 @@ def create_account(
     timezone: str,
     broker_utc_offset: int,
     display_name: Optional[str],
-    sync_provider: SyncProvider = SyncProvider.headless_mt5,
+    import_method: ImportMethod = ImportMethod.auto_sync,
     id: Optional[uuid.UUID] = None,
 ) -> TradingAccount:
     account = TradingAccount(
@@ -113,7 +113,7 @@ def create_account(
         is_data_ready_for_stats=False,
         last_bootstrap_synced_at=None,
         bootstrap_error_message=None,
-        sync_provider=sync_provider,
+        import_method=import_method,
     )
     db.add(account)
     db.flush()
@@ -170,7 +170,7 @@ def create_csv_account(
         currency=currency,
         timezone=timezone,
         display_name=display_name,
-        sync_provider=SyncProvider.csv_import,
+        import_method=ImportMethod.csv_upload,
         status=TradingAccountStatus.synced,
         connection_state=TradingAccountConnectionState.ready,
         is_data_ready_for_stats=True,
@@ -196,7 +196,7 @@ def reactivate_account(
     timezone: str,
     broker_utc_offset: int,
     display_name: Optional[str],
-    sync_provider: SyncProvider = SyncProvider.headless_mt5,
+    import_method: ImportMethod = ImportMethod.auto_sync,
 ) -> TradingAccount:
     account.meta_account_id = meta_account_id
     account.broker_name = broker_name
@@ -217,7 +217,7 @@ def reactivate_account(
     account.sync_error_message = None
     account.last_bootstrap_synced_at = None
     account.bootstrap_error_message = None
-    account.sync_provider = sync_provider
+    account.import_method = import_method
     db.flush()
     return account
 
@@ -446,6 +446,13 @@ def soft_disconnect_account(db: Session, account: TradingAccount) -> None:
     db.flush()
 
 
+def hard_delete_account(db: Session, account: TradingAccount) -> None:
+    """Permanently remove the account. Cascades to its trades, snapshots, and
+    daily journals via the model's delete-orphan relationships."""
+    db.delete(account)
+    db.flush()
+
+
 # ---------------------------------------------------------------------------
 # Sync lock (per-account advisory lock to prevent overlapping syncs)
 # ---------------------------------------------------------------------------
@@ -591,7 +598,6 @@ def list_trades_by_account(
     session: Optional[TradeSession] = None,
     limit: int = 50,
     cursor_trade_id: Optional[uuid.UUID] = None,
-    include_manual: bool = True,
 ) -> list[Trade]:
     stmt = (
         select(Trade)
@@ -600,8 +606,6 @@ def list_trades_by_account(
         .limit(limit)
     )
 
-    if not include_manual:
-        stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
@@ -706,7 +710,6 @@ def list_trades_by_account_local_date(
     account_id: uuid.UUID,
     trading_date: date,
     account_timezone: str,
-    include_manual: bool = True,
 ) -> list[Trade]:
     stmt = (
         select(Trade)
@@ -715,8 +718,6 @@ def list_trades_by_account_local_date(
             cast(func.timezone(account_timezone, Trade.closed_at), Date) == trading_date,
         )
     )
-    if not include_manual:
-        stmt = stmt.where(Trade.is_manual.is_(False))
     stmt = stmt.order_by(Trade.closed_at.asc(), Trade.id.asc())
     return list(db.execute(stmt).scalars().all())
 
@@ -759,162 +760,6 @@ def delete_trades_outside_valid_broker_ids_in_window(
     rows = db.execute(stmt).all()
     return len(rows), {r[0] for r in rows if r[0] is not None}
 
-
-# ---------------------------------------------------------------------------
-# Manual Trades
-# ---------------------------------------------------------------------------
-
-def create_manual_trade(
-    db: Session,
-    *,
-    account_id: uuid.UUID,
-    payload,  # ManualTradeCreateRequest
-) -> Trade:
-    # Generate unique broker_trade_id
-    broker_trade_id = f"manual-{uuid.uuid4()}"
-    
-    # Session classification: auto-derived from opened_at UTC time
-    opened_at_utc = payload.opened_at if payload.opened_at.tzinfo else payload.opened_at.replace(tzinfo=timezone.utc)
-    session_value = TradeSession(classify_session(opened_at_utc))
-    
-    if payload.is_missed:
-        closed_at_utc = opened_at_utc
-        duration_seconds = 0
-        close_price = payload.tp or payload.open_price
-        net_profit = Decimal("0")
-        commission = Decimal("0")
-        swap = Decimal("0")
-        profit = Decimal("0")
-        volume = Decimal("0.01")  # placeholder
-    else:
-        closed_at_utc = payload.closed_at if payload.closed_at.tzinfo else payload.closed_at.replace(tzinfo=timezone.utc)
-        duration_seconds = max(0, int((closed_at_utc - opened_at_utc).total_seconds()))
-        close_price = payload.close_price
-        net_profit = payload.net_profit
-        commission = payload.commission or Decimal("0")
-        swap = payload.swap or Decimal("0")
-        profit = net_profit - commission - swap
-        volume = payload.volume
-
-    trade = Trade(
-        id=uuid.uuid4(),
-        account_id=account_id,
-        broker_trade_id=broker_trade_id,
-        symbol=payload.symbol,
-        direction=payload.direction,
-        open_price=payload.open_price,
-        close_price=close_price,
-        volume=volume,
-        profit=profit,
-        commission=commission,
-        swap=swap,
-        net_profit=net_profit,
-        duration_seconds=duration_seconds,
-        session=session_value,
-        opened_at=opened_at_utc,
-        closed_at=closed_at_utc,
-        sl=payload.sl,
-        tp=payload.tp,
-        is_manual=True,
-        is_missed=payload.is_missed,
-    )
-    db.add(trade)
-    db.flush()
-    return trade
-
-
-def update_manual_trade(
-    db: Session,
-    *,
-    trade_id: uuid.UUID,
-    user_id: uuid.UUID,
-    payload,  # ManualTradeUpdateRequest
-) -> Trade:
-    stmt = (
-        select(Trade)
-        .options(joinedload(Trade.account))
-        .where(Trade.id == trade_id)
-    )
-    trade = db.execute(stmt).unique().scalar_one_or_none()
-    if not trade:
-        raise ValueError("Trade not found")
-
-    if not trade.is_manual:
-        raise ValueError("Cannot modify non-manual trades")
-
-    # Validate ownership — account is eagerly loaded above to avoid a lazy query
-    if trade.account.user_id != user_id:
-        raise ValueError("Access denied")
-
-    _MANUAL_TRADE_UPDATABLE_FIELDS = frozenset({
-        "symbol", "direction", "opened_at", "closed_at",
-        "open_price", "close_price", "volume",
-        "net_profit", "commission", "swap",
-        "sl", "tp", "is_missed", "notes",
-    })
-
-    # Update only whitelisted fields — prevent mass-assignment of internal columns
-    update_data = {
-        k: v for k, v in payload.model_dump(exclude_unset=True).items()
-        if k in _MANUAL_TRADE_UPDATABLE_FIELDS
-    }
-
-    for key, value in update_data.items():
-        setattr(trade, key, value)
-        
-    # Recalculate derived fields without clobbering explicitly-provided payload values.
-    if trade.is_missed:
-        # For missed trades: duration is always 0, closed_at == opened_at.
-        # close_price / net_profit / volume etc. keep whatever the payload set (or
-        # the existing DB values) — we do NOT zero them out here.
-        if "closed_at" not in update_data:
-            trade.closed_at = trade.opened_at
-        trade.duration_seconds = 0
-        trade.commission = trade.commission or Decimal("0")
-        trade.swap = trade.swap or Decimal("0")
-        trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
-    else:
-        if "opened_at" in update_data or "closed_at" in update_data:
-            opened_at_utc = trade.opened_at if trade.opened_at.tzinfo else trade.opened_at.replace(tzinfo=timezone.utc)
-            closed_at_utc = trade.closed_at if trade.closed_at.tzinfo else trade.closed_at.replace(tzinfo=timezone.utc)
-            trade.opened_at = opened_at_utc
-            trade.closed_at = closed_at_utc
-            trade.duration_seconds = max(0, int((closed_at_utc - opened_at_utc).total_seconds()))
-            trade.session = TradeSession(classify_session(opened_at_utc))
-
-        if "net_profit" in update_data or "commission" in update_data or "swap" in update_data:
-            trade.commission = trade.commission or Decimal("0")
-            trade.swap = trade.swap or Decimal("0")
-            trade.profit = (trade.net_profit or Decimal("0")) - trade.commission - trade.swap
-
-    db.flush()
-    return trade
-
-
-def delete_manual_trade(
-    db: Session,
-    *,
-    trade_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> None:
-    stmt = (
-        select(Trade)
-        .options(joinedload(Trade.account))
-        .where(Trade.id == trade_id)
-    )
-    trade = db.execute(stmt).unique().scalar_one_or_none()
-    if not trade:
-        raise ValueError("Trade not found")
-        
-    if not trade.is_manual:
-        raise ValueError("Cannot delete non-manual trades")
-        
-    # Validate ownership
-    if trade.account.user_id != user_id:
-        raise ValueError("Access denied")
-
-    db.delete(trade)
-    db.flush()
 
 
 # ---------------------------------------------------------------------------

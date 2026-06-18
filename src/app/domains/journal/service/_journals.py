@@ -173,7 +173,6 @@ def get_or_create_daily_journal(
     trading_date,
     current_user: User,
     include_messages: bool = True,
-    include_manual: bool = True,
 ) -> DailyJournalResponse:
     account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
     if account is None:
@@ -192,7 +191,6 @@ def get_or_create_daily_journal(
         account_id=account_id,
         trading_date=trading_date,
         account_timezone=account.timezone,
-        include_manual=include_manual,
     )
     trade_ids = [trade.id for trade in trades]
     message_counts = journal_repo.get_trade_journal_message_counts(db, trade_ids=trade_ids)
@@ -215,8 +213,6 @@ def get_or_create_daily_journal(
                 net_profit=trade.net_profit,
                 outcome=outcome,
                 journal_message_count=message_counts.get(trade.id, 0),
-                is_manual=trade.is_manual,
-                is_missed=trade.is_missed,
             )
         )
 

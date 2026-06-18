@@ -38,11 +38,6 @@ from ._analytics import (  # noqa: F401
     get_analytics_summary,
     get_analytics_time_performance,
 )
-from ._manual_trades import (  # noqa: F401
-    create_manual_trade,
-    delete_manual_trade,
-    update_manual_trade,
-)
 from ._tags import (  # noqa: F401
     create_tag,
     create_tag_group,

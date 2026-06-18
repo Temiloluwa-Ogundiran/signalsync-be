@@ -8,7 +8,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.domains.accounts.models import SyncProvider, TradingAccount, TradeDirection, TradeSession, TradeSource
+from app.domains.accounts.models import ImportMethod, TradingAccount, TradeDirection, TradeSession, TradeSource
 from app.domains.accounts import repository as account_repo
 from app.core.config import settings
 from app.shared.utils.timezone import classify_session, normalize_broker_datetime_to_utc, to_account_local_date
@@ -257,8 +257,6 @@ def ingest_closed_deals(
             "session": session_value,
             "opened_at": opened_at_utc,
             "closed_at": closed_at_utc,
-            "is_manual": False,
-            "is_missed": False,
             "created_at": datetime.now(timezone.utc),
             **enrichment,
         }

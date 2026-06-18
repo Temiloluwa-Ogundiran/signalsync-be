@@ -650,7 +650,6 @@ def analytics_summarize_journal(
             FROM trades t
             JOIN trading_accounts ta ON ta.id = t.account_id
             WHERE t.account_id = ANY(:aids_placeholder)
-              AND t.is_missed = FALSE
             GROUP BY t.account_id, DATE(timezone(ta.timezone, t.closed_at))
         ) ds
             ON ds.account_id = dj.account_id

@@ -14,7 +14,7 @@ import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts import router as accounts_router
-from app.domains.accounts.models import SyncProvider, TradingAccountConnectionState
+from app.domains.accounts.models import ImportMethod, TradingAccountConnectionState
 from app.domains.accounts.schemas import AccountResponse
 from app.domains.accounts.mt5_core_client import Mt5CoreClientJobFailed, Mt5CoreClientRateLimited
 from app.domains.accounts import service as account_service
@@ -54,7 +54,7 @@ def test_account_response_exposes_sync_state_fields() -> None:
         "latest_balance": Decimal("10000.00"),
         "latest_equity": Decimal("10050.00"),
         "is_deleted": False,
-        "sync_provider": "headless_mt5",
+        "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }
 
@@ -99,7 +99,7 @@ def test_account_response_describes_empty_ready_account() -> None:
         "latest_balance": None,
         "latest_equity": None,
         "is_deleted": False,
-        "sync_provider": "headless_mt5",
+        "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }
 
@@ -140,7 +140,7 @@ def test_account_response_ignores_stale_empty_outcome_when_trades_exist() -> Non
         "latest_balance": Decimal("9836.65"),
         "latest_equity": Decimal("9836.65"),
         "is_deleted": False,
-        "sync_provider": "headless_mt5",
+        "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }
 
@@ -177,7 +177,7 @@ def test_account_response_describes_lifecycle_attention_states() -> None:
         "latest_balance": None,
         "latest_equity": None,
         "is_deleted": False,
-        "sync_provider": "headless_mt5",
+        "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }
 
@@ -227,7 +227,7 @@ def test_touch_last_active_at_if_stale_returns_true_when_row_updated(
     db_session.execute.assert_called_once()
 
 
-def test_create_account_defaults_to_headless_mt5(
+def test_create_account_defaults_to_auto_sync(
     db_session: MagicMock,
 ) -> None:
     account = account_repo.create_account(
@@ -247,7 +247,7 @@ def test_create_account_defaults_to_headless_mt5(
         display_name="Primary",
     )
 
-    assert account.sync_provider == SyncProvider.headless_mt5
+    assert account.import_method == ImportMethod.auto_sync
     db_session.flush.assert_called_once()
 
 
@@ -412,7 +412,7 @@ async def test_manual_sync_returns_admission_guard_without_enqueue(
     from app.domains.accounts.sync_orchestrator import Mt5SyncExecutionResult
 
     current_user = MagicMock(id=uuid.uuid4())
-    account = MagicMock(id=uuid.uuid4(), sync_provider=SyncProvider.headless_mt5)
+    account = MagicMock(id=uuid.uuid4(), import_method=ImportMethod.auto_sync)
     mock_account_service.get_account.return_value = account
     mock_check_admission.return_value = Mt5SyncExecutionResult(
         outcome="rate_limited",
@@ -445,7 +445,7 @@ async def test_manual_sync_enqueues_when_admitted(
     db_session: MagicMock,
 ) -> None:
     current_user = MagicMock(id=uuid.uuid4())
-    account = MagicMock(id=uuid.uuid4(), sync_provider=SyncProvider.headless_mt5)
+    account = MagicMock(id=uuid.uuid4(), import_method=ImportMethod.auto_sync)
     mock_account_service.get_account.return_value = account
     mock_check_admission.return_value = None
 
@@ -682,8 +682,6 @@ def test_journal_trade_response_includes_backend_trading_date(
         session="london",
         opened_at=datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc),
         closed_at=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
-        is_manual=False,
-        is_missed=False,
         balance_before_trade=None,
         net_roi_percent=None,
         created_at=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
@@ -745,8 +743,6 @@ def test_dashboard_recent_trades_works_for_all_accounts_without_single_account_c
         session="london",
         opened_at=datetime(2026, 6, 7, 1, 20, tzinfo=timezone.utc),
         closed_at=datetime(2026, 6, 7, 1, 40, tzinfo=timezone.utc),
-        is_manual=False,
-        is_missed=False,
         balance_before_trade=None,
         net_roi_percent=None,
         created_at=datetime(2026, 6, 7, 1, 40, tzinfo=timezone.utc),
@@ -770,7 +766,6 @@ def test_dashboard_recent_trades_works_for_all_accounts_without_single_account_c
         to_date=None,
         recent_limit=8,
         time_basis="close",
-        include_manual=True,
     )
 
     assert len(dashboard.recent_trades.items) == 1
@@ -795,7 +790,7 @@ async def test_list_account_open_positions_returns_live_mt5_snapshot(
         broker_server="Demo-Server",
         broker_name="XM",
         encrypted_investor_password="encrypted",
-        sync_provider=SyncProvider.headless_mt5,
+        import_method=ImportMethod.auto_sync,
     )
     mock_account_repo.get_account_by_id_for_user.return_value = account
     mock_mt5_client = mock_mt5_client_cls.return_value

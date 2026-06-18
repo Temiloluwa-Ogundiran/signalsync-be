@@ -29,10 +29,10 @@ class TradingAccountStatus(str, enum.Enum):
     disconnected = "disconnected"
 
 
-class SyncProvider(str, enum.Enum):
-    metaapi = "metaapi"  # API-based connection (legacy/demo)
-    headless_mt5 = "headless_mt5"
-    csv_import = "csv_import"
+class ImportMethod(str, enum.Enum):
+    auto_sync = "auto_sync"  # broker-connected accounts synced automatically
+    csv_upload = "csv_upload"  # trades imported from a CSV file
+    manual = "manual"  # trades entered by hand
 
 
 class TradingAccountProvisioningStatus(str, enum.Enum):
@@ -136,15 +136,15 @@ class TradingAccount(Base):
     )
     provisioning_error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    # Sync provider for this account. Broker-connected accounts use headless_mt5.
-    sync_provider: Mapped[SyncProvider] = mapped_column(
+    # How this account's trades get into the app. Broker-connected accounts use auto_sync.
+    import_method: Mapped[ImportMethod] = mapped_column(
         Enum(
-            SyncProvider,
+            ImportMethod,
             values_callable=lambda x: [e.value for e in x],
-            name="syncproviderenum",
+            name="importmethodenum",
         ),
         nullable=False,
-        default=SyncProvider.headless_mt5,
+        default=ImportMethod.auto_sync,
     )
 
     # Magic numbers that belong to copy-trading subscriptions on this account.
@@ -341,12 +341,6 @@ class Trade(Base):
 
     # Maximum Adverse Excursion — lowest price reached during the trade.
     mae: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 5), nullable=True)
-
-    # Whether this trade was manually added (not synced from MT5)
-    is_manual: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-    # Whether this is a "missed trade" — only meaningful when is_manual=True
-    is_missed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Playbook setup name (e.g. "London breakout"). Populated for demo/seeded
     # trades; nullable for synced trades.

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import (
-    SyncProvider,
+    ImportMethod,
     TradingAccount,
     TradingAccountConnectionState,
     TradingAccountStatus,
@@ -146,7 +146,7 @@ async def confirm_import(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Trading account not found.",
             )
-        if account.sync_provider != SyncProvider.csv_import:
+        if account.import_method != ImportMethod.csv_upload:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This account was connected via API. You cannot import CSV files directly into it.",

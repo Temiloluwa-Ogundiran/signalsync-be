@@ -47,13 +47,12 @@ def get_analytics_summary(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
-    include_manual: bool = True,
 ) -> AnalyticsSummaryResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
     trades = journal_repo.list_trade_rows_for_analytics(
         db, account_ids=[account_id], closed_from_utc=start_utc,
-        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+        closed_to_utc_exclusive=end_utc,
     )
     return _compute_summary(trades=trades, starting_balance=_estimate_starting_balance(db, account=account))
 
@@ -120,13 +119,12 @@ def get_analytics_time_performance(
     from_date: date | None,
     to_date: date | None,
     time_basis: str = "close",
-    include_manual: bool = True,
 ) -> AnalyticsTimePerformanceResponse:
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
     trades = journal_repo.list_trade_rows_for_analytics(
         db, account_ids=[account_id], closed_from_utc=start_utc,
-        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+        closed_to_utc_exclusive=end_utc,
     )
     return _compute_time_performance(trades=trades, account_timezone=account.timezone, time_basis=time_basis)
 
@@ -169,7 +167,6 @@ def get_analytics_equity_curve(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
-    include_manual: bool = True,
 ) -> AnalyticsEquityCurveResponse:
     """Cumulative net realized P&L over time, starting from zero.
 
@@ -183,7 +180,7 @@ def get_analytics_equity_curve(
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
     trades = journal_repo.list_trade_rows_for_analytics(
         db, account_ids=[account_id], closed_from_utc=start_utc,
-        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+        closed_to_utc_exclusive=end_utc,
     )
 
     # Sum net P&L per account-local trading day.
@@ -214,7 +211,6 @@ def get_analytics_intraday_curves(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
-    include_manual: bool = True,
 ) -> AnalyticsIntradayCurvesResponse:
     """Per-day intraday running-P&L curves for a date range, in one payload.
 
@@ -227,7 +223,7 @@ def get_analytics_intraday_curves(
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
     trades = journal_repo.list_trade_rows_for_analytics(
         db, account_ids=[account_id], closed_from_utc=start_utc,
-        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+        closed_to_utc_exclusive=end_utc,
     )
 
     # Bucket trades by account-local close date.
@@ -271,7 +267,6 @@ def get_analytics_curve(
     from_date: date | None,
     to_date: date | None,
     granularity: str,  # "daily" or "intraday"
-    include_manual: bool = True,
 ):
     """Unified curve endpoint supporting both daily and intraday granularities.
     
@@ -304,13 +299,9 @@ def get_analytics_curve(
         db.query(Trade)
         .filter(
             Trade.account_id == account_id,
-            Trade.is_missed.is_(False),
         )
     )
-    
-    if not include_manual:
-        stmt = stmt.filter(Trade.is_manual.is_(False))
-    
+
     if start_utc is not None:
         stmt = stmt.filter(Trade.closed_at >= start_utc)
     if end_utc is not None:
@@ -507,14 +498,13 @@ def get_analytics_evaluation(
     user_id: uuid.UUID,
     from_date: date | None,
     to_date: date | None,
-    include_manual: bool = True,
 ) -> AnalyticsEvaluationResponse:
     """Detailed evaluation stats for the journal sidebar, all trade-derived."""
     account = _get_account_or_404(db, account_id, user_id)
     start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
     trades = journal_repo.list_trade_rows_for_analytics(
         db, account_ids=[account_id], closed_from_utc=start_utc,
-        closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+        closed_to_utc_exclusive=end_utc,
     )
 
     if not trades:
@@ -615,7 +605,6 @@ def get_analytics_dashboard(
     to_date: date | None,
     recent_limit: int = 8,
     time_basis: str = "close",
-    include_manual: bool = True,
 ) -> AnalyticsDashboardResponse:
     if account_id is not None:
         account = _get_account_or_404(db, account_id, user_id)
@@ -624,7 +613,7 @@ def get_analytics_dashboard(
         start_utc, end_utc = _resolve_date_window(from_date, to_date, account.timezone)
         trades = journal_repo.list_trade_rows_for_analytics(
             db, account_ids=[account_id], closed_from_utc=start_utc,
-            closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+            closed_to_utc_exclusive=end_utc,
         )
         starting_balance = _estimate_starting_balance(db, account=account)
     else:
@@ -633,7 +622,7 @@ def get_analytics_dashboard(
         start_utc, end_utc = _resolve_multi_account_date_window(from_date, to_date)
         trades = journal_repo.list_trade_rows_for_analytics(
             db, account_ids=account_ids, closed_from_utc=start_utc,
-            closed_to_utc_exclusive=end_utc, include_manual=include_manual,
+            closed_to_utc_exclusive=end_utc,
         )
         account_timezone = "UTC"
         starting_balance = (
@@ -722,7 +711,6 @@ def get_analytics_dashboard(
         account_ids=account_ids_to_fetch,
         closed_from_utc=start_utc,
         closed_to_utc_exclusive=end_utc,
-        include_manual=include_manual,
         limit=recent_limit,
     )
     recent_models = [

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.domains.accounts import repository as account_repo
 from app.core.config import settings
-from app.domains.accounts.models import SyncProvider, TradingAccount
+from app.domains.accounts.models import ImportMethod, TradingAccount
 from app.domains.accounts.mt5_core_client import (
     Mt5CoreClient,
     Mt5CoreClientError,
@@ -172,7 +172,7 @@ async def connect_account(
             timezone=payload.timezone,
             broker_utc_offset=payload.broker_utc_offset,
             display_name=payload.display_name,
-            sync_provider=SyncProvider.headless_mt5,
+            import_method=ImportMethod.auto_sync,
         )
     else:
         account = account_repo.create_account(
@@ -190,7 +190,7 @@ async def connect_account(
             timezone=payload.timezone,
             broker_utc_offset=payload.broker_utc_offset,
             display_name=payload.display_name,
-            sync_provider=SyncProvider.headless_mt5,
+            import_method=ImportMethod.auto_sync,
             id=uuid.UUID(account_id_to_verify),
         )
 
@@ -284,6 +284,16 @@ def disconnect_account(
 ) -> None:
     account = get_account(db, current_user=current_user, account_id=account_id)
     account_repo.soft_disconnect_account(db, account)
+    db.commit()
+
+
+def delete_account(
+    db: Session, *, current_user: User, account_id: uuid.UUID
+) -> None:
+    """Permanently delete the account and all of its trades, snapshots, and
+    journals. Unlike disconnect_account (soft archive), this is irreversible."""
+    account = get_account(db, current_user=current_user, account_id=account_id)
+    account_repo.hard_delete_account(db, account)
     db.commit()
 
 

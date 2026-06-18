@@ -19,13 +19,13 @@ class AccountSyncStatus:
 def describe_account_sync_status(
     *,
     connection_state: TradingAccountConnectionState,
-    sync_provider: str,
+    import_method: str,
     last_sync_outcome: str | None,
     closed_trade_count: int,
     sync_error_message: str | None,
     bootstrap_error_message: str | None,
 ) -> AccountSyncStatus:
-    if sync_provider == "csv_import":
+    if import_method == "csv_upload":
         return AccountSyncStatus(
             code="imported",
             severity="success",

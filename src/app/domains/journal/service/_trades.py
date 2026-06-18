@@ -7,7 +7,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.domains.accounts import repository as account_repo
-from app.domains.accounts.models import SyncProvider
+from app.domains.accounts.models import ImportMethod
 from app.domains.journal import repository as journal_repo
 from app.domains.journal.schemas import (
     JournalOpenPositionListResponse,
@@ -37,7 +37,6 @@ def list_account_trades(
     session=None,
     limit: int = 50,
     cursor_trade_id: Optional[uuid.UUID] = None,
-    include_manual: bool = True,
 ) -> list[JournalTradeResponse]:
     account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
     if account is None:
@@ -63,7 +62,6 @@ def list_account_trades(
         session=session,
         limit=limit,
         cursor_trade_id=cursor_trade_id,
-        include_manual=include_manual,
     )
 
     if not trades:
@@ -122,7 +120,7 @@ async def list_account_open_positions(
             status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
         )
 
-    if account.sync_provider != SyncProvider.headless_mt5:
+    if account.import_method != ImportMethod.auto_sync:
         return JournalOpenPositionListResponse(as_of=None, items=[])
 
     from app.domains.accounts.mt5_core_client import (  # noqa: PLC0415

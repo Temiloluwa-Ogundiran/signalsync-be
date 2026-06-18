@@ -27,7 +27,7 @@ from app.domains.accounts.models import (
     TradingAccountStatus,
     TradingAccountType,
     TradingPlatform,
-    SyncProvider,
+    ImportMethod,
 )
 from app.domains.journal.models import DailyJournal, TradeJournal
 from app.domains.demo.generator import (
@@ -102,8 +102,6 @@ def _trade_to_row(spec: TradeSpec, account_id: uuid.UUID, idx: int) -> dict:
         "magic_number": 0,
         "position_id": spec.position_id,
         "trade_source": TradeSource.personal,
-        "is_manual": True,
-        "is_missed": False,
         "setup": spec.setup,
     }
 
@@ -143,7 +141,7 @@ def seed_demo_account(
         display_name=DEMO_DISPLAY_NAME,
         status=TradingAccountStatus.synced,
         provisioning_status=TradingAccountProvisioningStatus.provisioned,
-        sync_provider=SyncProvider.metaapi,  # API connection
+        import_method=ImportMethod.auto_sync,
         connection_state=TradingAccountConnectionState.ready,
         is_data_ready_for_stats=True,
         last_synced_at=datetime.now(timezone.utc),

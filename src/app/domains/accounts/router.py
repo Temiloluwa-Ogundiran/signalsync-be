@@ -14,7 +14,7 @@ from app.domains.accounts.schemas import (
     AccountUpdateRequest,
     Mt5ServerSearchItem,
 )
-from app.domains.accounts.models import SyncProvider
+from app.domains.accounts.models import ImportMethod
 from app.domains.accounts.sync_orchestrator import check_manual_sync_admission
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
@@ -85,7 +85,19 @@ def disconnect_account(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Response:
+    """Archive (soft-delete) the account: stops syncing but keeps its data."""
     account_service.disconnect_account(db, current_user=current_user, account_id=account_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/{account_id}/purge", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(
+    account_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    """Permanently delete the account and all of its trades/journals. Irreversible."""
+    account_service.delete_account(db, current_user=current_user, account_id=account_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -104,7 +116,7 @@ async def manual_sync(
     """
     account = account_service.get_account(db, current_user=current_user, account_id=account_id)
 
-    if account.sync_provider != SyncProvider.headless_mt5:
+    if account.import_method != ImportMethod.auto_sync:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This account does not support broker sync.",

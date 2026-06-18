@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.domains.accounts import repository as account_repo
-from app.domains.accounts.models import SyncProvider, TradingAccount
+from app.domains.accounts.models import ImportMethod, TradingAccount
 from app.domains.journal import repository as journal_repo
 from app.domains.journal.schemas import (
     JournalAttachmentResponse,
@@ -166,7 +166,7 @@ def _estimate_starting_balance(db: Session, *, account: TradingAccount) -> Decim
     account_id = account.id
     all_time_realized = account_repo.sum_trade_net_profit(db, account_id=account_id)
 
-    if account.sync_provider == SyncProvider.csv_import:
+    if account.import_method == ImportMethod.csv_upload:
         earliest_snapshot = account_repo.get_earliest_snapshot(db, account_id)
         if earliest_snapshot is not None:
             return earliest_snapshot.balance

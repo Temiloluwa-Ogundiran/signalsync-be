@@ -521,14 +521,10 @@ def list_trade_rows_for_analytics(
     account_ids: list[uuid.UUID],
     closed_from_utc,
     closed_to_utc_exclusive,
-    include_manual: bool = True,
 ) -> list[tuple]:
     stmt = select(*ANALYTICS_COLUMNS).where(
         Trade.account_id.in_(account_ids),
-        Trade.is_missed.is_(False),
     )
-    if not include_manual:
-        stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
@@ -542,15 +538,11 @@ def list_recent_trades_for_dashboard(
     account_ids: list[uuid.UUID],
     closed_from_utc,
     closed_to_utc_exclusive,
-    include_manual: bool = True,
     limit: int = 8,
 ) -> list[Trade]:
     stmt = select(Trade).where(
         Trade.account_id.in_(account_ids),
-        Trade.is_missed.is_(False),
     )
-    if not include_manual:
-        stmt = stmt.where(Trade.is_manual.is_(False))
     if closed_from_utc is not None:
         stmt = stmt.where(Trade.closed_at >= closed_from_utc)
     if closed_to_utc_exclusive is not None:
@@ -567,7 +559,6 @@ def list_daily_pnl(
     account_timezone: str,
     closed_from_utc,
     closed_to_utc_exclusive,
-    include_manual: bool = True,
 ) -> list[tuple]:
     from sqlalchemy import func as sa_func
     local_date_expr = sa_func.date(sa_func.timezone(account_timezone, Trade.closed_at))
@@ -582,12 +573,8 @@ def list_daily_pnl(
         )
         .where(
             Trade.account_id == account_id,
-            Trade.is_missed.is_(False),
         )
     )
-
-    if not include_manual:
-        stmt = stmt.where(Trade.is_manual.is_(False))
 
     stmt = stmt.group_by(local_date_expr).order_by(local_date_expr)
 
@@ -677,7 +664,6 @@ def list_trade_setups(
     account_id: uuid.UUID,
     closed_from_utc,
     closed_to_utc_exclusive,
-    include_manual: bool = True,
 ) -> list[tuple]:
     from sqlalchemy import text
     sql = """
@@ -690,8 +676,6 @@ def list_trade_setups(
         JOIN trade_journals tj ON tj.trade_id = t.id
         JOIN journal_messages jm ON jm.trade_journal_id = tj.id
         WHERE t.account_id = :account_id
-          AND t.is_missed = FALSE
-          AND (:include_manual OR t.is_manual = FALSE)
           AND cardinality(jm.tags) > 0
           AND (:closed_from_utc IS NULL OR t.closed_at >= :closed_from_utc)
           AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
@@ -704,8 +688,6 @@ def list_trade_setups(
         JOIN trade_tags tt ON tt.trade_id = t.id
         JOIN tags tg ON tg.id = tt.tag_id
         WHERE t.account_id = :account_id
-          AND t.is_missed = FALSE
-          AND (:include_manual OR t.is_manual = FALSE)
           AND (:closed_from_utc IS NULL OR t.closed_at >= :closed_from_utc)
           AND (:closed_to_utc_exclusive IS NULL OR t.closed_at < :closed_to_utc_exclusive)
     )
@@ -726,7 +708,6 @@ def list_trade_setups(
                 "account_id": str(account_id),
                 "closed_from_utc": closed_from_utc,
                 "closed_to_utc_exclusive": closed_to_utc_exclusive,
-                "include_manual": include_manual,
             },
         ).all()
     )
