@@ -1,5 +1,6 @@
 import argparse
 import csv
+import os
 import re
 import uuid
 from pathlib import Path
@@ -91,10 +92,14 @@ def main() -> None:
         print(f"Loaded {len(server_names)} MT5 server catalog row(s).")
         return
 
-    if not args.database_url:
-        parser.error("--database-url is required unless --dry-run is set")
+    database_url = args.database_url or os.getenv("DATABASE_URL_DIRECT") or os.getenv("DATABASE_URL")
+    if not database_url:
+        parser.error(
+            "--database-url is required unless --dry-run is set "
+            "or DATABASE_URL_DIRECT/DATABASE_URL is present"
+        )
 
-    inserted_or_updated = seed(args.database_url, args.csv)
+    inserted_or_updated = seed(database_url, args.csv)
     print(f"Seeded {inserted_or_updated} MT5 server catalog row(s).")
 
 
