@@ -5,7 +5,8 @@ import re
 import uuid
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from psycopg2.extras import execute_values
+from sqlalchemy import create_engine
 
 
 _SERVER_KEY_PATTERN = re.compile(r"[^a-z0-9]+")
@@ -38,8 +39,12 @@ def seed(database_url: str, csv_path: Path) -> int:
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     engine = create_engine(database_url, pool_pre_ping=True)
 
-    statement = text(
-        """
+    rows = [
+        (str(uuid.uuid4()), name, normalize_mt5_server_key(name))
+        for name in server_names
+    ]
+
+    statement = """
         INSERT INTO mt5_server_catalog (
             id,
             canonical_server_name,
@@ -49,35 +54,31 @@ def seed(database_url: str, csv_path: Path) -> int:
             created_at,
             updated_at
         )
-        VALUES (
-            :id,
-            :canonical_server_name,
-            :normalized_server_key,
-            'csv',
-            true,
-            now(),
-            now()
-        )
+        VALUES %s
         ON CONFLICT (canonical_server_name) DO UPDATE
         SET
             normalized_server_key = EXCLUDED.normalized_server_key,
             source = EXCLUDED.source,
             active = true,
             updated_at = now()
-        """
-    )
+    """
 
-    rows = [
-        {
-            "id": str(uuid.uuid4()),
-            "canonical_server_name": name,
-            "normalized_server_key": normalize_mt5_server_key(name),
-        }
-        for name in server_names
-    ]
-
-    with engine.begin() as connection:
-        connection.execute(statement, rows)
+    raw_connection = engine.raw_connection()
+    try:
+        with raw_connection.cursor() as cursor:
+            execute_values(
+                cursor,
+                statement,
+                rows,
+                template="(%s::uuid, %s, %s, 'csv', true, now(), now())",
+                page_size=500,
+            )
+        raw_connection.commit()
+    except Exception:
+        raw_connection.rollback()
+        raise
+    finally:
+        raw_connection.close()
 
     return len(rows)
 
