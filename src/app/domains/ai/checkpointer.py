@@ -34,12 +34,22 @@ async def init_checkpointer():
     # autocommit=True is required: LangGraph's setup() runs CREATE INDEX CONCURRENTLY
     # which Postgres forbids inside a transaction block. LangGraph manages its own
     # explicit transactions, so autocommit at the pool level is correct and safe.
+    #
+    # check + max_idle/max_lifetime defend against the server (Railway/Postgres)
+    # silently dropping idle connections between AI requests: `check` validates a
+    # connection before it's handed out (a dead one is recycled instead of
+    # crashing the SSE stream mid-flight — see ai.router SSE stream errors), and
+    # the idle/lifetime caps refresh connections before the server kills them.
     pool = AsyncConnectionPool(
         url,
         min_size=1,
         max_size=5,
         open=False,
         kwargs={"autocommit": True},
+        check=AsyncConnectionPool.check_connection,
+        max_idle=120.0,      # recycle a connection idle longer than 2 min
+        max_lifetime=1800.0,  # hard cap: replace any connection after 30 min
+        reconnect_timeout=10.0,
     )
     await pool.open()
     _checkpointer = AsyncPostgresSaver(pool)
