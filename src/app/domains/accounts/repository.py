@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, cast, func, or_, select
+from sqlalchemy import Date, case, cast, func, or_, select
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
@@ -43,7 +43,24 @@ def search_mt5_servers(db: Session, *, query: str, limit: int = 25) -> list[Mt5S
             filters.append(Mt5ServerCatalog.normalized_server_key.ilike(f"%{normalized_query}%"))
         stmt = stmt.where(or_(*filters))
 
-    stmt = stmt.order_by(Mt5ServerCatalog.canonical_server_name.asc()).limit(limit)
+        # Rank prefix matches (what the user typed comes first) above
+        # substring-only matches; alphabetical within each tier.
+        prefix_query = f"{query}%"
+        rank = case(
+            (Mt5ServerCatalog.canonical_server_name.ilike(prefix_query), 0),
+            (
+                Mt5ServerCatalog.normalized_server_key.ilike(f"{normalized_query}%")
+                if normalized_query
+                else False,
+                1,
+            ),
+            else_=2,
+        )
+        stmt = stmt.order_by(rank.asc(), Mt5ServerCatalog.canonical_server_name.asc())
+    else:
+        stmt = stmt.order_by(Mt5ServerCatalog.canonical_server_name.asc())
+
+    stmt = stmt.limit(limit)
     return list(db.execute(stmt).scalars().all())
 
 
