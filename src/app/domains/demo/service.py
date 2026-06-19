@@ -66,7 +66,7 @@ def get_demo_account(db: Session, user_id: uuid.UUID) -> TradingAccount | None:
         select(TradingAccount).where(
             TradingAccount.user_id == user_id,
             TradingAccount.meta_account_id == DEMO_META_ACCOUNT_ID,
-            TradingAccount.is_deleted.is_(False),
+            TradingAccount.is_archived.is_(False),
         )
     ).scalar_one_or_none()
 

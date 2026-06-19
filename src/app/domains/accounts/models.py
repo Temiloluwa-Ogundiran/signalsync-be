@@ -26,7 +26,6 @@ class TradingAccountStatus(str, enum.Enum):
     pending_sync = "pending_sync"
     synced = "synced"
     error = "error"
-    disconnected = "disconnected"
 
 
 class ImportMethod(str, enum.Enum):
@@ -193,7 +192,9 @@ class TradingAccount(Base):
         default=0,
     )
 
-    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Archived = kept but no longer syncing; the FE shows it muted. There is no
+    # soft-delete for accounts — permanent delete physically removes the row.
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

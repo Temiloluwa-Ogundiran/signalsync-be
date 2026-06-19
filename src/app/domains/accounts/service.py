@@ -80,7 +80,7 @@ async def connect_account(
         user_id=current_user.id,
         meta_account_id=meta_account_id,
     )
-    if existing is not None and not existing.is_deleted:
+    if existing is not None and not existing.is_archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account already connected.")
 
     # Verify before persisting. Bad credentials should never create a green
@@ -156,7 +156,7 @@ async def connect_account(
             detail=detail,
         ) from exc
 
-    if existing is not None and existing.is_deleted:
+    if existing is not None and existing.is_archived:
         account = account_repo.reactivate_account(
             db,
             account=existing,
@@ -283,7 +283,7 @@ def disconnect_account(
     db: Session, *, current_user: User, account_id: uuid.UUID
 ) -> None:
     account = get_account(db, current_user=current_user, account_id=account_id)
-    account_repo.soft_disconnect_account(db, account)
+    account_repo.archive_account(db, account)
     db.commit()
 
 

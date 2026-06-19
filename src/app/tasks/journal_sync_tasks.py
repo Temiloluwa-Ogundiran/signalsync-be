@@ -11,7 +11,6 @@ from app.core.database import SessionLocal
 from app.domains.accounts import repository as account_repo
 from app.domains.accounts.models import (
     TradingAccountConnectionState,
-    TradingAccountStatus,
 )
 from app.domains.accounts.mt5_core_client import (
     Mt5CoreClient,
@@ -85,8 +84,8 @@ def bootstrap_account(self, account_id: str) -> dict:
         account = account_repo.get_account_by_id(db, account_uuid)
         if account is None:
             return {"status": "skipped", "reason": "account_not_found"}
-        if account.status == TradingAccountStatus.disconnected:
-            return {"status": "skipped", "reason": "account_disconnected"}
+        if account.is_archived:
+            return {"status": "skipped", "reason": "account_archived"}
 
         try:
             investor_password = decrypt_secret(account.encrypted_investor_password)
@@ -216,8 +215,8 @@ def sync_account(self, account_id: str) -> dict:
         account = account_repo.get_account_by_id(db, account_uuid)
         if account is None:
             return {"status": "skipped", "reason": "account_not_found"}
-        if account.status == TradingAccountStatus.disconnected:
-            return {"status": "skipped", "reason": "account_disconnected"}
+        if account.is_archived:
+            return {"status": "skipped", "reason": "account_archived"}
 
         # Admission (cooldown/rate-limit/attempt recording) is performed by the API
         # before enqueueing, so the worker runs the sync directly.

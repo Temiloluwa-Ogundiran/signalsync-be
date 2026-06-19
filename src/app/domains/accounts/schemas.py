@@ -82,7 +82,7 @@ class AccountResponse(BaseModel):
     next_sync_not_before: Optional[datetime] = None
     latest_balance: Optional[Decimal] = None
     latest_equity: Optional[Decimal] = None
-    is_deleted: bool
+    is_archived: bool
     import_method: str
     created_at: datetime
 

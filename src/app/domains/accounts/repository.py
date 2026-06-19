@@ -153,15 +153,16 @@ def create_csv_account(
     """Create a TradingAccount for CSV imports (no API credentials)."""
     meta_account_id = f"csv:{platform}:{broker_server}:{account_number}"
     
-    # Check if the account was previously deleted (is_deleted=True) or already exists
+    # Reuse an existing row for this meta id (e.g. re-importing into an account
+    # that was archived) instead of creating a duplicate.
     stmt = select(TradingAccount).where(
         TradingAccount.user_id == user_id,
         TradingAccount.meta_account_id == meta_account_id
     )
     account = db.execute(stmt).scalar_one_or_none()
-    
+
     if account:
-        account.is_deleted = False
+        account.is_archived = False
         account.display_name = display_name or account.display_name
         account.broker_name = broker_name
         account.broker_server = broker_server
@@ -227,7 +228,7 @@ def reactivate_account(
     account.timezone = timezone
     account.broker_utc_offset = broker_utc_offset
     account.display_name = display_name
-    account.is_deleted = False
+    account.is_archived = False
     account.status = TradingAccountStatus.pending_sync
     account.connection_state = TradingAccountConnectionState.pending_verification
     account.is_data_ready_for_stats = False
@@ -242,7 +243,6 @@ def reactivate_account(
 def get_account_by_id(db: Session, account_id: uuid.UUID) -> Optional[TradingAccount]:
     stmt = select(TradingAccount).where(
         TradingAccount.id == account_id,
-        TradingAccount.is_deleted.is_(False),
     )
     return db.execute(stmt).scalar_one_or_none()
 
@@ -253,7 +253,6 @@ def get_account_by_id_for_user(
     stmt = select(TradingAccount).where(
         TradingAccount.id == account_id,
         TradingAccount.user_id == user_id,
-        TradingAccount.is_deleted.is_(False),
     )
     return db.execute(stmt).scalar_one_or_none()
 
@@ -276,7 +275,6 @@ def list_accounts_for_user(db: Session, user_id: uuid.UUID) -> list[TradingAccou
         select(TradingAccount)
         .where(
             TradingAccount.user_id == user_id,
-            TradingAccount.is_deleted.is_(False),
         )
         .order_by(TradingAccount.created_at.desc())
     )
@@ -384,7 +382,6 @@ def list_recent_sync_attempts_for_user(
         select(TradingAccount.last_sync_attempted_at)
         .where(
             TradingAccount.user_id == user_id,
-            TradingAccount.is_deleted.is_(False),
             TradingAccount.last_sync_attempted_at.is_not(None),
             TradingAccount.last_sync_attempted_at >= since,
         )
@@ -457,9 +454,11 @@ def mark_account_pending_verification(db: Session, account: TradingAccount) -> N
     db.flush()
 
 
-def soft_disconnect_account(db: Session, account: TradingAccount) -> None:
-    account.status = TradingAccountStatus.disconnected
-    account.is_deleted = True
+def archive_account(db: Session, account: TradingAccount) -> None:
+    # Archive: stop syncing but keep the account (and its history). The row stays
+    # in place; the FE shows archived accounts muted. There is no soft-delete —
+    # permanent delete physically removes the row.
+    account.is_archived = True
     db.flush()
 
 
