@@ -47,4 +47,3 @@ their existing recovery behavior.
 - Run focused backend tests, the full MT5 worker suite, frontend lint, and the
   production frontend build.
 - Replay the original three-second timing harness after implementation.
-

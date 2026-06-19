@@ -1,7 +1,6 @@
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import anyio
 import pytest
 from fastapi import HTTPException
 
@@ -15,7 +14,10 @@ from app.domains.accounts.models import (
     TradingAccountType,
     TradingPlatform,
 )
-from app.domains.accounts.mt5_core_client import Mt5CoreClientJobFailed
+from app.domains.accounts.mt5_core_client import (
+    Mt5CoreClientJobFailed,
+    Mt5CoreClientTimeout,
+)
 from app.domains.accounts.schemas import AccountConnectRequest
 from app.domains.accounts.service import connect_account
 from app.tasks.journal_sync_tasks import bootstrap_account
@@ -96,7 +98,10 @@ async def test_connect_account_verifies_then_queues_history_import(
     result = await connect_account(db_session, current_user=current_user, payload=payload)
 
     assert result == mock_account
-    mock_client_cls.assert_called_once_with(poll_timeout=4)
+    mock_client_cls.assert_called_once_with(
+        poll_timeout=4,
+        poll_interval=0.1,
+    )
     mock_client.verify_credentials.assert_awaited_once()
     mock_repo.create_account.assert_called_once()
     assert mock_repo.create_account.call_args.kwargs["id"] is not None
@@ -140,7 +145,7 @@ async def test_connect_account_rejects_invalid_credentials_before_persisting(
 @pytest.mark.anyio
 @patch("app.domains.accounts.service.Mt5CoreClient")
 @patch("app.domains.accounts.service.account_repo")
-async def test_connect_account_enforces_hard_verification_deadline(
+async def test_connect_account_returns_gateway_timeout_when_processing_expires(
     mock_repo,
     mock_client_cls,
     db_session,
@@ -150,26 +155,16 @@ async def test_connect_account_enforces_hard_verification_deadline(
     mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
     mock_repo.get_account_by_user_and_meta_id.return_value = None
 
-    async def slow_verify(**_kwargs):
-        await anyio.sleep(0.1)
-        return {
-            "verified": True,
-            "login": int(payload.broker_login),
-            "server": payload.broker_server,
-        }
+    mock_client_cls.return_value.verify_credentials.side_effect = Mt5CoreClientTimeout(
+        "processing expired"
+    )
 
-    mock_client_cls.return_value.verify_credentials.side_effect = slow_verify
-
-    with patch(
-        "app.domains.accounts.service.settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS",
-        0.01,
-    ):
-        with pytest.raises(HTTPException) as exc:
-            await connect_account(
-                db_session,
-                current_user=current_user,
-                payload=payload,
-            )
+    with pytest.raises(HTTPException) as exc:
+        await connect_account(
+            db_session,
+            current_user=current_user,
+            payload=payload,
+        )
 
     assert exc.value.status_code == 504
     assert "did not finish in time" in exc.value.detail

@@ -136,4 +136,3 @@ push normally.
 
 Mark PR #1 ready, merge it into `main`, update the local checkout, and verify
 that local and remote hashes match. Confirm all three worktrees are clean.
-

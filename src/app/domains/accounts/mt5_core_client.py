@@ -50,12 +50,18 @@ class Mt5CoreClient:
         base_url: Optional[str] = None,
         shared_secret: Optional[str] = None,
         poll_timeout: Optional[int] = None,
-        poll_interval: Optional[int] = None,
+        poll_interval: Optional[float] = None,
+        admission_retry_interval: Optional[float] = None,
     ) -> None:
         self.base_url = (base_url or settings.MT5_CORE_URL).rstrip("/")
         self.shared_secret = shared_secret or settings.MT5_CORE_INTERNAL_SHARED_SECRET
         self.poll_timeout = poll_timeout if poll_timeout is not None else settings.MT5_CORE_POLL_TIMEOUT_SECONDS
         self.poll_interval = poll_interval if poll_interval is not None else settings.MT5_CORE_POLL_INTERVAL_SECONDS
+        self.admission_retry_interval = (
+            admission_retry_interval
+            if admission_retry_interval is not None
+            else settings.MT5_CORE_POLL_INTERVAL_SECONDS
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -159,9 +165,6 @@ class Mt5CoreClient:
         client: httpx.AsyncClient,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        start_time = time.monotonic()
-        last_admission_error: Mt5CoreClientHttpError | None = None
-
         while True:
             try:
                 response = await client.post(
@@ -172,26 +175,14 @@ class Mt5CoreClient:
                     self._raise_submit_error(response)
                 return response.json()
             except (Mt5CoreClientRateLimited, Mt5CoreClientBackpressure) as exc:
-                last_admission_error = exc
-                elapsed = time.monotonic() - start_time
-                if elapsed >= self.poll_timeout:
-                    raise Mt5CoreClientTimeout(
-                        f"Submitting verification job timed out after {self.poll_timeout} seconds"
-                    ) from exc
-
                 retry_after = exc.retry_after_seconds
-                wait_seconds = self.poll_interval
+                wait_seconds = self.admission_retry_interval
                 if retry_after is not None:
-                    wait_seconds = min(max(float(retry_after), 0.0), self.poll_interval)
-                remaining = self.poll_timeout - elapsed
-                await anyio.sleep(max(0.0, min(wait_seconds, remaining)))
+                    wait_seconds = max(float(retry_after), 0.0)
+                await anyio.sleep(wait_seconds)
             except Mt5CoreClientHttpError:
                 raise
             except (httpx.HTTPError, ValueError) as e:
-                if last_admission_error is not None:
-                    raise Mt5CoreClientTimeout(
-                        f"Submitting verification job timed out after {self.poll_timeout} seconds"
-                    ) from e
                 raise Mt5CoreClientError(f"Failed to submit account verification job: {e}") from e
 
     async def submit_history_sync(

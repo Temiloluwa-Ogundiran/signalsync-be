@@ -126,6 +126,50 @@ async def test_verify_credentials_waits_for_temporary_admission_pressure(
 
 
 @pytest.mark.anyio
+async def test_verify_credentials_admission_wait_does_not_consume_processing_timeout(
+    client: Mt5CoreClient,
+    httpx_mock,
+) -> None:
+    client.poll_timeout = 0.01
+    client.admission_retry_interval = 0.01
+    for _ in range(2):
+        httpx_mock.add_response(
+            method="POST",
+            url="http://mt5-core-test/accounts/verify",
+            status_code=429,
+            json={
+                "detail": {
+                    "code": "RATE_LIMITED",
+                    "message": "Submission rate limit exceeded.",
+                }
+            },
+        )
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/accounts/verify",
+        json={"job_id": "job-after-long-admission", "status": "queued"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/job-after-long-admission",
+        json={
+            "job_id": "job-after-long-admission",
+            "status": "succeeded",
+            "result": {"verified": True},
+        },
+    )
+
+    result = await client.verify_credentials(
+        account_id="acct-1",
+        login="10001",
+        password="pass",
+        server="BrokerServer",
+    )
+
+    assert result == {"verified": True}
+
+
+@pytest.mark.anyio
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_verify_credentials_timeout(client: Mt5CoreClient, httpx_mock) -> None:
     # Set poll timeout to 0.2 to speed up test
