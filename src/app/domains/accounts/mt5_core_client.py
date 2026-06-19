@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import asyncio
+import anyio
 import httpx
+import time
 from datetime import datetime
 from typing import Any, Optional
 from app.core.config import settings
@@ -148,6 +149,20 @@ class Mt5CoreClient:
         # Use a dedicated client just for the POST so the connection is not
         # shared with the subsequent polling GET requests.
         async with self._new_client() as client:
+            data = await self._submit_verify_with_short_wait(client, payload)
+
+            job_id = data["job_id"]
+            return await self._poll_job(client, job_id)
+
+    async def _submit_verify_with_short_wait(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        start_time = time.monotonic()
+        last_admission_error: Mt5CoreClientHttpError | None = None
+
+        while True:
             try:
                 response = await client.post(
                     f"{self.base_url}/accounts/verify",
@@ -155,14 +170,29 @@ class Mt5CoreClient:
                 )
                 if response.is_error:
                     self._raise_submit_error(response)
-                data = response.json()
+                return response.json()
+            except (Mt5CoreClientRateLimited, Mt5CoreClientBackpressure) as exc:
+                last_admission_error = exc
+                elapsed = time.monotonic() - start_time
+                if elapsed >= self.poll_timeout:
+                    raise Mt5CoreClientTimeout(
+                        f"Submitting verification job timed out after {self.poll_timeout} seconds"
+                    ) from exc
+
+                retry_after = exc.retry_after_seconds
+                wait_seconds = self.poll_interval
+                if retry_after is not None:
+                    wait_seconds = min(max(float(retry_after), 0.0), self.poll_interval)
+                remaining = self.poll_timeout - elapsed
+                await anyio.sleep(max(0.0, min(wait_seconds, remaining)))
             except Mt5CoreClientHttpError:
                 raise
             except (httpx.HTTPError, ValueError) as e:
+                if last_admission_error is not None:
+                    raise Mt5CoreClientTimeout(
+                        f"Submitting verification job timed out after {self.poll_timeout} seconds"
+                    ) from e
                 raise Mt5CoreClientError(f"Failed to submit account verification job: {e}") from e
-
-            job_id = data["job_id"]
-            return await self._poll_job(client, job_id)
 
     async def submit_history_sync(
         self,
@@ -253,7 +283,7 @@ class Mt5CoreClient:
         that occurs when a keep-alive connection is closed by the server
         between polls.
         """
-        start_time = asyncio.get_event_loop().time()
+        start_time = time.monotonic()
         
         while True:
             try:
@@ -275,8 +305,8 @@ class Mt5CoreClient:
                 elif status == "failed":
                     raise Mt5CoreClientJobFailed(job_status_resp.get("error") or "Job failed")
             
-            elapsed = asyncio.get_event_loop().time() - start_time
+            elapsed = time.monotonic() - start_time
             if elapsed >= self.poll_timeout:
                 raise Mt5CoreClientTimeout(f"Polling job {job_id} timed out after {self.poll_timeout} seconds")
             
-            await asyncio.sleep(self.poll_interval)
+            await anyio.sleep(self.poll_interval)

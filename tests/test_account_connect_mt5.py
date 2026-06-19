@@ -1,6 +1,7 @@
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 from fastapi import HTTPException
 
@@ -78,6 +79,7 @@ async def test_connect_account_verifies_then_queues_history_import(
     payload,
     mock_account,
 ) -> None:
+    mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
     mock_repo.get_account_by_user_and_meta_id.return_value = None
     mock_repo.create_account.return_value = mock_account
     mock_encrypt_secret.return_value = "encrypted_password"
@@ -94,6 +96,7 @@ async def test_connect_account_verifies_then_queues_history_import(
     result = await connect_account(db_session, current_user=current_user, payload=payload)
 
     assert result == mock_account
+    mock_client_cls.assert_called_once_with(poll_timeout=4)
     mock_client.verify_credentials.assert_awaited_once()
     mock_repo.create_account.assert_called_once()
     assert mock_repo.create_account.call_args.kwargs["id"] is not None
@@ -132,6 +135,45 @@ async def test_connect_account_rejects_invalid_credentials_before_persisting(
     mock_repo.create_account.assert_not_called()
     db_session.commit.assert_not_called()
     mock_bootstrap_delay.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.service.Mt5CoreClient")
+@patch("app.domains.accounts.service.account_repo")
+async def test_connect_account_enforces_hard_verification_deadline(
+    mock_repo,
+    mock_client_cls,
+    db_session,
+    current_user,
+    payload,
+) -> None:
+    mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
+    mock_repo.get_account_by_user_and_meta_id.return_value = None
+
+    async def slow_verify(**_kwargs):
+        await anyio.sleep(0.1)
+        return {
+            "verified": True,
+            "login": int(payload.broker_login),
+            "server": payload.broker_server,
+        }
+
+    mock_client_cls.return_value.verify_credentials.side_effect = slow_verify
+
+    with patch(
+        "app.domains.accounts.service.settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS",
+        0.01,
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await connect_account(
+                db_session,
+                current_user=current_user,
+                payload=payload,
+            )
+
+    assert exc.value.status_code == 504
+    assert "did not finish in time" in exc.value.detail
+    mock_repo.create_account.assert_not_called()
 
 
 @pytest.mark.anyio

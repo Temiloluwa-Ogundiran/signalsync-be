@@ -1,6 +1,7 @@
 import uuid
 import logging
 
+import anyio
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -87,15 +88,16 @@ async def connect_account(
     # account row; only slow history import is pushed to the background.
     account_id_to_verify = str(existing.id) if existing is not None else str(uuid.uuid4())
 
-    client = Mt5CoreClient(poll_timeout=settings.MT5_CORE_VERIFY_TIMEOUT_SECONDS)
+    client = Mt5CoreClient(poll_timeout=settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS)
     try:
-        verification_result = await client.verify_credentials(
-            account_id=account_id_to_verify,
-            login=payload.broker_login,
-            password=payload.investor_password,
-            server=broker_server,
-            broker=broker_name,
-        )
+        with anyio.fail_after(settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS):
+            verification_result = await client.verify_credentials(
+                account_id=account_id_to_verify,
+                login=payload.broker_login,
+                password=payload.investor_password,
+                server=broker_server,
+                broker=broker_name,
+            )
     except Mt5CoreClientJobFailed as exc:
         logger.warning(
             "MT5 account verification rejected credentials | login=%s server=%s error=%s",
@@ -107,16 +109,16 @@ async def connect_account(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=_mt5_invalid_credentials_message(),
         ) from exc
-    except Mt5CoreClientTimeout as exc:
+    except (Mt5CoreClientTimeout, TimeoutError) as exc:
         logger.warning(
             "MT5 account verification timed out | login=%s server=%s timeout=%s",
             payload.broker_login,
             broker_server,
-            settings.MT5_CORE_VERIFY_TIMEOUT_SECONDS,
+            settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS,
         )
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="MT5 verification timed out. Please try again in a moment.",
+            detail="MT5 verification did not finish in time. Please try again in a moment.",
         ) from exc
     except Mt5CoreClientError as exc:
         logger.warning(
