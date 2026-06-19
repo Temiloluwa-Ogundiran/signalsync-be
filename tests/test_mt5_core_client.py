@@ -1,6 +1,7 @@
 import pytest
 import httpx
 from datetime import datetime
+import app.domains.accounts.mt5_core_client as mt5_core_client_module
 from app.domains.accounts.mt5_core_client import (
     Mt5CoreClient,
     Mt5CoreClientError,
@@ -171,6 +172,75 @@ async def test_verify_credentials_admission_wait_does_not_consume_processing_tim
 
 @pytest.mark.anyio
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+async def test_verify_credentials_healthy_queue_wait_does_not_consume_processing_timeout(
+    client: Mt5CoreClient,
+    httpx_mock,
+) -> None:
+    client.poll_timeout = 0.03
+    client.poll_interval = 0.01
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/accounts/verify",
+        json={"job_id": "job-queued-healthy", "status": "queued"},
+    )
+    for _ in range(8):
+        httpx_mock.add_response(
+            method="GET",
+            url="http://mt5-core-test/jobs/job-queued-healthy",
+            json={"status": "queued", "worker_available": True},
+        )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/job-queued-healthy",
+        json={"status": "running", "worker_available": True},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/job-queued-healthy",
+        json={
+            "status": "succeeded",
+            "worker_available": True,
+            "result": {"verified": True},
+        },
+    )
+
+    result = await client.verify_credentials(
+        account_id="acct-1",
+        login="10001",
+        password="pass",
+        server="BrokerServer",
+    )
+
+    assert result == {"verified": True}
+
+
+@pytest.mark.anyio
+async def test_verify_credentials_fails_when_queued_worker_is_unavailable(
+    client: Mt5CoreClient,
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/accounts/verify",
+        json={"job_id": "job-worker-down", "status": "queued"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/job-worker-down",
+        json={"status": "queued", "worker_available": False},
+    )
+
+    with pytest.raises(mt5_core_client_module.Mt5CoreClientWorkerUnavailable):
+        await client.verify_credentials(
+            account_id="acct-1",
+            login="10001",
+            password="pass",
+            server="BrokerServer",
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_verify_credentials_timeout(client: Mt5CoreClient, httpx_mock) -> None:
     # Set poll timeout to 0.2 to speed up test
     client.poll_timeout = 0.2
@@ -181,7 +251,7 @@ async def test_verify_credentials_timeout(client: Mt5CoreClient, httpx_mock) -> 
         json={"job_id": "job-abc", "status": "queued"},
     )
     
-    # Return queued continuously by adding multiple responses
+    # Return running continuously by adding multiple responses
     for _ in range(5):
         httpx_mock.add_response(
             method="GET",
@@ -191,7 +261,8 @@ async def test_verify_credentials_timeout(client: Mt5CoreClient, httpx_mock) -> 
                 "job_type": "verify_account",
                 "account_id": "acct-1",
                 "cluster_role": "journal",
-                "status": "queued",
+                "status": "running",
+                "worker_available": True,
             },
         )
 

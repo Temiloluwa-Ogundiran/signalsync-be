@@ -15,6 +15,12 @@ class Mt5CoreClientTimeout(Mt5CoreClientError):
     """Raised when polling mt5-core job times out."""
     pass
 
+
+class Mt5CoreClientWorkerUnavailable(Mt5CoreClientError):
+    """Raised when a queued job has no live MT5 worker."""
+    pass
+
+
 class Mt5CoreClientJobFailed(Mt5CoreClientError):
     """Raised when enqueued job fails."""
     pass
@@ -274,7 +280,7 @@ class Mt5CoreClient:
         that occurs when a keep-alive connection is closed by the server
         between polls.
         """
-        start_time = time.monotonic()
+        processing_started_at: float | None = None
         
         while True:
             try:
@@ -295,9 +301,19 @@ class Mt5CoreClient:
                     return job_status_resp.get("result") or {}
                 elif status == "failed":
                     raise Mt5CoreClientJobFailed(job_status_resp.get("error") or "Job failed")
+                elif status == "queued":
+                    if job_status_resp.get("worker_available") is False:
+                        raise Mt5CoreClientWorkerUnavailable(
+                            f"No MT5 worker is available for queued job {job_id}"
+                        )
+                elif status == "running" and processing_started_at is None:
+                    processing_started_at = time.monotonic()
             
-            elapsed = time.monotonic() - start_time
-            if elapsed >= self.poll_timeout:
-                raise Mt5CoreClientTimeout(f"Polling job {job_id} timed out after {self.poll_timeout} seconds")
+            if processing_started_at is not None:
+                elapsed = time.monotonic() - processing_started_at
+                if elapsed >= self.poll_timeout:
+                    raise Mt5CoreClientTimeout(
+                        f"Polling job {job_id} timed out after {self.poll_timeout} seconds"
+                    )
             
             await anyio.sleep(self.poll_interval)

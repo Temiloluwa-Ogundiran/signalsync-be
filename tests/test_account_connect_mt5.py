@@ -3,11 +3,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+import app.domains.accounts.mt5_core_client as mt5_core_client_module
 
 # Import the journal models to satisfy SQLAlchemy mapper dependencies in tests
 import app.domains.journal.models  # noqa: F401
 import app.domains.auth.models  # noqa: F401
 
+from app.core.config import settings
 from app.domains.accounts.models import (
     TradingAccount,
     TradingAccountConnectionState,
@@ -99,7 +101,7 @@ async def test_connect_account_verifies_then_queues_history_import(
 
     assert result == mock_account
     mock_client_cls.assert_called_once_with(
-        poll_timeout=4,
+        poll_timeout=settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS,
         poll_interval=0.1,
     )
     mock_client.verify_credentials.assert_awaited_once()
@@ -168,6 +170,34 @@ async def test_connect_account_returns_gateway_timeout_when_processing_expires(
 
     assert exc.value.status_code == 504
     assert "did not finish in time" in exc.value.detail
+    mock_repo.create_account.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.service.Mt5CoreClient")
+@patch("app.domains.accounts.service.account_repo")
+async def test_connect_account_returns_service_error_when_worker_is_unavailable(
+    mock_repo,
+    mock_client_cls,
+    db_session,
+    current_user,
+    payload,
+) -> None:
+    mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
+    mock_repo.get_account_by_user_and_meta_id.return_value = None
+    mock_client_cls.return_value.verify_credentials.side_effect = (
+        mt5_core_client_module.Mt5CoreClientWorkerUnavailable("worker unavailable")
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await connect_account(
+            db_session,
+            current_user=current_user,
+            payload=payload,
+        )
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "Service Error"
     mock_repo.create_account.assert_not_called()
 
 

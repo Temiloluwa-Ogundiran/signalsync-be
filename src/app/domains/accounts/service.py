@@ -13,6 +13,7 @@ from app.domains.accounts.mt5_core_client import (
     Mt5CoreClientError,
     Mt5CoreClientJobFailed,
     Mt5CoreClientTimeout,
+    Mt5CoreClientWorkerUnavailable,
 )
 from app.domains.accounts.schemas import AccountBalanceResponse, AccountConnectRequest
 from app.domains.accounts.sync import ingest_mt5_snapshots
@@ -120,6 +121,16 @@ async def connect_account(
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="MT5 verification did not finish in time. Please try again in a moment.",
+        ) from exc
+    except Mt5CoreClientWorkerUnavailable as exc:
+        logger.error(
+            "MT5 worker unavailable during account verification | login=%s server=%s",
+            payload.broker_login,
+            broker_server,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service Error",
         ) from exc
     except Mt5CoreClientError as exc:
         logger.warning(
