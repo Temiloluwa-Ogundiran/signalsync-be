@@ -221,15 +221,3 @@ def seed_demo_account(
         sum(1 for d in data.days if d.trades),
     )
     return account
-
-
-def clear_demo_account(db: Session, user_id: uuid.UUID) -> bool:
-    """Delete the user's demo account (cascades to trades + journals). Returns
-    True if one was removed. Used on first real account connect / clear action."""
-    account = get_demo_account(db, user_id)
-    if account is None:
-        return False
-    db.delete(account)
-    db.flush()
-    logger.info("Cleared demo account %s for user %s", account.id, user_id)
-    return True
