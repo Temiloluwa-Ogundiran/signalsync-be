@@ -79,6 +79,88 @@ async def test_verify_credentials_failed_job(client: Mt5CoreClient, httpx_mock) 
             server="BrokerServer",
         )
     assert "Invalid credentials" in str(exc.value)
+    assert len(httpx_mock.get_requests(method="POST")) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+async def test_verify_credentials_retries_one_ipc_failure_then_succeeds(
+    client: Mt5CoreClient,
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/accounts/verify",
+        json={"job_id": "job-ipc-first", "status": "queued"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/job-ipc-first",
+        json={
+            "status": "failed",
+            "worker_available": True,
+            "error": "Failed to initialize MT5 terminal: IPC timeout (code=-10005)",
+        },
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/accounts/verify",
+        json={"job_id": "job-ipc-retry", "status": "queued"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/job-ipc-retry",
+        json={
+            "status": "succeeded",
+            "worker_available": True,
+            "result": {"verified": True},
+        },
+    )
+
+    result = await client.verify_credentials(
+        account_id="acct-1",
+        login="10001",
+        password="pass",
+        server="BrokerServer",
+    )
+
+    assert result == {"verified": True}
+    assert len(httpx_mock.get_requests(method="POST")) == 2
+
+
+@pytest.mark.anyio
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+async def test_verify_credentials_stops_after_two_ipc_failures(
+    client: Mt5CoreClient,
+    httpx_mock,
+) -> None:
+    for suffix in ("first", "retry"):
+        httpx_mock.add_response(
+            method="POST",
+            url="http://mt5-core-test/accounts/verify",
+            json={"job_id": f"job-ipc-{suffix}", "status": "queued"},
+        )
+        httpx_mock.add_response(
+            method="GET",
+            url=f"http://mt5-core-test/jobs/job-ipc-{suffix}",
+            json={
+                "status": "failed",
+                "worker_available": True,
+                "error": "Failed to initialize MT5 terminal: IPC timeout (code=-10005)",
+            },
+        )
+
+    with pytest.raises(
+        mt5_core_client_module.Mt5CoreClientTransientJobFailed
+    ):
+        await client.verify_credentials(
+            account_id="acct-1",
+            login="10001",
+            password="pass",
+            server="BrokerServer",
+        )
+
+    assert len(httpx_mock.get_requests(method="POST")) == 2
 
 
 @pytest.mark.anyio

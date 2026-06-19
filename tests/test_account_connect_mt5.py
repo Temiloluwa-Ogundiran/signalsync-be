@@ -18,6 +18,7 @@ from app.domains.accounts.models import (
 )
 from app.domains.accounts.mt5_core_client import (
     Mt5CoreClientJobFailed,
+    Mt5CoreClientTransientJobFailed,
     Mt5CoreClientTimeout,
 )
 from app.domains.accounts.schemas import AccountConnectRequest
@@ -187,6 +188,34 @@ async def test_connect_account_returns_service_error_when_worker_is_unavailable(
     mock_repo.get_account_by_user_and_meta_id.return_value = None
     mock_client_cls.return_value.verify_credentials.side_effect = (
         mt5_core_client_module.Mt5CoreClientWorkerUnavailable("worker unavailable")
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await connect_account(
+            db_session,
+            current_user=current_user,
+            payload=payload,
+        )
+
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "Service Error"
+    mock_repo.create_account.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.service.Mt5CoreClient")
+@patch("app.domains.accounts.service.account_repo")
+async def test_connect_account_returns_service_error_after_transient_retry_exhausted(
+    mock_repo,
+    mock_client_cls,
+    db_session,
+    current_user,
+    payload,
+) -> None:
+    mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
+    mock_repo.get_account_by_user_and_meta_id.return_value = None
+    mock_client_cls.return_value.verify_credentials.side_effect = (
+        Mt5CoreClientTransientJobFailed("IPC timeout (code=-10005)")
     )
 
     with pytest.raises(HTTPException) as exc:

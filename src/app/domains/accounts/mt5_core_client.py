@@ -26,6 +26,11 @@ class Mt5CoreClientJobFailed(Mt5CoreClientError):
     pass
 
 
+class Mt5CoreClientTransientJobFailed(Mt5CoreClientError):
+    """Raised when an MT5 job fails because of a transient transport issue."""
+    pass
+
+
 class Mt5CoreClientHttpError(Mt5CoreClientError):
     def __init__(
         self,
@@ -158,13 +163,16 @@ class Mt5CoreClient:
             "metadata": metadata or {},
         }
         
-        # Use a dedicated client just for the POST so the connection is not
-        # shared with the subsequent polling GET requests.
         async with self._new_client() as client:
-            data = await self._submit_verify_with_short_wait(client, payload)
+            for attempt in range(2):
+                try:
+                    data = await self._submit_verify_with_short_wait(client, payload)
+                    return await self._poll_job(client, data["job_id"])
+                except Mt5CoreClientTransientJobFailed:
+                    if attempt == 1:
+                        raise
 
-            job_id = data["job_id"]
-            return await self._poll_job(client, job_id)
+        raise Mt5CoreClientError("MT5 verification ended without a result")
 
     async def _submit_verify_with_short_wait(
         self,
@@ -300,7 +308,10 @@ class Mt5CoreClient:
                 if status == "succeeded":
                     return job_status_resp.get("result") or {}
                 elif status == "failed":
-                    raise Mt5CoreClientJobFailed(job_status_resp.get("error") or "Job failed")
+                    error = job_status_resp.get("error") or "Job failed"
+                    if self._is_transient_job_error(error):
+                        raise Mt5CoreClientTransientJobFailed(str(error))
+                    raise Mt5CoreClientJobFailed(str(error))
                 elif status == "queued":
                     if job_status_resp.get("worker_available") is False:
                         raise Mt5CoreClientWorkerUnavailable(
@@ -317,3 +328,13 @@ class Mt5CoreClient:
                     )
             
             await anyio.sleep(self.poll_interval)
+
+    @staticmethod
+    def _is_transient_job_error(error: Any) -> bool:
+        text = str(error).lower()
+        return (
+            any(code in text for code in ("-10005", "-10004", "-10003"))
+            or "ipc" in text
+            or "pipe" in text
+            or "connection" in text
+        )

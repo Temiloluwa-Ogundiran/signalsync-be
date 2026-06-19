@@ -12,6 +12,7 @@ from app.domains.accounts.mt5_core_client import (
     Mt5CoreClient,
     Mt5CoreClientError,
     Mt5CoreClientJobFailed,
+    Mt5CoreClientTransientJobFailed,
     Mt5CoreClientTimeout,
     Mt5CoreClientWorkerUnavailable,
 )
@@ -127,6 +128,17 @@ async def connect_account(
             "MT5 worker unavailable during account verification | login=%s server=%s",
             payload.broker_login,
             broker_server,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service Error",
+        ) from exc
+    except Mt5CoreClientTransientJobFailed as exc:
+        logger.error(
+            "MT5 transport failed after verification retry | login=%s server=%s error=%s",
+            payload.broker_login,
+            broker_server,
+            str(exc),
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
