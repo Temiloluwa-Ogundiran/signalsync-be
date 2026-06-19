@@ -53,7 +53,7 @@ def test_account_response_exposes_sync_state_fields() -> None:
         "next_sync_not_before": datetime.now(timezone.utc),
         "latest_balance": Decimal("10000.00"),
         "latest_equity": Decimal("10050.00"),
-        "is_deleted": False,
+        "is_archived": False,
         "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }
@@ -98,7 +98,7 @@ def test_account_response_describes_empty_ready_account() -> None:
         "next_sync_not_before": None,
         "latest_balance": None,
         "latest_equity": None,
-        "is_deleted": False,
+        "is_archived": False,
         "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }
@@ -139,7 +139,7 @@ def test_account_response_ignores_stale_empty_outcome_when_trades_exist() -> Non
         "next_sync_not_before": None,
         "latest_balance": Decimal("9836.65"),
         "latest_equity": Decimal("9836.65"),
-        "is_deleted": False,
+        "is_archived": False,
         "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }
@@ -176,7 +176,7 @@ def test_account_response_describes_lifecycle_attention_states() -> None:
         "next_sync_not_before": None,
         "latest_balance": None,
         "latest_equity": None,
-        "is_deleted": False,
+        "is_archived": False,
         "import_method": "auto_sync",
         "created_at": datetime.now(timezone.utc),
     }

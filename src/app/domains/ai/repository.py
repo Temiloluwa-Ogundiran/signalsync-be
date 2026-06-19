@@ -306,21 +306,22 @@ def upsert_user_memory(
 
 def get_account_ids_for_user(db: Session, *, user_id: uuid.UUID) -> List[str]:
     rows = db.execute(
-        text(
-            "SELECT id FROM trading_accounts "
-            "WHERE user_id = :uid AND is_deleted = false"
-        ),
+        text("SELECT id FROM trading_accounts WHERE user_id = :uid"),
         {"uid": str(user_id)},
     ).fetchall()
     return [str(r[0]) for r in rows]
 
 
 def get_accounts_for_user(db: Session, *, user_id: uuid.UUID) -> List[Dict[str, str]]:
-    """Return id + human label for every active account. Used to build the AI account map."""
+    """Return id + human label for every account the user owns. Used to build the AI account map.
+
+    Deletion physically removes the row (no soft-delete), so every remaining row is a
+    live account — matching what the user sees from GET /accounts.
+    """
     rows = db.execute(
         text(
             "SELECT id, display_name, broker_login FROM trading_accounts "
-            "WHERE user_id = :uid AND is_deleted = false"
+            "WHERE user_id = :uid"
         ),
         {"uid": str(user_id)},
     ).fetchall()

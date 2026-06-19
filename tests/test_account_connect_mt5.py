@@ -145,7 +145,7 @@ async def test_connect_account_existing_active_account_still_conflicts(
     payload,
     mock_account,
 ) -> None:
-    mock_account.is_deleted = False
+    mock_account.is_archived = False
     mock_repo.get_account_by_user_and_meta_id.return_value = mock_account
 
     with pytest.raises(HTTPException) as exc:
