@@ -90,6 +90,20 @@ def disconnect_account(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/{account_id}/unarchive", response_model=AccountResponse)
+def unarchive_account(
+    account_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AccountResponse:
+    """Reconnect an archived account: flip it back to active and resume syncing.
+    Credentials and history are retained, so no re-verification is needed."""
+    account = account_service.unarchive_account(
+        db, current_user=current_user, account_id=account_id
+    )
+    return AccountResponse.model_validate(account)
+
+
 @router.delete("/{account_id}/purge", status_code=status.HTTP_204_NO_CONTENT)
 def delete_account(
     account_id: uuid.UUID,

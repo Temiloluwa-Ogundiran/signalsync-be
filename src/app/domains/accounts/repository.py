@@ -462,6 +462,14 @@ def archive_account(db: Session, account: TradingAccount) -> None:
     db.flush()
 
 
+def unarchive_account(db: Session, account: TradingAccount) -> None:
+    """Reverse of archive_account: resume syncing without re-verifying credentials.
+    The stored credentials and history are untouched, so flipping the flag back is
+    enough to bring the account live again."""
+    account.is_archived = False
+    db.flush()
+
+
 def hard_delete_account(db: Session, account: TradingAccount) -> None:
     """Permanently remove the account. Cascades to its trades, snapshots, and
     daily journals via the model's delete-orphan relationships."""

@@ -285,6 +285,19 @@ def disconnect_account(
     db.commit()
 
 
+def unarchive_account(
+    db: Session, *, current_user: User, account_id: uuid.UUID
+) -> TradingAccount:
+    """Reconnect a previously archived account, resuming syncing. Idempotent:
+    unarchiving an already-active account is a no-op that returns it unchanged."""
+    account = get_account(db, current_user=current_user, account_id=account_id)
+    if account.is_archived:
+        account_repo.unarchive_account(db, account)
+        db.commit()
+        db.refresh(account)
+    return account
+
+
 def delete_account(
     db: Session, *, current_user: User, account_id: uuid.UUID
 ) -> None:
