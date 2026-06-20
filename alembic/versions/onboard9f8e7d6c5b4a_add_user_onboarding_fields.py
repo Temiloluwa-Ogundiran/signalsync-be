@@ -45,7 +45,8 @@ def upgrade() -> None:
     if "trading_experience" not in existing:
         op.add_column("users", sa.Column("trading_experience", sa.String(length=32), nullable=True))
     if "primary_goal" not in existing:
-        op.add_column("users", sa.Column("primary_goal", sa.String(length=32), nullable=True))
+        # Comma-joined list of goal codes (multi-select).
+        op.add_column("users", sa.Column("primary_goal", sa.String(length=255), nullable=True))
     if "referral_source" not in existing:
         op.add_column("users", sa.Column("referral_source", sa.String(length=32), nullable=True))
 

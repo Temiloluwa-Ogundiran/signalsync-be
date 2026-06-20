@@ -87,7 +87,7 @@ class UpdateProfileRequest(BaseModel):
 
 
 _ONBOARDING_EXPERIENCE = {"under_1y", "1_3y", "3_5y", "5y_plus", "no_answer"}
-_ONBOARDING_GOAL = {"journal", "analyze", "ai_coaching", "discipline", "funded"}
+_ONBOARDING_GOAL = {"journal", "analyze", "ai_coaching", "backtest", "funded"}
 _ONBOARDING_REFERRAL = {"google", "x", "youtube", "friend", "community", "other"}
 
 
@@ -111,8 +111,12 @@ class CompleteOnboardingRequest(BaseModel):
     @field_validator("primary_goal")
     @classmethod
     def _v_goal(cls, v: Optional[str]) -> Optional[str]:
-        if v and v not in _ONBOARDING_GOAL:
-            raise ValueError("Invalid primary_goal.")
+        # Multi-select: comma-joined list of goal codes (e.g. "journal,analyze").
+        if v:
+            tokens = [t.strip() for t in v.split(",") if t.strip()]
+            if not tokens or any(t not in _ONBOARDING_GOAL for t in tokens):
+                raise ValueError("Invalid primary_goal.")
+            return ",".join(tokens)
         return v
 
     @field_validator("referral_source")

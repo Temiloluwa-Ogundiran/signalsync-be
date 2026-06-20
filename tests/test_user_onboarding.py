@@ -48,3 +48,15 @@ def test_onboarding_request_accepts_known_values_and_none() -> None:
     assert ok.primary_goal == "funded"
     # All optional → empty payload is valid.
     assert CompleteOnboardingRequest().trading_experience is None
+
+
+def test_primary_goal_accepts_multi_select_comma_list() -> None:
+    ok = CompleteOnboardingRequest(primary_goal="journal,analyze,backtest")
+    assert ok.primary_goal == "journal,analyze,backtest"
+    # Whitespace is trimmed.
+    assert CompleteOnboardingRequest(primary_goal=" journal , funded ").primary_goal == "journal,funded"
+
+
+def test_primary_goal_rejects_unknown_token_in_list() -> None:
+    with pytest.raises(ValidationError):
+        CompleteOnboardingRequest(primary_goal="journal,bogus")

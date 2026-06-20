@@ -76,7 +76,8 @@ class User(Base):
         DateTime(timezone=True), nullable=True, default=None
     )
     trading_experience: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    primary_goal: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Comma-joined list of goal codes (multi-select), e.g. "journal,analyze".
+    primary_goal: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     referral_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # Soft delete
