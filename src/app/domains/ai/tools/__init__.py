@@ -11,6 +11,7 @@ from app.domains.ai.tools.search_daily_journal import search_daily_journal
 from app.domains.ai.tools.summarize_journal import summarize_journal
 from app.domains.ai.tools.get_trade_notes import get_trade_notes
 from app.domains.ai.tools.find_tagged_trades import find_tagged_trades
+from app.domains.ai.tools.build_chart import build_chart
 
 ALL_TOOLS = [
     query_trades,
@@ -26,4 +27,5 @@ ALL_TOOLS = [
     summarize_journal,
     get_trade_notes,
     find_tagged_trades,
+    build_chart,
 ]
