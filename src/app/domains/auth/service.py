@@ -143,6 +143,40 @@ def _issue_session(db: Session, user, response: Response) -> tuple[str, int, str
     return access_token, settings.ACCESS_TOKEN_EXPIRE_MINUTES, raw_refresh
 
 
+def _rotate_refresh_cookie(db: Session, user, response: Response) -> str:
+    """Issue a new refresh token for `user` and set it on the response cookie.
+
+    Does NOT revoke any existing token — callers that rotate an active token must
+    revoke the old one themselves first. Used by both the normal rotation path and
+    the concurrent-rotation grace path so a successful refresh ALWAYS hands the
+    client a live refresh token (otherwise a client that loses a rotation race
+    stays pinned to a revoked token and is force-logged-out once grace expires).
+    """
+    new_raw_refresh = str(uuid.uuid4())
+    refresh_expires_at = datetime.now(timezone.utc) + timedelta(
+        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
+    )
+    token_repo.create(
+        db,
+        user_id=user.id,
+        hashed_token=hash_token(new_raw_refresh),
+        token_type=TokenType.REFRESH,
+        expires_at=refresh_expires_at,
+    )
+
+    response.set_cookie(
+        key="refresh_token",
+        value=new_raw_refresh,
+        httponly=True,
+        secure=settings.IS_PRODUCTION,
+        samesite="lax",
+        max_age=60 * 60 * 24 * settings.REFRESH_TOKEN_EXPIRE_DAYS,
+        path="/",
+    )
+
+    return new_raw_refresh
+
+
 def _verify_google_id_token(id_token: str) -> dict:
     """Verify a Google ID token via Google's tokeninfo endpoint.
 
@@ -407,7 +441,6 @@ def refresh_access_token(
         )
 
     hashed = hash_token(raw_refresh)
-    _tok_prefix = hashed[:10]  # TEMP debug: identify the token without leaking it
     token_record = token_repo.get_active(
         db,
         hashed_token=hashed,
@@ -418,29 +451,22 @@ def refresh_access_token(
             db, hashed_token=hashed, token_type=TokenType.REFRESH
         )
         if grace_record is None:
-            # TEMP debug: token neither active nor in grace → genuine 401/logout.
-            recently = token_repo.get_recently_revoked(
-                db, hashed_token=hashed, token_type=TokenType.REFRESH,
-                grace_seconds=86_400,
-            )
-            logger.warning(
-                "refresh: 401 reject prefix=%s reason=%s",
-                _tok_prefix,
-                "revoked_past_grace" if recently else "unknown_or_expired",
-            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired refresh token.",
             )
         # Concurrent-rotation race: token was just rotated by a parallel request.
-        # Issue a fresh ACCESS token only — no new refresh token, no new cookie.
-        logger.info("refresh: grace-path hit prefix=%s", _tok_prefix)
+        # Issue a fresh access token AND hand this client its own live refresh
+        # token + cookie. Without the cookie the losing client stays pinned to the
+        # revoked token and is force-logged-out once the grace window expires.
         user = user_repo.get_by_id(db, grace_record.user_id)
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found.",
             )
+        _rotate_refresh_cookie(db, user, response)
+        db.commit()
         return RefreshResponse(
             access_token=create_access_token(str(user.id)),
             access_token_expiry_minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -456,35 +482,10 @@ def refresh_access_token(
     # ── rotate: revoke old, issue new ────────────────────────────────────────
     token_repo.revoke(db, token_record)
 
-    new_raw_refresh = str(uuid.uuid4())
-    refresh_expires_at = datetime.now(timezone.utc) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
-    token_repo.create(
-        db,
-        user_id=user.id,
-        hashed_token=hash_token(new_raw_refresh),
-        token_type=TokenType.REFRESH,
-        expires_at=refresh_expires_at,
-    )
+    _rotate_refresh_cookie(db, user, response)
 
     new_access_token = create_access_token(str(user.id))
-    # TEMP debug: confirm rotation old→new so we can see if the client adopts it.
-    logger.info(
-        "refresh: rotated prefix=%s -> %s",
-        _tok_prefix, hash_token(new_raw_refresh)[:10],
-    )
     db.commit()
-
-    response.set_cookie(
-        key="refresh_token",
-        value=new_raw_refresh,
-        httponly=True,
-        secure=settings.IS_PRODUCTION,
-        samesite="lax",
-        max_age=60 * 60 * 24 * settings.REFRESH_TOKEN_EXPIRE_DAYS,
-        path="/",
-    )
 
     return RefreshResponse(
         access_token=new_access_token,

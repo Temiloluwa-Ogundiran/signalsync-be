@@ -18,9 +18,17 @@ def find_tagged_trades(
     from_date: Annotated[Optional[str], "Start date YYYY-MM-DD"] = None,
     to_date: Annotated[Optional[str], "End date YYYY-MM-DD (inclusive)"] = None,
 ) -> str:
-    """Analyse performance broken down by trade journal tags/setups.
+    """Analyse performance broken down by trade journal SETUPS and TAGS, returned
+    as two SEPARATE sections so they are never conflated.
+
+    - SETUPS are the trader's named strategies/playbooks (e.g. 'trend pullback').
+      This is what 'which setup is most profitable' means.
+    - TAGS are descriptive labels grouped by category (e.g. Mental: 'Hectic',
+      Indicator: 'RSI OS'). These describe a trade's context, NOT a strategy —
+      a profitable tag is a correlation, not a setup the trader chose.
+
     Use for: 'which setups are making money', 'what tags perform best',
-    'which setup has the best win rate', 'tag performance', 'are my A+ setups profitable'."""
+    'which setup has the best win rate', 'are my A+ setups profitable'."""
     account_ids = enforce_account_scope(account_ids, config)
     date_filter = ""
     extra: dict = {}
@@ -35,18 +43,41 @@ def find_tagged_trades(
         rows = repo.analytics_tagged_trades(db, account_ids, date_filter, extra)
 
     if not rows:
-        return "No tagged trades found for the given accounts and date range."
+        return "No tagged trades or setups found for the given accounts and date range."
 
-    lines = ["=== PERFORMANCE BY TAG / SETUP ==="]
-    for r in rows:
+    def _fmt(r) -> str:
         pf = (
             round(float(r.gross_win) / float(r.gross_loss), 2)
             if r.gross_loss and float(r.gross_loss) > 0
             else "∞"
         )
-        label = f"{r.category}: {r.tag}" if r.category else r.tag
-        lines.append(
-            f"{label} — {r.trades} trades | {r.win_rate}% WR | "
+        return (
+            f"{r.tag} — {r.trades} trades | {r.win_rate}% WR | "
             f"P&L {r.total_pnl} | avg {r.avg_pnl} | PF {pf}"
         )
-    return "\n".join(lines)
+
+    # Split setups (category == 'Setup') from descriptive tags so the model never
+    # reports a Mental/Indicator tag as a profitable "setup".
+    setups = [r for r in rows if (r.category or "").strip().lower() == "setup"]
+    tags = [r for r in rows if (r.category or "").strip().lower() != "setup"]
+
+    out: list[str] = []
+    if setups:
+        out.append("=== PERFORMANCE BY SETUP (named strategies) ===")
+        out.extend(_fmt(r) for r in setups)
+    else:
+        out.append("=== PERFORMANCE BY SETUP ===\nNo named setups assigned to trades yet.")
+
+    if tags:
+        # Group descriptive tags under their category for clarity.
+        out.append("")
+        out.append("=== CONTEXT TAGS (descriptive — NOT setups; correlation only) ===")
+        current_cat = None
+        for r in sorted(tags, key=lambda r: ((r.category or ""), -float(r.total_pnl))):
+            cat = r.category or "Other"
+            if cat != current_cat:
+                out.append(f"-- {cat} --")
+                current_cat = cat
+            out.append(_fmt(r))
+
+    return "\n".join(out)

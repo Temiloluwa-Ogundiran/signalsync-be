@@ -4,6 +4,7 @@ from enum import Enum as PyEnum
 from typing import List, Optional
 
 from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy import false as sa_false
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -65,6 +66,19 @@ class User(Base):
     display_timezone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Onboarding — short post-signup questionnaire (data collection). Flag gates
+    # the one-time flow; the three answers are free-form short codes.
+    onboarding_completed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa_false(), nullable=False
+    )
+    onboarding_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    trading_experience: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Comma-joined list of goal codes (multi-select), e.g. "journal,analyze".
+    primary_goal: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    referral_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # Soft delete
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
