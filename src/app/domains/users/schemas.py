@@ -45,6 +45,12 @@ class UserResponse(BaseModel):
     # preference. Currency is not a user preference — amounts use the broker
     # account's currency.
     display_timezone: Optional[str] = None
+    # Onboarding — the FE/session reads onboarding_completed to gate the one-time
+    # post-signup flow; the answers are returned for completeness.
+    onboarding_completed: bool = False
+    trading_experience: Optional[str] = None
+    primary_goal: Optional[str] = None
+    referral_source: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -78,6 +84,43 @@ class UpdateProfileRequest(BaseModel):
     # cannot be blanked (min_length=1); bio may be set to "" to clear it.
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     bio: Optional[str] = Field(default=None, max_length=500)
+
+
+_ONBOARDING_EXPERIENCE = {"under_1y", "1_3y", "3_5y", "5y_plus", "no_answer"}
+_ONBOARDING_GOAL = {"journal", "analyze", "ai_coaching", "discipline", "funded"}
+_ONBOARDING_REFERRAL = {"google", "x", "youtube", "friend", "community", "other"}
+
+
+class CompleteOnboardingRequest(BaseModel):
+    """Answers from the post-signup onboarding questionnaire (data collection).
+
+    All optional so the flow is resilient, but the FE collects all three. Values
+    are validated against the known option sets; unknown values are rejected.
+    """
+    trading_experience: Optional[str] = None
+    primary_goal: Optional[str] = None
+    referral_source: Optional[str] = None
+
+    @field_validator("trading_experience")
+    @classmethod
+    def _v_exp(cls, v: Optional[str]) -> Optional[str]:
+        if v and v not in _ONBOARDING_EXPERIENCE:
+            raise ValueError("Invalid trading_experience.")
+        return v
+
+    @field_validator("primary_goal")
+    @classmethod
+    def _v_goal(cls, v: Optional[str]) -> Optional[str]:
+        if v and v not in _ONBOARDING_GOAL:
+            raise ValueError("Invalid primary_goal.")
+        return v
+
+    @field_validator("referral_source")
+    @classmethod
+    def _v_ref(cls, v: Optional[str]) -> Optional[str]:
+        if v and v not in _ONBOARDING_REFERRAL:
+            raise ValueError("Invalid referral_source.")
+        return v
 
 
 class UpdatePreferencesRequest(BaseModel):

@@ -21,6 +21,7 @@ from app.domains.users.schemas import (
     AvatarUploadResponse,
     ChangeEmailRequest,
     ChangePasswordRequest,
+    CompleteOnboardingRequest,
     DeleteAccountRequest,
     MessageResponse,
     SessionResponse,
@@ -68,6 +69,22 @@ def update_my_preferences(
     db: Session = Depends(get_db),
 ) -> UserResponse:
     user = user_service.update_preferences(
+        db, current_user=current_user, payload=payload
+    )
+    return UserResponse.model_validate(user)
+
+
+@router.patch(
+    "/me/onboarding",
+    response_model=UserResponse,
+    summary="Save onboarding answers and mark onboarding complete",
+)
+def complete_my_onboarding(
+    payload: CompleteOnboardingRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserResponse:
+    user = user_service.complete_onboarding(
         db, current_user=current_user, payload=payload
     )
     return UserResponse.model_validate(user)
