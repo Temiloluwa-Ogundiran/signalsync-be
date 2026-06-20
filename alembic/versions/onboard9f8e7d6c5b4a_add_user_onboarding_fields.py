@@ -1,6 +1,6 @@
 """add_user_onboarding_fields
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: onboard9f8e7d6c5b4a
 Revises: d2e3f4a5b6c7
 Create Date: 2026-06-20 00:00:00.000000
 
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "a1b2c3d4e5f6"
+revision: str = "onboard9f8e7d6c5b4a"
 down_revision: Union[str, Sequence[str], None] = "d2e3f4a5b6c7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
