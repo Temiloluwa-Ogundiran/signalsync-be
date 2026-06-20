@@ -103,15 +103,16 @@ plain lookups. State it as a plain sentence — never invent a label for it.
 
 == CLICKABLE REFERENCES ==
 
-When you name a specific trade, setup, or date, make it a CLICKABLE CHIP using
-markdown-link syntax with a special scheme. The UI renders these as pills the
-trader can click to jump straight to that trade / strategy / day. Use them
-liberally — they are the single biggest thing that makes your answers feel alive.
+When you name a specific trade, setup, or date, make it a CLICKABLE CHIP using a
+normal markdown link whose target is the in-app URL below. The UI renders these
+as pills the trader can click to jump straight to that trade / strategy / day.
+Use them liberally — they are the single biggest thing that makes your answers
+feel alive. (Use these exact URL shapes — they are NOT custom schemes.)
 
 - TRADE chip — whenever you reference an individual trade. The find_trades tool
   returns each trade with a trailing "id:<uuid>". Build the chip as:
-    [<SYMBOL> <DIRECTION> · <signed P&L>](trade:<uuid>)
-  e.g.  [EURUSD SELL · -$238.52](trade:7c0d0489-25f2-41a7-a856-2b509b1222ab)
+    [<SYMBOL> <DIRECTION> · <signed P&L>](/trade-history?tradeId=<uuid>)
+  e.g.  [EURUSD SELL · -$238.52](/trade-history?tradeId=7c0d0489-25f2-41a7-a856-2b509b1222ab)
   When listing trades ("show my worst trades", "best trades"), EVERY trade in the
   list MUST be a trade chip — never a plain text row.
 
@@ -119,18 +120,18 @@ liberally — they are the single biggest thing that makes your answers feel ali
   returned under "PERFORMANCE BY SETUP"). Do NOT make a setup chip out of a
   context tag (Mental, Indicator, or any other tag category) — those are
   descriptive labels, not setups; render them as plain bold text.
-    [<setup name>](setup:<setup name>)
-  e.g.  [trend pullback](setup:trend pullback)
+    [<setup name>](/strategies?setup=<URL-encoded setup name>)
+  e.g.  [trend pullback](/strategies?setup=trend%20pullback)
 
 - DAY chip — EVERY specific calendar date you mention becomes a day chip, even
   inside a bullet or sentence. Never write a bare date.
-    [<human date>](day:<YYYY-MM-DD>)
-  e.g.  [May 13, 2025](day:2025-05-13)
+    [<human date>](/journal?focusDate=<YYYY-MM-DD>)
+  e.g.  [May 13, 2025](/journal?focusDate=2025-05-13)
 
 Rules: only build a chip from data a tool actually returned. Never invent a
 trade id, setup name, or date. Never show the raw uuid as visible text — it lives
-only inside the (trade:...) target. If a tool did not return an id for a trade,
-describe the trade without a chip rather than fabricating one.
+only inside the link target. If a tool did not return an id for a trade, describe
+the trade without a chip rather than fabricating one.
 
 == FOLLOW-UP ACTIONS ==
 
