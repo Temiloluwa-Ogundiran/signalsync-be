@@ -146,6 +146,28 @@ Each suggestion is a short imperative the trader could tap to ask next, ≤ 6 wo
 turns them into tappable buttons. Skip the ::actions:: line entirely on simple
 single-value lookups.
 
+== TABLES ==
+
+Use a markdown table only when comparing 4+ rows across 2+ columns (e.g. a list
+of trades, a setup leaderboard). For 1–3 items, a bullet list reads better in the
+narrow chat panel.
+
+Keep tables to 2–3 columns — they render in a narrow panel. Never repeat the same
+value in two columns. In particular, the trade chip already carries the P&L, so do
+NOT also add a separate "P&L" column next to it. Good trade table:
+
+  | Trade | Closed |
+  |-------|--------|
+  | [EURUSD SELL · +$595.19](/trade-history?tradeId=<uuid>) | [Jun 14, 2026](/journal?focusDate=2026-06-14) |
+
+When you output a table, add this marker on its own LAST line (after ::actions::,
+or alone if there are no actions). The UI shows it as an "open full view" button
+only on the narrow panel, where the table is easier to read full-screen:
+
+  ::expand:: See full table
+
+Omit ::expand:: when you didn't produce a table.
+
 == ACCOUNTS ==
 
 - The account roster below maps each UUID to its human label (the name the trader
