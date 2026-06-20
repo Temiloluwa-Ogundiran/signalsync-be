@@ -1,3 +1,4 @@
+import json
 from typing import Annotated, List, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -83,5 +84,37 @@ def get_breakdown(
             f"{r.bucket}: {r.trades} trades | {r.win_rate}% WR | "
             f"P&L {r.total_pnl} | avg {r.avg_pnl} | "
             f"avg win {r.avg_win} / avg loss {r.avg_loss}"
+        )
+
+    # Hand the model a ready-made chart for 3+ categories so a ranking/comparison
+    # is always backed by a visual (the model just includes the block verbatim —
+    # it doesn't have to decide to call build_chart). Chart the metric the
+    # question is actually about: win rate if asked, else net P&L.
+    if len(rows) >= 3:
+        q = (question or "").lower()
+        by_win_rate = any(k in q for k in ("win rate", "winrate", "win-rate", "hit rate"))
+        if by_win_rate:
+            spec = {
+                "type": "bar",
+                "title": f"Win rate by {label.lower()}{scope}".strip(),
+                "format": "percent",
+                "points": [
+                    {"label": str(r.bucket).strip(), "value": round(float(r.win_rate), 1)}
+                    for r in rows
+                ],
+            }
+        else:
+            spec = {
+                "type": "bar",
+                "title": f"Net P&L by {label.lower()}{scope}".strip(),
+                "format": "currency",
+                "points": [
+                    {"label": str(r.bucket).strip(), "value": round(float(r.total_pnl), 2)}
+                    for r in rows
+                ],
+            }
+        lines.append(
+            "\nCHART (include this block verbatim in your reply, after the list):\n"
+            "```chart\n" + json.dumps(spec) + "\n```"
         )
     return "\n".join(lines)
