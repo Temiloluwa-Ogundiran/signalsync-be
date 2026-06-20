@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Annotated, List
 
 from langchain_core.runnables import RunnableConfig
@@ -22,15 +22,17 @@ def detect_patterns(
     Use for: 'am I revenge trading', 'do I overtrade', 'do I size up after losses',
     'do I lose more after big wins', 'what bad habits do I have', 'green to red days',
     'discipline check'."""
-    now = datetime.now(timezone.utc)
-    lookback = now - timedelta(days=30)
+    # Analyse the FULL trading history — not a recent window. (A fixed 30-day
+    # lookback returned "no trades" for accounts whose history isn't in the last
+    # month, e.g. demo data.) Epoch lookback captures everything.
+    lookback = datetime(1970, 1, 1, tzinfo=timezone.utc)
     account_ids = enforce_account_scope(account_ids, config)
 
     with SessionLocal() as db:
         trades, avg_volume_all = repo.analytics_detect_patterns(db, account_ids, lookback)
 
     if not trades:
-        return "No trades found in the last 30 days."
+        return "No trades found for this account."
 
     profits = [float(r.net_profit) for r in trades]
     volumes = [float(r.volume) for r in trades]
@@ -81,7 +83,7 @@ def detect_patterns(
     recent_5_avg = round(sum(volumes[-5:]) / min(5, len(volumes)), 2) if volumes else 0
     size_creep = avg_volume_all > 0 and recent_5_avg > avg_volume_all * 1.5
 
-    lines = ["=== BEHAVIOURAL PATTERN ANALYSIS (last 30 days) ==="]
+    lines = ["=== BEHAVIOURAL PATTERN ANALYSIS (all-time) ==="]
     lines.append(f"\n[REVENGE TRADING]")
     lines.append(f"Trades entered <5 min after a loss: {revenge_count}")
     lines.append("⚠ High" if revenge_count >= 5 else ("Moderate" if revenge_count >= 2 else "Low — looks controlled"))
