@@ -287,9 +287,7 @@ async def get_insights(
 # ── Coach's Read (day-level AI narrative) ──────────────────────────────────────
 
 @router.get("/coach-read", response_model=CoachReadResponse)
-@limiter.limit("30/minute")
 async def coach_read(
-    request: Request,
     account_id: uuid.UUID = Query(...),
     date: str = Query(..., description="Trading day, YYYY-MM-DD"),
     refresh: bool = Query(False),
