@@ -72,6 +72,10 @@ def build_compiled(checkpointer=None):
         model=settings.AI_MODEL,
         temperature=settings.AI_TEMPERATURE,
         openai_api_key=settings.OPENAI_API_KEY,
+        # Emit token usage during streaming so on_chat_model_end carries
+        # usage_metadata — otherwise input/output token counts persist as 0
+        # in ai_chat_messages and ai_usage.
+        stream_usage=True,
     ).bind_tools(ALL_TOOLS)
 
     g = StateGraph(MessagesState)

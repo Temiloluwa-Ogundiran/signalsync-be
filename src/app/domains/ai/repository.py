@@ -169,9 +169,50 @@ def touch_session(db: Session, *, session: AiChatSession, now: datetime) -> None
 
 
 def auto_title_session(db: Session, *, session: AiChatSession, content: str) -> None:
+    """Set an immediate placeholder title from the first message.
+
+    Runs synchronously on the first turn so a session is never blank. A nicer
+    AI-generated title overwrites this afterwards (see set_session_title), off
+    the response path so it adds no latency.
+    """
     if session.title is None:
         session.title = content[:80]
         db.flush()
+
+
+def count_messages(db: Session, *, session_id: uuid.UUID) -> int:
+    from sqlalchemy import func, select
+
+    return db.execute(
+        select(func.count())
+        .select_from(AiChatMessage)
+        .where(AiChatMessage.session_id == session_id)
+    ).scalar_one()
+
+
+def set_session_title(
+    db: Session, *, session_id: uuid.UUID, user_id: uuid.UUID, title: str
+) -> None:
+    """Overwrite a session's title (used by the async AI titler)."""
+    session = get_session(db, session_id=session_id, user_id=user_id)
+    if session is not None:
+        session.title = title[:255]
+        db.flush()
+
+
+def get_first_user_message(db: Session, *, session_id: uuid.UUID) -> Optional[str]:
+    """The earliest user message text for a session (None if there is none)."""
+    from sqlalchemy import select
+
+    return db.execute(
+        select(AiChatMessage.content)
+        .where(
+            AiChatMessage.session_id == session_id,
+            AiChatMessage.role == AiMessageRole.user,
+        )
+        .order_by(AiChatMessage.created_at.asc())
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------

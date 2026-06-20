@@ -118,6 +118,8 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------
     OPENAI_API_KEY: str = ""
     AI_MODEL: str = "gpt-4.1-mini"
+    # Cheap model used only to name chat sessions from the first message.
+    AI_TITLE_MODEL: str = "gpt-4.1-mini"
     AI_TEMPERATURE: float = 0.0
     AI_ENABLED: bool = True
     AI_REDIS_URL: str = "redis://localhost:6379/3"
