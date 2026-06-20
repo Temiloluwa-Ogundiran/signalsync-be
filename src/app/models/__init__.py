@@ -38,6 +38,22 @@ from app.domains.ai.models import (
     AiUserMemory,
 )
 from app.domains.notifications.models import Notification, NotificationType
+from app.domains.copy_trading.models import (
+    CopyAccountPolicy,
+    CopyActivityEvent,
+    CopyActivityLevel,
+    CopyRoute,
+    CopyRouteState,
+    CopyTradingUserSettings,
+    LotDistribution,
+    MinimumFields,
+    TakeProfitMode,
+    TelegramConnection,
+    TelegramConnectionState,
+    TelegramSource,
+    TelegramSourceState,
+    TelegramSourceType,
+)
 
 __all__ = [
     "User",
@@ -73,4 +89,18 @@ __all__ = [
     "AiUserMemory",
     "Notification",
     "NotificationType",
+    "CopyTradingUserSettings",
+    "TelegramConnection",
+    "TelegramConnectionState",
+    "TelegramSource",
+    "TelegramSourceType",
+    "TelegramSourceState",
+    "CopyAccountPolicy",
+    "CopyRoute",
+    "CopyRouteState",
+    "TakeProfitMode",
+    "LotDistribution",
+    "MinimumFields",
+    "CopyActivityEvent",
+    "CopyActivityLevel",
 ]
