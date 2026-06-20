@@ -9,6 +9,7 @@ which makes "clear demo" a single delete.
 from __future__ import annotations
 
 import logging
+import random
 import uuid
 from datetime import date, datetime, timezone
 
@@ -29,7 +30,7 @@ from app.domains.accounts.models import (
     TradingPlatform,
     ImportMethod,
 )
-from app.domains.journal.models import DailyJournal, TradeJournal
+from app.domains.journal.models import DailyJournal, Setup, Tag, TradeJournal, TradeTag
 from app.domains.demo.generator import (
     DemoData,
     SETUP_NO_SETUP,
@@ -104,6 +105,86 @@ def _trade_to_row(spec: TradeSpec, account_id: uuid.UUID, idx: int) -> dict:
         "trade_source": TradeSource.personal,
         "setup": spec.setup,
     }
+
+
+# System tag names by group used to tag demo trades. These are the global
+# is_system tags (user_id IS NULL) that ship with every account.
+_DEMO_CONFLUENCE = ["Trend", "Support / Resistance", "Liquidity", "Volume"]
+_DEMO_PATTERN = ["Flag", "Wedge", "Range", "Triangle", "Head and Shoulders"]
+_DEMO_TIMEFRAME = ["15 min", "30 min", "1H", "4H"]
+_DEMO_MENTAL_GOOD = ["Good Mood", "Did Exercise"]
+_DEMO_MENTAL_BAD = ["Stressed", "Slept Bad", "Hectic"]
+_DEMO_PREP_GOOD = ["Well Prepared"]
+_DEMO_PREP_BAD = ["Feel Rushed", "No Preparation"]
+
+
+def _seed_demo_tags_and_setups(
+    db: Session,
+    user_id: uuid.UUID,
+    trade_objs: list[tuple[Trade, "TradeSpec"]],
+) -> None:
+    """Register the demo setups and tag ~70% of demo trades with system tags.
+
+    Deterministic per the fixed demo seed so every demo account looks identical.
+    Idempotent: skips setups/tags that already exist for the account.
+    """
+    rng = random.Random(_seed_for_user(user_id))
+
+    # 1. Register distinct playbook setups (skip the "no setup" sentinel) so they
+    #    appear in the user's setup picker. trades.setup already carries the name.
+    setup_names = {
+        t.setup for t, _ in trade_objs if t.setup and t.setup != SETUP_NO_SETUP
+    }
+    existing_setups = {
+        s.name for s in db.execute(
+            select(Setup.name).where(Setup.user_id == user_id)
+        ).scalars()
+    }
+    for pos, name in enumerate(sorted(setup_names)):
+        if name not in existing_setups:
+            db.add(Setup(user_id=user_id, name=name, position=pos))
+
+    # 2. Look up system tags by name → id (global, user_id IS NULL).
+    wanted = (
+        _DEMO_CONFLUENCE + _DEMO_PATTERN + _DEMO_TIMEFRAME
+        + _DEMO_MENTAL_GOOD + _DEMO_MENTAL_BAD + _DEMO_PREP_GOOD + _DEMO_PREP_BAD
+    )
+    tag_id_by_name = {
+        name: tid
+        for name, tid in db.execute(
+            select(Tag.name, Tag.id).where(
+                Tag.is_system.is_(True), Tag.name.in_(wanted)
+            )
+        ).all()
+    }
+    if not tag_id_by_name:
+        return  # system tags not present in this DB — nothing to attach
+
+    def pick(names: list[str]) -> uuid.UUID | None:
+        ids = [tag_id_by_name[n] for n in names if n in tag_id_by_name]
+        return rng.choice(ids) if ids else None
+
+    # 3. Tag ~70% of trades with a realistic mix; bias mental/prep tags by outcome.
+    for trade, _spec in trade_objs:
+        if rng.random() > 0.70:
+            continue
+        chosen: set[uuid.UUID] = set()
+        for group in (_DEMO_TIMEFRAME, _DEMO_CONFLUENCE, _DEMO_PATTERN):
+            if rng.random() < 0.8:
+                tid = pick(group)
+                if tid:
+                    chosen.add(tid)
+        won = float(trade.net_profit) > 0
+        if rng.random() < 0.5:
+            tid = pick(_DEMO_MENTAL_GOOD if won else _DEMO_MENTAL_BAD)
+            if tid:
+                chosen.add(tid)
+        if rng.random() < 0.4:
+            tid = pick(_DEMO_PREP_GOOD if won else _DEMO_PREP_BAD)
+            if tid:
+                chosen.add(tid)
+        for tid in chosen:
+            db.add(TradeTag(trade_id=trade.id, tag_id=tid))
 
 
 def seed_demo_account(
@@ -213,6 +294,11 @@ def seed_demo_account(
             execution_quality=4 if good else 2,
         )
         db.add(tj)
+
+    # Register the distinct playbook setups as pickable Setups for this user, and
+    # tag ~70% of trades with a realistic mix of system tags so tag/setup
+    # analytics (and the AI) have something to read on a fresh demo account.
+    _seed_demo_tags_and_setups(db, user_id, trade_objs)
 
     db.flush()
     logger.info(

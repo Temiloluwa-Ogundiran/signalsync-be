@@ -754,6 +754,7 @@ def analytics_tagged_trades(
     sql, params = _q(
         f"""
         WITH tagged AS (
+            -- Custom tags (via the trade_tags join).
             SELECT
                 tg.name                AS tag,
                 grp.name               AS category,
@@ -764,6 +765,22 @@ def analytics_tagged_trades(
             JOIN tags tg         ON tg.id = tt.tag_id
             JOIN tag_groups grp  ON grp.id = tg.group_id
             WHERE t.account_id = ANY(:aids_placeholder)
+              {date_filter}
+
+            UNION ALL
+
+            -- Playbook setups (the trades.setup string column). Treated as a
+            -- "Setup" category so "best performing setup" works off the setup
+            -- field every trade carries, not only trade_tags.
+            SELECT
+                t.setup                AS tag,
+                'Setup'                AS category,
+                t.id                   AS trade_id,
+                t.net_profit
+            FROM trades t
+            WHERE t.account_id = ANY(:aids_placeholder)
+              AND t.setup IS NOT NULL
+              AND btrim(t.setup) <> ''
               {date_filter}
         )
         SELECT
