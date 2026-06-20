@@ -287,10 +287,13 @@ async def get_insights(
 
 @router.get("/suggestions", response_model=SuggestedPromptsResponse)
 async def get_suggestions(user: User = Depends(get_current_user)):
+    # All-time framing — no "right now / recent / last month". Recency-scoped
+    # prompts return nothing useful against a fixed past dataset (e.g. demo
+    # data), so these ask over the full trading history instead.
     prompts = [
-        "What's hurting my performance the most right now?",
-        "Summarize my recent trading and identify key patterns.",
-        "What's my profit factor and how does it compare to last month?",
+        "What's hurting my performance the most?",
+        "Summarize my trading and identify key patterns.",
+        "What's my overall profit factor?",
         "Am I revenge trading or overtrading?",
         "Which setup or symbol is making me the most money?",
     ]
