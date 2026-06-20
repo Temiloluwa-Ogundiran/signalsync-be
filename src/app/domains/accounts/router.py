@@ -14,7 +14,7 @@ from app.domains.accounts.schemas import (
     AccountUpdateRequest,
     Mt5ServerSearchItem,
 )
-from app.domains.accounts.models import ImportMethod
+from app.domains.accounts.models import ImportMethod, TradingAccountType
 from app.domains.accounts.sync_orchestrator import check_manual_sync_admission
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
@@ -129,6 +129,11 @@ async def manual_sync(
     itself. The global per-IP limit applies on top as a safety net.
     """
     account = account_service.get_account(db, current_user=current_user, account_id=account_id)
+
+    # Demo accounts are synthetic (no broker, empty credentials) — a sync would
+    # try to decrypt empty creds / hit MT5. No-op immediately, before enqueuing.
+    if account.account_type == TradingAccountType.demo:
+        return {"status": "noop", "message": "Demo accounts don't sync."}
 
     if account.import_method != ImportMethod.auto_sync:
         raise HTTPException(

@@ -124,6 +124,23 @@ def persist_assistant_turn(
         session = repo.get_session(db, session_id=session_id, user_id=user_id)
         if session:
             repo.touch_session(db, session=session, now=datetime.now(timezone.utc))
+
+        # First turn (1 user + this 1 assistant message): upgrade the placeholder
+        # title to a concise AI-generated one. This runs AFTER the response is
+        # produced (in the post-stream worker thread), so it adds no latency to
+        # the user. Best-effort — _titler returns None on any failure and we keep
+        # the placeholder set by auto_title_session.
+        if session and repo.count_messages(db, session_id=session_id) == 2:
+            first_user_msg = repo.get_first_user_message(db, session_id=session_id)
+            if first_user_msg:
+                from app.domains.ai.service._titler import generate_title
+
+                ai_title = generate_title(first_user_msg)
+                if ai_title:
+                    repo.set_session_title(
+                        db, session_id=session_id, user_id=user_id, title=ai_title
+                    )
+
         db.commit()
         msg_id = msg.id
 

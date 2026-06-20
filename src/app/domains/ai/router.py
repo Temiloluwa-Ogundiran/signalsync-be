@@ -47,6 +47,23 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
+def _read_usage(meta) -> tuple[int, int]:
+    """Extract (input_tokens, output_tokens) from a chat model's usage_metadata.
+
+    LangChain exposes usage_metadata as a dict; older/other shapes expose it as
+    an object. Handle both, defaulting to 0 so a missing/odd shape never crashes
+    the stream — it just records zero.
+    """
+    if not meta:
+        return 0, 0
+    if isinstance(meta, dict):
+        return int(meta.get("input_tokens", 0) or 0), int(meta.get("output_tokens", 0) or 0)
+    return (
+        int(getattr(meta, "input_tokens", 0) or 0),
+        int(getattr(meta, "output_tokens", 0) or 0),
+    )
+
+
 # ── Sessions ──────────────────────────────────────────────────────────────────
 
 @router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
@@ -163,10 +180,13 @@ async def stream_chat(
                     yield _sse({"type": "tool", "name": ev["name"]})
                 elif kind == "on_chat_model_end":
                     usage = ev.get("data", {}).get("output", {})
-                    if hasattr(usage, "usage_metadata"):
-                        meta = usage.usage_metadata
-                        input_tokens += getattr(meta, "input_tokens", 0)
-                        output_tokens += getattr(meta, "output_tokens", 0)
+                    # usage_metadata is a dict ({"input_tokens": .., "output_tokens": ..}),
+                    # NOT an attribute object — getattr would always miss and leave
+                    # the counts at 0. Use dict access via _read_usage().
+                    meta = getattr(usage, "usage_metadata", None)
+                    inp, outp = _read_usage(meta)
+                    input_tokens += inp
+                    output_tokens += outp
 
             content = "".join(full_tokens)
             msg_id = await anyio.to_thread.run_sync(
@@ -267,10 +287,13 @@ async def get_insights(
 
 @router.get("/suggestions", response_model=SuggestedPromptsResponse)
 async def get_suggestions(user: User = Depends(get_current_user)):
+    # All-time framing — no "right now / recent / last month". Recency-scoped
+    # prompts return nothing useful against a fixed past dataset (e.g. demo
+    # data), so these ask over the full trading history instead.
     prompts = [
-        "What's hurting my performance the most right now?",
-        "Summarize my recent trading and identify key patterns.",
-        "What's my profit factor and how does it compare to last month?",
+        "What's hurting my performance the most?",
+        "Summarize my trading and identify key patterns.",
+        "What's my overall profit factor?",
         "Am I revenge trading or overtrading?",
         "Which setup or symbol is making me the most money?",
     ]

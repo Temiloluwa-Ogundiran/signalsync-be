@@ -70,6 +70,10 @@ def test_register_swallows_email_delivery_failure() -> None:
     user.auth_provider = "email"
     user.has_usable_password = True
     user.display_timezone = None
+    user.onboarding_completed = False
+    user.trading_experience = None
+    user.primary_goal = None
+    user.referral_source = None
     user.created_at = datetime.now(timezone.utc)
     with (
         patch("app.domains.auth.service.user_repo.get_by_email", return_value=None),

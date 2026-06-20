@@ -28,6 +28,7 @@ from app.domains.users import repository as user_repo
 from app.domains.users.schemas import (
     ChangeEmailRequest,
     ChangePasswordRequest,
+    CompleteOnboardingRequest,
     DeleteAccountRequest,
     SessionResponse,
     SetPasswordRequest,
@@ -77,6 +78,25 @@ def update_preferences(
     if "display_timezone" in fields:
         # Already validated/normalized by the schema (None clears the preference).
         current_user.display_timezone = fields["display_timezone"]
+
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
+def complete_onboarding(
+    db: Session, *, current_user: User, payload: CompleteOnboardingRequest
+) -> User:
+    """Save the onboarding answers and mark onboarding complete.
+
+    Idempotent — re-submitting just overwrites the answers and keeps the flag set.
+    Values are validated at the schema layer.
+    """
+    current_user.trading_experience = payload.trading_experience
+    current_user.primary_goal = payload.primary_goal
+    current_user.referral_source = payload.referral_source
+    current_user.onboarding_completed = True
+    current_user.onboarding_completed_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(current_user)
