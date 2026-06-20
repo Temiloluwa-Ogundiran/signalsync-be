@@ -1,7 +1,7 @@
 """add copy trading control plane
 
 Revision ID: e7f8a9b0c1d2
-Revises: d2e3f4a5b6c7
+Revises: onboard9f8e7d6c5b4a
 Create Date: 2026-06-20 00:00:00.000000
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "e7f8a9b0c1d2"
-down_revision: Union[str, Sequence[str], None] = "d2e3f4a5b6c7"
+down_revision: Union[str, Sequence[str], None] = "onboard9f8e7d6c5b4a"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

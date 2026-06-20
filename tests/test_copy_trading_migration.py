@@ -13,7 +13,7 @@ def test_copy_trading_revision_is_the_single_head() -> None:
     assert script.get_current_head() == "e7f8a9b0c1d2"
     revision = script.get_revision("e7f8a9b0c1d2")
     assert revision is not None
-    assert revision.down_revision == "d2e3f4a5b6c7"
+    assert revision.down_revision == "onboard9f8e7d6c5b4a"
 
 
 def test_copy_trading_migration_declares_all_control_plane_tables() -> None:
