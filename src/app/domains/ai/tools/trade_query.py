@@ -31,19 +31,27 @@ Relation available to you: scoped_trades
   Query ONLY scoped_trades. Never reference `trades` directly. Do NOT write a
   top-level WITH/CTE — use subqueries if you need intermediate aggregation.
 
-Columns (scoped_trades):
-  id, account_id, symbol, direction ('buy'/'sell'), open_price, close_price,
-  volume, profit (gross, never use for P&L), commission, swap, fee,
-  net_profit (REAL P&L — always use this), stop_loss, take_profit, pips,
-  percent_gain, result ('win'/'loss'/'breakeven'), duration_seconds, session,
+Columns (scoped_trades) — these are the ONLY columns; do not invent others:
+  id, account_id, symbol, direction ('buy'/'sell'),
+  open_price, close_price, volume (lots),
+  profit (gross, never use for P&L), commission, swap,
+  net_profit (REAL P&L — always use this),
+  sl (stop-loss price), tp (take-profit price),
+  mfe (max favourable excursion), mae (max adverse excursion),
+  setup (playbook setup NAME as text, may be NULL/''),
+  duration_seconds, session, magic_number, position_id, trade_source,
   opened_at, closed_at (timestamptz)
+
+There is NO 'result', 'pips', 'percent_gain', or 'fee' column. Derive outcome
+from net_profit, and compute pips/percent yourself from prices if asked.
 
 Business rules:
   WIN = net_profit > 0  |  LOSS = net_profit < 0  |  BREAKEVEN = net_profit = 0
   Profit factor = SUM(net_profit) FILTER (WHERE net_profit > 0)
                   / NULLIF(ABS(SUM(net_profit) FILTER (WHERE net_profit < 0)), 0)
+  Best performing setup = GROUP BY setup (ignore NULL/''), order by SUM(net_profit).
   Alias cost sums so the column name matches the cost type
-  (e.g. SUM(commission) AS total_commission, SUM(fee) AS total_fees).
+  (e.g. SUM(commission) AS total_commission, SUM(swap) AS total_swap).
 """
 
 _PROMPT = ChatPromptTemplate.from_messages([

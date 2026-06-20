@@ -63,16 +63,17 @@ def find_trades(
 
     lines = [f"=== TRADES ({len(rows)} results, sorted by {sort_by}) ==="]
     for r in rows:
-        hold_min = round(r.duration_seconds / 60, 1)
-        sl_str = f"SL {r.stop_loss}" if r.stop_loss is not None else "SL —"
-        tp_str = f"TP {r.take_profit}" if r.take_profit is not None else "TP —"
-        pips_str = f"{r.pips}pips" if r.pips is not None else ""
-        pct_str = f"{r.percent_gain}%" if r.percent_gain is not None else ""
+        hold_min = round((r.duration_seconds or 0) / 60, 1)
+        # Win/loss is derived from net_profit — there's no stored 'result' column.
+        outcome = "WIN" if float(r.net_profit) > 0 else "LOSS"
+        sl_str = f"SL {r.sl}" if r.sl is not None else "SL —"
+        tp_str = f"TP {r.tp}" if r.tp is not None else "TP —"
+        setup_str = f" | setup: {r.setup}" if r.setup else ""
         lines.append(
-            f"[{r.result.upper()}] {r.symbol} {r.direction.upper()} {r.volume}lot | "
-            f"P&L {r.net_profit} {pips_str} {pct_str} | {sl_str} | {tp_str} | "
+            f"[{outcome}] {r.symbol} {r.direction.upper()} {r.volume}lot | "
+            f"P&L {r.net_profit} | {sl_str} | {tp_str} | "
             f"{r.session} | hold {hold_min}min | "
-            f"open {r.open_price} → close {r.close_price} | "
+            f"open {r.open_price} → close {r.close_price}{setup_str} | "
             f"closed {str(r.closed_at)[:16]} | id:{r.id}"
         )
     return "\n".join(lines)

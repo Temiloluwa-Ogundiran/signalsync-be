@@ -566,8 +566,8 @@ def analytics_find_trades(
         f"""
         SELECT
             id, symbol, direction, volume, open_price, close_price,
-            stop_loss, take_profit, net_profit, pips, percent_gain,
-            duration_seconds, session, result, opened_at, closed_at
+            sl, tp, net_profit, commission, swap, mfe, mae, setup,
+            duration_seconds, session, opened_at, closed_at
         FROM trades
         {filters}
         ORDER BY {order}
