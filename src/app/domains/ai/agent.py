@@ -68,15 +68,19 @@ def build_compiled(checkpointer=None):
     """Build and compile the graph. Call once at startup after checkpointer is ready."""
     global _llm_with_tools, _compiled
 
-    _llm_with_tools = ChatOpenAI(
+    llm_kwargs = dict(
         model=settings.AI_MODEL,
-        temperature=settings.AI_TEMPERATURE,
         openai_api_key=settings.OPENAI_API_KEY,
         # Emit token usage during streaming so on_chat_model_end carries
         # usage_metadata — otherwise input/output token counts persist as 0
         # in ai_chat_messages and ai_usage.
         stream_usage=True,
-    ).bind_tools(ALL_TOOLS)
+    )
+    # gpt-5.x are reasoning models and reject the `temperature` param (the API
+    # 400s on it). Only pass temperature to models that accept it.
+    if not settings.AI_MODEL.startswith("gpt-5"):
+        llm_kwargs["temperature"] = settings.AI_TEMPERATURE
+    _llm_with_tools = ChatOpenAI(**llm_kwargs).bind_tools(ALL_TOOLS)
 
     g = StateGraph(MessagesState)
     g.add_node("copilot", _copilot_node)

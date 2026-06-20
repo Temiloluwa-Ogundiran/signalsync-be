@@ -117,7 +117,11 @@ class Settings(BaseSettings):
     # AI copilot (Partna AI)
     # -------------------------------------------------------------------
     OPENAI_API_KEY: str = ""
-    AI_MODEL: str = "gpt-4.1-mini"
+    # Primary copilot model. gpt-5.4-mini produces markedly richer, better-
+    # structured analysis than gpt-4.1-mini at lower latency. gpt-5.4-nano is a
+    # cheaper fallback. NOTE: gpt-5.x are reasoning models — they reject the
+    # `temperature` param, so agent.py only passes temperature to non-gpt-5 models.
+    AI_MODEL: str = "gpt-5.4-mini"
     # Cheap model used only to name chat sessions from the first message.
     AI_TITLE_MODEL: str = "gpt-4.1-mini"
     AI_TEMPERATURE: float = 0.0
