@@ -71,6 +71,13 @@ class InsightResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CoachReadResponse(BaseModel):
+    trading_date: str
+    read: str
+    insight: str = ""
+    cached: bool = False
+
+
 class UsageResponse(BaseModel):
     credits_used: int
     credits_limit: int

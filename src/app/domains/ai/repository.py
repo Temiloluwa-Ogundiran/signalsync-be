@@ -313,6 +313,66 @@ def upsert_insight(
 
 
 # ---------------------------------------------------------------------------
+# Daily coach read (cached in ai_insights, kind='daily_read')
+# ---------------------------------------------------------------------------
+
+def get_daily_read(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    account_id: uuid.UUID,
+    trading_date,
+) -> Optional[dict]:
+    """Return the cached {read, insight} for a day, or None."""
+    row = (
+        db.query(AiInsight)
+        .filter(
+            AiInsight.user_id == user_id,
+            AiInsight.account_id == account_id,
+            AiInsight.kind == "daily_read",
+            AiInsight.payload["trading_date"].astext == trading_date.isoformat(),
+        )
+        .order_by(AiInsight.generated_at.desc())
+        .first()
+    )
+    if not row:
+        return None
+    return {"read": row.payload.get("read", ""), "insight": row.payload.get("insight", "")}
+
+
+def upsert_daily_read(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    account_id: uuid.UUID,
+    trading_date,
+    payload: dict,
+) -> AiInsight:
+    """Replace any existing daily_read for this account+date, then insert fresh."""
+    now = datetime.now(timezone.utc)
+    db.query(AiInsight).filter(
+        AiInsight.user_id == user_id,
+        AiInsight.account_id == account_id,
+        AiInsight.kind == "daily_read",
+        AiInsight.payload["trading_date"].astext == trading_date.isoformat(),
+    ).delete(synchronize_session=False)
+
+    insight = AiInsight(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        account_id=account_id,
+        kind="daily_read",
+        payload={**payload, "trading_date": trading_date.isoformat()},
+        data_version=0,
+        generated_at=now,
+        valid_until=None,
+    )
+    db.add(insight)
+    db.flush()
+    return insight
+
+
+# ---------------------------------------------------------------------------
 # User memory
 # ---------------------------------------------------------------------------
 

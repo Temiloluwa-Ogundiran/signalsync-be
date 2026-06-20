@@ -25,6 +25,7 @@ from app.domains.ai.deps import get_current_user_id
 from app.domains.ai.quota import check as quota_check, debit as quota_debit, get_usage_response
 from app.domains.ai.safety import internal_disclosure_response
 from app.domains.ai.schemas import (
+    CoachReadResponse,
     InsightResponse,
     MessageRequest,
     MessageResponse,
@@ -281,6 +282,42 @@ async def get_insights(
     user: User = Depends(get_current_user),
 ):
     return service.get_insights(db, user_id=user.id, account_id=account_id, kind=kind)
+
+
+# ── Coach's Read (day-level AI narrative) ──────────────────────────────────────
+
+@router.get("/coach-read", response_model=CoachReadResponse)
+@limiter.limit("30/minute")
+async def coach_read(
+    request: Request,
+    account_id: uuid.UUID = Query(...),
+    date: str = Query(..., description="Trading day, YYYY-MM-DD"),
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate (or return cached) the Coach's Read for one trading day."""
+    from datetime import date as date_cls
+
+    try:
+        trading_date = date_cls.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="date must be YYYY-MM-DD.")
+
+    # Ownership: the account must belong to this user.
+    owned = {a["id"] for a in repo.get_accounts_for_user(db, user_id=user.id)}
+    if str(account_id) not in owned:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found.")
+
+    result = await anyio.to_thread.run_sync(
+        lambda: service.generate_coach_read(
+            user_id=user.id,
+            account_id=account_id,
+            trading_date=trading_date,
+            refresh=refresh,
+        )
+    )
+    return CoachReadResponse(**result)
 
 
 # ── Suggestions ───────────────────────────────────────────────────────────────
