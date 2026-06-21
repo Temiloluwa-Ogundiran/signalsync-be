@@ -15,8 +15,6 @@ from .schemas import (
     GuardAccountResponse,
     GuardEnableRequest,
     GuardUpdateRequest,
-    MonitorResponse,
-    RulesResponse,
 )
 
 router = APIRouter(prefix="/guard", tags=["guard"])
@@ -69,19 +67,20 @@ def disable_guard_account(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/accounts/{guard_id}/monitor", response_model=MonitorResponse)
+@router.get("/accounts/{guard_id}/monitor", response_model=None)
 def get_monitor(
     guard_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> MonitorResponse:
-    return MonitorResponse(**service.get_monitor(db, current_user=current_user, guard_id=guard_id))
+):
+    """The flat awareness payload, or null until the first poll lands."""
+    return service.get_monitor(db, current_user=current_user, guard_id=guard_id)
 
 
-@router.get("/accounts/{guard_id}/rules", response_model=RulesResponse)
+@router.get("/accounts/{guard_id}/rules", response_model=None)
 def get_rules(
     guard_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> RulesResponse:
-    return RulesResponse(**service.get_rules(db, current_user=current_user, guard_id=guard_id))
+):
+    return service.get_rules(db, current_user=current_user, guard_id=guard_id)

@@ -134,43 +134,68 @@ def get_guard(
 
 def get_monitor(
     db: Session, *, current_user: User, guard_id: uuid.UUID
-) -> dict:
-    """Assemble the fat awareness-dashboard payload from the latest snapshot."""
+) -> Optional[dict]:
+    """Assemble the flat awareness-dashboard payload from the latest snapshot.
+
+    Returns None (HTTP 204-ish empty) until the first poll has landed — the FE
+    shows a "waiting for first reading" shell in that case.
+    """
     guard = _load(db, current_user=current_user, guard_id=guard_id)
     state_row = guard_repo.get_state(db, guard.id)
     if state_row is None:
-        # No poll has landed yet — return an empty-but-valid shell.
-        return {
-            "monitor": None,
-            "challenge": None,
-            "positions": [],
-            "ticks": [],
-            "alerts": [],
-            "connection_health": guard.connection_health,
-        }
+        return None
+
+    buffers = state_row.buffers_json or {}
+    lines = buffers.get("lines", {})
     ticks = guard_repo.list_ticks(db, guard.id)
     alerts = guard_repo.list_recent_alerts(db, guard.id)
+
+    daily_floor = (lines.get("daily") or {}).get("floor")
+    max_dd_floor = (lines.get("maxDD") or {}).get("floor")
+
     return {
-        "monitor": {
-            "account_id": str(guard.id),
-            "ts": state_row.ts.isoformat(),
-            "status": state_row.status,
-            "equity": float(state_row.equity),
-            "balance": float(state_row.balance),
-            "peak": float(state_row.peak),
-            "lines": state_row.buffers_json.get("lines"),
-            "breached": state_row.buffers_json.get("breached", False),
-            "nudge": state_row.buffers_json.get("nudge"),
-        },
+        "account_id": str(guard.id),
+        "ts": state_row.ts.isoformat(),
+        "status": state_row.status,
+        "equity": float(state_row.equity),
+        "balance": float(state_row.balance),
+        "peak": float(state_row.peak),
+        "breached": buffers.get("breached", False),
+        "nudge": buffers.get("nudge"),
+        "lines": lines,
         "challenge": state_row.challenge_json,
-        "positions": state_row.buffers_json.get("positions", []),
-        "ticks": [{"ts": t.ts.isoformat(), "equity": float(t.equity)} for t in ticks],
+        "positions": buffers.get("positions", []),
+        "chart": {
+            "points": [{"ts": t.ts.isoformat(), "equity": float(t.equity)} for t in ticks],
+            "daily_floor": daily_floor,
+            "max_dd_floor": max_dd_floor,
+        },
         "alerts": [
-            {"ts": a.ts.isoformat(), "tier": a.tier, "kind": a.kind, "sent_ok": a.sent_ok}
+            {
+                "ts": a.ts.isoformat(),
+                "tier": a.tier,
+                "kind": a.kind,
+                "message": _alert_message(a.tier, a.kind),
+                "channel": a.channel,
+                "sent_ok": a.sent_ok,
+            }
             for a in alerts
         ],
         "connection_health": guard.connection_health,
     }
+
+
+_ALERT_MESSAGES = {
+    "OFFLINE": "Monitoring offline — manage open risk manually until it resumes.",
+    "BREACHED": "Limit breached.",
+    "CRITICAL": "On the edge — very little room before the line.",
+    "WARNING": "Close to the line.",
+    "CAUTION": "Drawing down — tightening up.",
+}
+
+
+def _alert_message(tier: str, kind: str) -> str:
+    return _ALERT_MESSAGES.get(tier, f"{tier} alert")
 
 
 def get_rules(
@@ -181,7 +206,7 @@ def get_rules(
     rules = rules_view(config)
     if guard.contract_text:
         rules["contract"] = guard.contract_text.strip() + "\n\n" + rules["contract"]
-    return {"rules": rules}
+    return rules
 
 
 # -- helpers ------------------------------------------------------------------
@@ -190,8 +215,8 @@ def _to_response(
     db: Session, guard: GuardAccount, display_name: Optional[str] = None
 ) -> GuardAccountResponse:
     state_row = guard_repo.get_state(db, guard.id)
+    acc = account_repo.get_account_by_id(db, guard.trading_account_id)
     if display_name is None:
-        acc = account_repo.get_account_by_id(db, guard.trading_account_id)
         display_name = acc.display_name if acc else None
     return GuardAccountResponse(
         id=guard.id,
@@ -202,4 +227,8 @@ def _to_response(
         last_polled_at=guard.last_polled_at,
         status=state_row.status if state_row else None,
         display_name=display_name,
+        broker_name=acc.broker_name if acc else None,
+        rule_spec=guard.rule_spec_json,
+        personal=guard.personal_json,
+        contract_text=guard.contract_text,
     )

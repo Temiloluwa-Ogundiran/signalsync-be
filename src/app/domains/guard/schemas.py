@@ -8,7 +8,7 @@ the engine's read-models (monitor/copilot/rules) plus chart + alert data.
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, List, Literal, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -97,33 +97,13 @@ class GuardAccountResponse(BaseModel):
     last_polled_at: Optional[datetime] = None
     status: Optional[str] = None  # latest snapshot status if present
     display_name: Optional[str] = None  # from the linked TradingAccount
+    broker_name: Optional[str] = None   # from the linked TradingAccount
+    # The hydrated config so the switcher + rules form render without extra calls.
+    rule_spec: dict[str, Any]
+    personal: Optional[dict[str, Any]] = None
+    contract_text: Optional[str] = None
 
 
-class AlertItem(BaseModel):
-    ts: datetime
-    tier: str
-    kind: str
-    sent_ok: bool
-
-
-class TickPoint(BaseModel):
-    ts: datetime
-    equity: float
-
-
-class MonitorResponse(BaseModel):
-    """The fat read-model the awareness dashboard renders in a single call.
-
-    ``monitor``/``challenge`` are null until the first poll has landed.
-    """
-
-    monitor: Optional[dict[str, Any]] = None   # monitor_view(state)
-    challenge: Optional[dict[str, Any]] = None  # pass plan + consistency
-    positions: List[dict[str, Any]] = []        # open positions (read-only)
-    ticks: List[TickPoint] = []                 # rolling equity window for the chart
-    alerts: List[AlertItem] = []
-    connection_health: str
-
-
-class RulesResponse(BaseModel):
-    rules: dict[str, Any]            # rules_view(config)
+# The /monitor and /rules endpoints return flat dicts assembled in the service
+# (the engine read-models), not Pydantic-typed shells — see service.get_monitor /
+# get_rules and the FE's GuardMonitor / GuardRulesView types.
