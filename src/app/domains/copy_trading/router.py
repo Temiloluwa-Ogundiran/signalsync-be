@@ -319,7 +319,6 @@ def update_source_pause(source_id: uuid.UUID, payload: CopyTradingSettingsUpdate
     if source is None:
         raise HTTPException(status_code=404, detail="Telegram source not found.")
     source.is_paused = payload.is_paused
-    source.state = TelegramSourceState.paused if payload.is_paused else (TelegramSourceState.ready if source.profile_id else TelegramSourceState.learning)
     db.commit(); db.refresh(source)
     return TelegramSourceResponse.model_validate(source)
 

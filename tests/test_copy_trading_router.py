@@ -1,9 +1,13 @@
 import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.domains.copy_trading.models import TelegramSourceState, TelegramSourceType
+from app.domains.copy_trading.router import update_source_pause
+from app.domains.copy_trading.schemas import CopyTradingSettingsUpdate
 from app.shared.deps import get_current_user
 
 
@@ -30,3 +34,39 @@ def test_openapi_does_not_expose_telegram_session_mutation() -> None:
     paths = TestClient(app).get("/openapi.json").json()["paths"]
     assert "/copy-trading/routes" in paths
     assert "/copy-trading/telegram-connections" not in paths
+
+
+@patch("app.domains.copy_trading.router.repo")
+def test_source_pause_does_not_bypass_unsupported_learning_result(repo) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        connection_id=uuid.uuid4(),
+        telegram_chat_id=-100123,
+        title="Signals",
+        username=None,
+        source_type=TelegramSourceType.group,
+        state=TelegramSourceState.unsupported,
+        unsupported_reason="Images are not supported.",
+        is_paused=False,
+        profile_id=None,
+        profile=None,
+    )
+    repo.get_source_for_user.return_value = source
+    db = MagicMock()
+
+    update_source_pause(
+        source.id,
+        CopyTradingSettingsUpdate(is_paused=True),
+        db,
+        user,
+    )
+    update_source_pause(
+        source.id,
+        CopyTradingSettingsUpdate(is_paused=False),
+        db,
+        user,
+    )
+
+    assert source.state == TelegramSourceState.unsupported
+    assert source.is_paused is False

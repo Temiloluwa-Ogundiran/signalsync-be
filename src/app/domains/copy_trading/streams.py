@@ -13,6 +13,7 @@ class StreamName(str, Enum):
     execution_intents = "copy:execution:intents"
     learning_jobs = "copy:learning:jobs"
     outcomes = "copy:outcomes"
+    dead_letters = "copy:dead-letters"
 
 
 @dataclass(frozen=True)

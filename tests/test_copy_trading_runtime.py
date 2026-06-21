@@ -15,6 +15,7 @@ from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.symbols import BrokerSymbol, resolve_symbol
 from app.domains.copy_trading.models import (
+    AutomationConfidence,
     ChannelMessageSample,
     ChannelProfile,
     CopiedTrade,
@@ -26,9 +27,12 @@ from app.domains.copy_trading.models import (
 )
 from app.domains.copy_trading.worker_runtime import (
     _build_learning_prompt,
+    _learning_source_outcome,
     _learn_source_with_timeout,
     learning_handler,
+    purge_expired_samples,
     recover_learning_sources,
+    StreamWorker,
 )
 
 
@@ -128,6 +132,79 @@ def test_learning_prompt_is_bounded_for_busy_groups():
     assert '"message_id": 0' in prompt
 
 
+def test_low_confidence_learning_is_advisory_not_blocking():
+    state, reason = _learning_source_outcome(
+        confidence=AutomationConfidence.low,
+        image_primary=False,
+    )
+
+    assert state == TelegramSourceState.ready
+    assert reason is None
+
+
+def test_image_primary_learning_remains_unsupported():
+    state, reason = _learning_source_outcome(
+        confidence=AutomationConfidence.high,
+        image_primary=True,
+    )
+
+    assert state == TelegramSourceState.unsupported
+    assert "image signals" in reason.lower()
+
+
+def test_stream_worker_dead_letters_handler_failures_and_keeps_consuming():
+    worker = object.__new__(StreamWorker)
+    worker.client = MagicMock()
+    worker.client.get.return_value = None
+    worker.stream = StreamName.learning_jobs
+    worker.group = "copy-learning"
+    worker.handler = MagicMock(side_effect=RuntimeError("boom"))
+    event = CopyEvent.new(
+        stream=StreamName.learning_jobs,
+        event_type="source.learn",
+        correlation_id="corr-dead-letter",
+        payload={"source_id": str(uuid.uuid4())},
+        idempotency_key="learn:dead-letter",
+    )
+
+    worker._process_message("1-0", event.to_fields())
+
+    worker.client.xadd.assert_called_once()
+    stream, fields = worker.client.xadd.call_args.args
+    assert stream == StreamName.dead_letters.value
+    assert fields["error"] == "boom"
+    worker.client.xack.assert_called_once_with(
+        StreamName.learning_jobs.value,
+        "copy-learning",
+        "1-0",
+    )
+
+
+def test_stream_worker_marks_event_processed_only_after_handler_succeeds():
+    worker = object.__new__(StreamWorker)
+    worker.client = MagicMock()
+    worker.client.get.return_value = None
+    worker.stream = StreamName.learning_jobs
+    worker.group = "copy-learning"
+    worker.handler = MagicMock()
+    event = CopyEvent.new(
+        stream=StreamName.learning_jobs,
+        event_type="source.learn",
+        correlation_id="corr-success",
+        payload={"source_id": str(uuid.uuid4())},
+        idempotency_key="learn:success",
+    )
+
+    worker._process_message("2-0", event.to_fields())
+
+    worker.handler.assert_called_once()
+    worker.client.setex.assert_called_once_with(
+        "copy:processed:copy-learning:learn:success",
+        604800,
+        event.event_id,
+    )
+
+
 @patch("app.domains.copy_trading.worker_runtime._mark_learning_failed")
 @patch("app.domains.copy_trading.worker_runtime.asyncio.run")
 def test_learning_handler_marks_source_failed_instead_of_crashing(run, mark_failed):
@@ -145,13 +222,30 @@ def test_learning_handler_marks_source_failed_instead_of_crashing(run, mark_fail
         idempotency_key=f"learn:{source_id}",
     )
 
-    learning_handler(event, MagicMock())
+    client = MagicMock()
+    client.lock.return_value.acquire.return_value = True
+
+    learning_handler(event, client)
 
     mark_failed.assert_called_once_with(
         source_id,
         "Channel analysis failed. Try analyzing the channel again.",
         "Telegram history request failed",
     )
+    client.lock.return_value.release.assert_called_once()
+
+
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_expired_learning_samples_are_purged(session_local):
+    db = session_local.return_value.__enter__.return_value
+
+    purge_expired_samples()
+
+    db.execute.assert_called_once()
+    statement = str(db.execute.call_args.args[0])
+    assert "DELETE FROM channel_message_samples" in statement
+    assert "expires_at" in statement
+    db.commit.assert_called_once()
 
 
 @patch("app.domains.copy_trading.worker_runtime.RedisStreamBus")

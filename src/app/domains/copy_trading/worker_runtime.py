@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import redis
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 import app.models  # noqa: F401 - register string-based ORM relationships for standalone workers
 from app.core.config import settings
@@ -25,6 +25,7 @@ from app.domains.copy_trading.models import (
     TelegramConnectionState,
     TelegramSource,
     TelegramSourceState,
+    TelegramSourceType,
 )
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
@@ -49,18 +50,63 @@ class StreamWorker:
             from app.domains.copy_trading.workers import publish_unresolved_intents
             publish_unresolved_intents(self.client)
         elif self.group == "copy-learning":
+            purge_expired_samples()
             recover_learning_sources(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
+            self._claim_stale_messages()
             rows = self.client.xreadgroup(self.group, self.consumer, {self.stream.value: ">"}, count=10, block=settings.COPY_TRADING_CONSUMER_BLOCK_MS)
             self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
             for _, messages in rows:
                 for message_id, fields in messages:
-                    event = CopyEvent.from_fields(fields)
-                    dedupe_key = f"copy:processed:{self.group}:{event.idempotency_key}"
-                    if self.client.set(dedupe_key, event.event_id, nx=True, ex=604800):
-                        self.handler(event, self.client)
-                    self.client.xack(self.stream.value, self.group, message_id)
+                    self._process_message(message_id, fields)
+
+    def _process_message(self, message_id: str, fields: dict) -> None:
+        event = CopyEvent.from_fields(fields)
+        dedupe_key = f"copy:processed:{self.group}:{event.idempotency_key}"
+        try:
+            if self.client.get(dedupe_key):
+                return
+            self.handler(event, self.client)
+            self.client.setex(dedupe_key, 604800, event.event_id)
+        except Exception as exc:
+            logger.exception(
+                "Copy-trading event failed stream=%s group=%s event_type=%s correlation_id=%s",
+                self.stream.value,
+                self.group,
+                event.event_type,
+                event.correlation_id,
+            )
+            self.client.xadd(
+                StreamName.dead_letters.value,
+                {
+                    **event.to_fields(),
+                    "source_stream": self.stream.value,
+                    "consumer_group": self.group,
+                    "source_message_id": message_id,
+                    "error": str(exc),
+                },
+            )
+        finally:
+            self.client.xack(self.stream.value, self.group, message_id)
+
+    def _claim_stale_messages(self) -> None:
+        try:
+            claimed = self.client.xautoclaim(
+                self.stream.value,
+                self.group,
+                self.consumer,
+                min_idle_time=300_000,
+                start_id="0-0",
+                count=10,
+            )
+        except Exception as exc:
+            if "unknown command" in str(exc).lower():
+                return
+            raise
+        messages = claimed[1] if len(claimed) > 1 else []
+        for message_id, fields in messages:
+            self._process_message(message_id, fields)
 
 
 class TelegramSessionRuntime:
@@ -120,10 +166,40 @@ class TelegramSessionRuntime:
                 if source is None or connection is None or connection.is_paused or source.is_paused or source.state not in {TelegramSourceState.ready, TelegramSourceState.active}:
                     return
                 source_id = str(source.id)
+                source_type = source.source_type
             message = event.message
             text = message.message or ""
             if not text.strip():
                 return
+            sender_is_admin = source_type == TelegramSourceType.channel
+            if (
+                source_type == TelegramSourceType.group
+                and message.sender_id is not None
+            ):
+                permission_key = (
+                    f"copy:telegram:admin:{connection_id}:{chat_id}:"
+                    f"{int(message.sender_id)}"
+                )
+                cached_permission = self.redis.get(permission_key)
+                if cached_permission is None:
+                    try:
+                        permissions = await client.get_permissions(
+                            chat_id,
+                            int(message.sender_id),
+                        )
+                        sender_is_admin = bool(
+                            getattr(permissions, "is_admin", False)
+                            or getattr(permissions, "is_creator", False)
+                        )
+                    except Exception:
+                        sender_is_admin = False
+                    self.redis.setex(
+                        permission_key,
+                        300,
+                        "1" if sender_is_admin else "0",
+                    )
+                else:
+                    sender_is_admin = cached_permission == "1"
             payload = {
                 "connection_id": connection_id,
                 "source_id": source_id,
@@ -131,6 +207,7 @@ class TelegramSessionRuntime:
                 "message_id": int(message.id),
                 "reply_to_message_id": getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
                 "sender_id": int(message.sender_id) if message.sender_id else None,
+                "sender_is_admin": sender_is_admin,
                 "text": text,
                 "is_forward": bool(message.fwd_from),
                 "occurred_at": message.date.astimezone(timezone.utc).isoformat(),
@@ -248,12 +325,20 @@ class TelegramSessionRuntime:
                             self._auth_update(event.payload["auth_id"], state="failed", message=f"Telegram sign-in failed: {exc}")
                     finally:
                         self.redis.xack(StreamName.telegram_commands.value, group, message_id)
+                        self.redis.xdel(StreamName.telegram_commands.value, message_id)
 
 
 def learning_handler(event: CopyEvent, client) -> None:
     if event.event_type != "source.learn":
         return
     source_id = uuid.UUID(event.payload["source_id"])
+    lock = client.lock(
+        f"copy:learning-lock:{source_id}",
+        timeout=240,
+        blocking_timeout=1,
+    )
+    if not lock.acquire(blocking=True):
+        return
     try:
         asyncio.run(_learn_source_with_timeout(source_id))
     except Exception as exc:
@@ -267,6 +352,8 @@ def learning_handler(event: CopyEvent, client) -> None:
             "Channel analysis failed. Try analyzing the channel again.",
             str(exc),
         )
+    finally:
+        lock.release()
 
 
 async def _learn_source_with_timeout(
@@ -323,6 +410,16 @@ def recover_learning_sources(client) -> None:
         logger.info("Republished %s stranded channel learning jobs", len(sources))
 
 
+def purge_expired_samples() -> None:
+    with SessionLocal() as db:
+        db.execute(
+            delete(ChannelMessageSample).where(
+                ChannelMessageSample.expires_at <= datetime.now(timezone.utc)
+            )
+        )
+        db.commit()
+
+
 def _build_learning_prompt(samples: list[dict], max_chars: int = 60_000) -> str:
     compact = []
     for sample in samples[:60]:
@@ -343,6 +440,19 @@ class LearningResult(BaseModel):
     image_primary: bool
     supported_actions: list[str]
     author_pattern: dict
+
+
+def _learning_source_outcome(
+    *,
+    confidence: AutomationConfidence,
+    image_primary: bool,
+) -> tuple[TelegramSourceState, str | None]:
+    if image_primary:
+        return (
+            TelegramSourceState.unsupported,
+            "This source primarily uses image signals, which are not supported.",
+        )
+    return TelegramSourceState.ready, None
 
 
 async def _learn_source(source_id: uuid.UUID) -> None:
@@ -394,36 +504,58 @@ async def _learn_source(source_id: uuid.UUID) -> None:
     cipher = SessionCipher(settings.ENCRYPTION_KEY)
     with SessionLocal() as db:
         source = db.get(TelegramSource, source_id)
-        profile = ChannelProfile(
-            telegram_chat_id=source.telegram_chat_id,
-            parser_version="v1",
-            signal_style=result.signal_style,
-            recommended_assembly_window_seconds=max(1, min(600, result.recommended_assembly_window_seconds)),
-            confidence=result.confidence,
-            confidence_score=result.confidence_score,
-            image_frequency=image_frequency,
-            image_primary=image_primary,
-            supported_actions=result.supported_actions,
-            author_pattern=result.author_pattern,
-            analyzed_from=now - timedelta(days=7),
-            analyzed_to=now,
-            sample_count=len(samples),
-            validated_at=now,
+        profile = db.execute(
+            select(ChannelProfile).where(
+                ChannelProfile.telegram_chat_id == source.telegram_chat_id,
+                ChannelProfile.parser_version == "v1",
+            )
+        ).scalar_one_or_none()
+        if profile is None:
+            profile = ChannelProfile(
+                telegram_chat_id=source.telegram_chat_id,
+                parser_version="v1",
+                signal_style=result.signal_style,
+                recommended_assembly_window_seconds=90,
+                confidence=result.confidence,
+                confidence_score=result.confidence_score,
+                image_frequency=image_frequency,
+                image_primary=image_primary,
+                supported_actions=[],
+                author_pattern={},
+                analyzed_from=now - timedelta(days=7),
+                analyzed_to=now,
+                sample_count=0,
+                validated_at=now,
+            )
+            db.add(profile)
+        profile.signal_style = result.signal_style
+        profile.recommended_assembly_window_seconds = max(
+            1,
+            min(600, result.recommended_assembly_window_seconds),
         )
-        db.add(profile)
+        profile.confidence = result.confidence
+        profile.confidence_score = result.confidence_score
+        profile.image_frequency = image_frequency
+        profile.image_primary = image_primary
+        profile.supported_actions = result.supported_actions
+        profile.author_pattern = result.author_pattern
+        profile.analyzed_from = now - timedelta(days=7)
+        profile.analyzed_to = now
+        profile.sample_count = len(samples)
+        profile.validated_at = now
         db.flush()
+        db.execute(
+            delete(ChannelMessageSample).where(
+                ChannelMessageSample.profile_id == profile.id
+            )
+        )
         for sample in samples:
             db.add(ChannelMessageSample(profile_id=profile.id, telegram_chat_id=source.telegram_chat_id, telegram_message_id=sample["message_id"], encrypted_raw_message=cipher.encrypt(sample["text"]), message_metadata={key: value for key, value in sample.items() if key != "text"}, purpose="learning", expires_at=now + timedelta(days=7)))
         source.profile_id = profile.id
-        if image_primary:
-            source.state = TelegramSourceState.unsupported
-            source.unsupported_reason = "This source primarily uses image signals, which are not supported."
-        elif result.confidence == AutomationConfidence.low:
-            source.state = TelegramSourceState.unsupported
-            source.unsupported_reason = "Automation confidence is too low for safe copying."
-        else:
-            source.state = TelegramSourceState.ready
-            source.unsupported_reason = None
+        source.state, source.unsupported_reason = _learning_source_outcome(
+            confidence=result.confidence,
+            image_primary=image_primary,
+        )
         db.commit()
 
 
