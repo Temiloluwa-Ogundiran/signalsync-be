@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -31,10 +32,14 @@ from app.domains.copy_trading.models import (
     TradeIntentState,
 )
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
+from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.symbols import BrokerSymbol, normalize_symbol, resolve_symbol
 from app.shared.utils.encryption import decrypt_secret
 from app.shared.utils.email import send_copy_trading_email
 from app.domains.users.models import User
+
+
+logger = logging.getLogger("copy-trading.signal")
 
 
 class AiAction(BaseModel):
@@ -54,7 +59,12 @@ class AiAction(BaseModel):
 def _parse_message(text: str, context: dict) -> AiAction:
     from langchain_openai import ChatOpenAI
 
-    model = ChatOpenAI(model=settings.COPY_TRADING_AI_MODEL, api_key=settings.OPENAI_API_KEY, timeout=0.7, max_retries=0)
+    model = ChatOpenAI(
+        model=settings.COPY_TRADING_AI_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+        timeout=settings.COPY_TRADING_AI_TIMEOUT_SECONDS,
+        max_retries=settings.COPY_TRADING_AI_MAX_RETRIES,
+    )
     parser = model.with_structured_output(AiAction, method="json_schema")
     return parser.invoke([
         ("system", "Parse one Telegram trading instruction. Return only the action described. Preserve exact prices. TP hit and SL hit are status_only. Never invent missing fields."),
@@ -62,8 +72,23 @@ def _parse_message(text: str, context: dict) -> AiAction:
     ])
 
 
-def _activity(db, *, route: CopyRoute, correlation_id: str, action: str, title: str, level: CopyActivityLevel, details: dict) -> None:
-    db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=route.source_id, account_id=route.target_account_id, correlation_id=correlation_id, action=action, title=title, level=level, parsed_details=details, broker_details={}))
+def _activity(
+    db,
+    *,
+    route: CopyRoute,
+    correlation_id: str,
+    action: str,
+    title: str,
+    level: CopyActivityLevel,
+    details: dict,
+    raw_message: str | None = None,
+) -> None:
+    encrypted_raw_message = (
+        SessionCipher(settings.ENCRYPTION_KEY).encrypt(raw_message)
+        if raw_message
+        else None
+    )
+    db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=route.source_id, account_id=route.target_account_id, correlation_id=correlation_id, action=action, title=title, level=level, parsed_details=details, broker_details={}, encrypted_raw_message=encrypted_raw_message))
 
 
 def _route_accepts_message(
@@ -193,8 +218,14 @@ def signal_handler(event: CopyEvent, client) -> None:
         try:
             parsed = _parse_message(event.payload["text"], context)
         except Exception as exc:
+            logger.warning(
+                "Signal parsing failed correlation_id=%s error_type=%s error=%s",
+                event.correlation_id,
+                type(exc).__name__,
+                exc,
+            )
             for route in routes:
-                _activity(db, route=route, correlation_id=event.correlation_id, action="signal.failed", title="Signal analysis failed", level=CopyActivityLevel.error, details={"reason": str(exc)})
+                _activity(db, route=route, correlation_id=event.correlation_id, action="signal.failed", title="Signal analysis failed", level=CopyActivityLevel.error, details={"reason": str(exc)}, raw_message=event.payload.get("text"))
             db.commit()
             return
         if thread is None:
@@ -246,7 +277,7 @@ def signal_handler(event: CopyEvent, client) -> None:
             db.flush()
             if not validation.accepted:
                 title = validation.reason or "Signal skipped"
-                _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.waiting" if "waiting" in title.lower() else "signal.skipped", title=title, level=CopyActivityLevel.info, details=merged)
+                _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.waiting" if "waiting" in title.lower() else "signal.skipped", title=title, level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
                 continue
             legs = build_tp_legs(fixed_lot=route.fixed_lot, take_profits=signal.take_profits, mode=route.take_profit_mode.value, distribution=route.lot_distribution.value) or [None]
             for index, leg in enumerate(legs):
@@ -263,7 +294,7 @@ def signal_handler(event: CopyEvent, client) -> None:
                     continue
                 RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=thread.correlation_id, payload={"intent_id": str(intent.id)}, idempotency_key=key))
             thread.state = SignalThreadState.executing
-            _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged)
+            _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
         db.commit()
 
 
