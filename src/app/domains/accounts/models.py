@@ -290,7 +290,7 @@ class Trade(Base):
     )
 
     broker_trade_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(255), nullable=False)
 
     direction: Mapped[TradeDirection] = mapped_column(
         Enum(TradeDirection, values_callable=lambda x: [e.value for e in x], name="tradedirectionenum"),

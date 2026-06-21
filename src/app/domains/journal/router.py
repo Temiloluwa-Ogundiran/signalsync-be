@@ -67,7 +67,7 @@ def list_journal_trades(
     account_id: uuid.UUID = Query(...),
     from_date: Optional[date] = Query(None),
     to_date: Optional[date] = Query(None),
-    symbol: Optional[str] = Query(None, min_length=1, max_length=20),
+    symbol: Optional[str] = Query(None, min_length=1, max_length=255),
     direction: Optional[TradeDirection] = Query(None),
     session: Optional[TradeSession] = Query(None),
     limit: int = Query(50, ge=1, le=200),
