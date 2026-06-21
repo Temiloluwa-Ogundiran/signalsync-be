@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import app.models  # noqa: F401
 from app.domains.copy_trading.models import (
+    CopyActivityLevel,
     CopyRoute,
     CopyRouteState,
     ParsedAction,
@@ -21,6 +22,7 @@ from app.domains.copy_trading.workers import (
     _route_accepts_message,
     _select_copied_trade,
     execution_handler,
+    expire_signal_threads,
 )
 from app.domains.accounts.models import TradingAccount
 
@@ -215,6 +217,42 @@ def test_management_action_without_symbol_uses_most_recent_trade():
     recent = SimpleNamespace(signal_symbol="GBPUSD", created_at=2)
 
     assert _select_copied_trade([older, recent], {}) is recent
+
+
+@patch("app.domains.copy_trading.workers._activity")
+@patch("app.domains.copy_trading.workers.SessionLocal")
+def test_expired_incomplete_signal_is_marked_missed(
+    session_local,
+    record_activity,
+):
+    source_id = uuid.uuid4()
+    thread = SimpleNamespace(
+        source_id=source_id,
+        state="assembling",
+        correlation_id="corr-expired",
+        context={"direction": "buy", "symbol": "XAUUSD"},
+    )
+    route = SimpleNamespace()
+    db = session_local.return_value.__enter__.return_value
+    db.execute.side_effect = [
+        MagicMock(scalars=MagicMock(return_value=[thread])),
+        MagicMock(scalars=MagicMock(return_value=[route])),
+    ]
+
+    count = expire_signal_threads(datetime.now(timezone.utc))
+
+    assert count == 1
+    assert thread.state.value == "expired"
+    record_activity.assert_called_once_with(
+        db,
+        route=route,
+        correlation_id="corr-expired",
+        action="signal.expired",
+        title="Incomplete signal expired",
+        level=CopyActivityLevel.info,
+        details={"direction": "buy", "symbol": "XAUUSD"},
+    )
+    db.commit.assert_called_once()
 
 
 def test_reconciliation_does_not_confirm_open_from_old_route_history():

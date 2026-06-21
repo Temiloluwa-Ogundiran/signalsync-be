@@ -123,6 +123,43 @@ def _select_copied_trade(
     return None
 
 
+def expire_signal_threads(now: datetime | None = None) -> int:
+    now = now or datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        expired = list(
+            db.execute(
+                select(SignalThread).where(
+                    SignalThread.state == SignalThreadState.assembling,
+                    SignalThread.assembly_deadline <= now,
+                )
+            )
+            .scalars()
+        )
+        for thread in expired:
+            routes = list(
+                db.execute(
+                    select(CopyRoute).where(
+                        CopyRoute.source_id == thread.source_id,
+                        CopyRoute.state == CopyRouteState.active,
+                    )
+                ).scalars()
+            )
+            for route in routes:
+                _activity(
+                    db,
+                    route=route,
+                    correlation_id=thread.correlation_id,
+                    action="signal.expired",
+                    title="Incomplete signal expired",
+                    level=CopyActivityLevel.info,
+                    details=thread.context,
+                )
+            thread.state = SignalThreadState.expired
+        if expired:
+            db.commit()
+        return len(expired)
+
+
 def _broker_timestamp(item: dict) -> float | None:
     for key in ("time_msc", "time_setup_msc", "time_done_msc"):
         value = item.get(key)

@@ -3,6 +3,7 @@ import json
 import logging
 import signal
 import socket
+import time
 import uuid
 import base64
 import io
@@ -43,6 +44,7 @@ class StreamWorker:
         self.consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
         self.handler = handler
         self.running = True
+        self.last_maintenance_at = 0.0
 
     def run(self) -> None:
         self.bus.ensure_group(self.stream, self.group)
@@ -54,12 +56,26 @@ class StreamWorker:
             recover_learning_sources(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
+            self._run_maintenance()
             self._claim_stale_messages()
             rows = self.client.xreadgroup(self.group, self.consumer, {self.stream.value: ">"}, count=10, block=settings.COPY_TRADING_CONSUMER_BLOCK_MS)
             self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
             for _, messages in rows:
                 for message_id, fields in messages:
                     self._process_message(message_id, fields)
+
+    def _run_maintenance(self) -> None:
+        if self.group != "copy-signal":
+            return
+        now = time.monotonic()
+        if now - self.last_maintenance_at < 5:
+            return
+        from app.domains.copy_trading.workers import expire_signal_threads
+
+        expired_count = expire_signal_threads()
+        if expired_count:
+            logger.info("Expired incomplete signal threads count=%s", expired_count)
+        self.last_maintenance_at = now
 
     def _process_message(self, message_id: str, fields: dict) -> None:
         event = CopyEvent.from_fields(fields)
