@@ -12,6 +12,7 @@ import redis
 from pydantic import BaseModel
 from sqlalchemy import select
 
+import app.models  # noqa: F401 - register string-based ORM relationships for standalone workers
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.copy_trading.models import (
