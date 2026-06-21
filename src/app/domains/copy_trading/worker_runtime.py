@@ -347,6 +347,8 @@ async def _learn_source(source_id: uuid.UUID) -> None:
 def run_process(role: str) -> None:
     if not settings.COPY_TRADING_ENABLED:
         logger.warning("COPY_TRADING_ENABLED is false; worker remains healthy but does not consume actions")
+    else:
+        logger.info("copy-trading worker started role=%s", role)
     if role == "telegram-session":
         asyncio.run(TelegramSessionRuntime().run())
     elif role == "copy-learning":
