@@ -17,6 +17,7 @@ from app.domains.notifications.router import router as notifications_router
 from app.domains.accounts.router import router as accounts_router
 from app.domains.csv_import.router import router as csv_import_router
 from app.domains.copy_trading.router import router as copy_trading_router
+from app.domains.guard.router import router as guard_router
 from app.domains.journal.router import (
     analytics_router as journal_analytics_router,
     daily_router as journal_daily_router,
@@ -133,6 +134,7 @@ app.include_router(notifications_router)
 app.include_router(accounts_router)
 app.include_router(csv_import_router)
 app.include_router(copy_trading_router)
+app.include_router(guard_router)
 app.include_router(journal_trades_router)
 app.include_router(journal_daily_router)
 app.include_router(journal_messages_router)
