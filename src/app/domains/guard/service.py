@@ -188,6 +188,7 @@ def get_monitor(
 _ALERT_MESSAGES = {
     "OFFLINE": "Monitoring offline — manage open risk manually until it resumes.",
     "BREACHED": "Limit breached.",
+    "PAUSED": "Soft breach — paused for the day; resumes at the next reset.",
     "CRITICAL": "On the edge — very little room before the line.",
     "WARNING": "Close to the line.",
     "CAUTION": "Drawing down — tightening up.",

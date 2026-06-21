@@ -18,9 +18,10 @@ from .state import AccountState
 
 logger = logging.getLogger(__name__)
 
-# The standing ladder. BREACHED is a firm-line breach; otherwise we map the engine
-# Status tiers (HEALTHY/CAUTION/WARNING/CRITICAL) straight across.
-_LADDER = ["HEALTHY", "CAUTION", "WARNING", "CRITICAL", "BREACHED"]
+# The standing ladder. BREACHED is a firm-line breach; PAUSED is a soft breach
+# (paused for the day, account survives); otherwise we map the engine Status tiers
+# (HEALTHY/CAUTION/WARNING/CRITICAL) straight across.
+_LADDER = ["HEALTHY", "CAUTION", "WARNING", "CRITICAL", "PAUSED", "BREACHED"]
 
 
 def _standing(state: AccountState) -> str:
@@ -68,6 +69,8 @@ def _copy(tier: str, state: AccountState) -> tuple[str, str]:
     nudge = nudge_for(state)
     if tier == "BREACHED":
         return "Limit breached", nudge
+    if tier == "PAUSED":
+        return "Paused for the day", nudge
     if tier == "CRITICAL":
         return "On the edge", nudge
     if tier == "WARNING":

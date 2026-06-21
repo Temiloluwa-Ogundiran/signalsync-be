@@ -18,6 +18,7 @@ from ..enums import (
     Basis,
     ConsistencyBasis,
     DailyAnchor,
+    DailyType,
     DrawdownAnchorRef,
     DrawdownType,
     RuleKind,
@@ -57,6 +58,7 @@ class EngineMemory:
     day_key: Optional[str] = None
     day_anchor: Decimal = Decimal(0)        # daily-loss reference for the current day
     day_start_equity: Decimal = Decimal(0)  # equity at this day's reset
+    day_peak_equity: Decimal = Decimal(0)   # highest equity this firm-day (trailing daily)
     peak: Decimal = Decimal(0)              # for trailing DD
     dd_floor_locked: bool = False           # trailing-then-lock latch
     daily_results: Dict[str, Decimal] = field(default_factory=dict)  # day_key -> realized pnl
@@ -68,6 +70,7 @@ class EngineMemory:
             day_key=self.day_key,
             day_anchor=self.day_anchor,
             day_start_equity=self.day_start_equity,
+            day_peak_equity=self.day_peak_equity,
             peak=self.peak,
             dd_floor_locked=self.dd_floor_locked,
             daily_results=dict(self.daily_results),
@@ -99,7 +102,7 @@ class Engine:
         self._roll_day(mem, tick)
         self._update_peak(mem, tick)
 
-        daily, daily_v = self._daily_buffer(mem, tick)
+        daily, daily_v, daily_soft = self._daily_buffer(mem, tick)
         max_dd, dd_v = self._max_dd_buffer(mem, tick)
         pers_daily, pers_daily_v = self._personal_daily_buffer(mem, tick, daily)
         pers_dd, pers_dd_v = self._personal_dd_buffer(mem, tick, max_dd)
@@ -108,7 +111,8 @@ class Engine:
 
         violations = [v for v in (daily_v, dd_v, pers_daily_v, pers_dd_v) if v]
 
-        status = self._status(daily, max_dd, pers_daily, pers_dd, violations, challenge)
+        status = self._status(daily, max_dd, pers_daily, pers_dd, violations,
+                              challenge, daily_soft)
 
         state = AccountState(
             account_id=self.config.id,
@@ -131,11 +135,14 @@ class Engine:
 
     def _roll_day(self, mem: EngineMemory, tick: Tick) -> None:
         dl = self.spec.daily_loss
-        key = firm_day_key(tick.ts, dl.reset_hour, dl.reset_tz)
+        key = firm_day_key(tick.ts, dl.reset_hour, dl.reset_tz, dl.reset_minute)
         if mem.day_key == key:
             # Same day: accumulate realized result, sticky "traded today".
             mem.traded_today_seen = mem.traded_today_seen or tick.traded_today
             mem.daily_results[key] = tick.day_realized_pnl
+            # Trailing daily: the floor follows the day's highest equity.
+            if tick.equity > mem.day_peak_equity:
+                mem.day_peak_equity = tick.equity
             self._maybe_count_trading_day(mem, key, tick)
             return
 
@@ -143,6 +150,7 @@ class Engine:
         mem.day_key = key
         mem.traded_today_seen = tick.traded_today
         mem.day_start_equity = tick.equity
+        mem.day_peak_equity = tick.equity  # trailing-daily peak resets each firm-day
         # Daily anchor per firm rule: start-of-day balance, or higher of bal/eq.
         if dl.anchor == DailyAnchor.HIGHER_OF_BALANCE_EQUITY:
             mem.day_anchor = max(tick.balance, tick.equity)
@@ -194,19 +202,35 @@ class Engine:
     # -- daily loss -------------------------------------------------------------
 
     def _daily_buffer(self, mem: EngineMemory, tick: Tick):
+        """Returns (buffer, hard_violation, soft_breached).
+
+        STATIC: floor = day anchor - allowance (fixed for the firm-day).
+        TRAILING: floor = day's highest equity - allowance (follows the peak up,
+        never down, resets next firm-day).
+        ``soft_breached`` is True when consumption reaches ``soft_pct`` of the
+        allowance but the hard floor has not been hit (a firm "pause for the day").
+        """
         dl = self.spec.daily_loss
         allowance = dl.pct * self.size
-        floor = mem.day_anchor - allowance
+        if dl.type == DailyType.TRAILING:
+            reference = mem.day_peak_equity
+        else:
+            reference = mem.day_anchor
+        floor = reference - allowance
         current = tick.equity if dl.basis == Basis.EQUITY else tick.balance
         room = current - floor
         ratio = safe_ratio(allowance - room, allowance)
         buf = Buffer(floor=floor, room=room, ratio=ratio, allowance=allowance)
         v = None
+        soft = False
         if room <= 0:
             v = Violation(RuleKind.DAILY_LOSS, True,
                           f"Daily loss limit hit: {dl.basis.value.lower()} "
                           f"{current} at/below floor {floor}.")
-        return buf, v
+        elif dl.soft_pct > 0 and ratio >= dl.soft_pct:
+            # Soft breach: paused for the day, account survives, resumes at reset.
+            soft = True
+        return buf, v, soft
 
     # -- max drawdown -----------------------------------------------------------
 
@@ -362,7 +386,8 @@ class Engine:
 
     def _status(self, daily: Buffer, max_dd: Buffer,
                 pers_daily: Optional[Buffer], pers_dd: Optional[Buffer],
-                violations: List[Violation], challenge: Challenge) -> Status:
+                violations: List[Violation], challenge: Challenge,
+                daily_soft: bool = False) -> Status:
         if any(v.is_firm for v in violations):
             return Status.CRITICAL
         tiers = [self._tier(daily.ratio), self._tier(max_dd.ratio)]
@@ -373,6 +398,9 @@ class Engine:
             tiers.append(challenge.consistency.state)
         if any(v for v in violations):  # personal-only violation
             tiers.append(Status.WARNING)
+        if daily_soft:
+            # Soft breach = paused for the day; sits just below a hard breach.
+            tiers.append(Status.PAUSED)
         return worst(*tiers)
 
     @staticmethod

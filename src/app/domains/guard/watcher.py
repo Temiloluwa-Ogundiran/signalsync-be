@@ -40,6 +40,7 @@ def _memory_to_json(mem: EngineMemory) -> Dict[str, Any]:
         "day_key": mem.day_key,
         "day_anchor": str(mem.day_anchor),
         "day_start_equity": str(mem.day_start_equity),
+        "day_peak_equity": str(mem.day_peak_equity),
         "peak": str(mem.peak),
         "dd_floor_locked": mem.dd_floor_locked,
         "daily_results": {k: str(v) for k, v in mem.daily_results.items()},
@@ -53,6 +54,7 @@ def _memory_from_json(data: Dict[str, Any]) -> EngineMemory:
         day_key=data.get("day_key"),
         day_anchor=Decimal(data.get("day_anchor", "0")),
         day_start_equity=Decimal(data.get("day_start_equity", "0")),
+        day_peak_equity=Decimal(data.get("day_peak_equity", "0")),
         peak=Decimal(data.get("peak", "0")),
         dd_floor_locked=bool(data.get("dd_floor_locked", False)),
         daily_results={k: Decimal(v) for k, v in data.get("daily_results", {}).items()},
@@ -183,7 +185,7 @@ def _persist(db: Session, guard: GuardAccount, engine: Engine, result, tick: Tic
 
     # Closed-day result for the current firm-day (feeds consistency + min-days).
     dl = engine.spec.daily_loss
-    key = firm_day_key(now, dl.reset_hour, dl.reset_tz)
+    key = firm_day_key(now, dl.reset_hour, dl.reset_tz, dl.reset_minute)
     day_pnl = mem.daily_results.get(key, Decimal(0))
     guard_repo.upsert_daily_result(
         db,

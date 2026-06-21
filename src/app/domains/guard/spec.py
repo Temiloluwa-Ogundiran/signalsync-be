@@ -14,6 +14,7 @@ from .enums import (
     Basis,
     ConsistencyBasis,
     DailyAnchor,
+    DailyType,
     DrawdownAnchorRef,
     DrawdownType,
     Phase,
@@ -27,15 +28,24 @@ class DailyLossRule:
     """The intraday floor that resets each firm day.
 
     ``basis`` = what current value is compared (balance vs equity).
-    ``anchor`` = how the day-start reference is set at reset.
-    The floor = anchor - pct * account_size.
+    ``type`` = STATIC (floor fixed at reset from ``anchor``) or TRAILING (floor
+    follows the day's highest equity up, resets next firm-day).
+    ``anchor`` = how the day-start reference is set at reset (STATIC only).
+    The floor = reference - pct * account_size, where reference is the anchor
+    (STATIC) or the day's peak equity (TRAILING).
+    ``soft_pct`` = optional soft-breach threshold as a fraction of the daily
+    *allowance* consumed (0..1). Reaching it = PAUSED for the day (firm halts
+    trading but the account survives), not a hard breach. 0 disables it.
     """
 
     pct: Decimal                      # fraction, e.g. 0.05
     basis: Basis = Basis.EQUITY
+    type: DailyType = DailyType.STATIC
     anchor: DailyAnchor = DailyAnchor.DAY_START_BALANCE
     reset_hour: int = 0               # in reset_tz
+    reset_minute: int = 0             # in reset_tz (firms reset at e.g. 16:59 EST)
     reset_tz: str = "UTC"             # the FIRM's clock, stored explicitly
+    soft_pct: Decimal = Decimal(0)    # 0 = no soft breach
 
     @staticmethod
     def of(pct_value, **kw) -> "DailyLossRule":
@@ -129,6 +139,10 @@ class FirmRuleSpec:
             raise ValueError("consistency.cap must be in (0,1]")
         if not (0 <= self.daily_loss.reset_hour <= 23):
             raise ValueError("reset_hour out of range")
+        if not (0 <= self.daily_loss.reset_minute <= 59):
+            raise ValueError("reset_minute out of range")
+        if not (0 <= self.daily_loss.soft_pct < 1):
+            raise ValueError("daily_loss.soft_pct must be in [0,1)")
 
     # -- (de)serialization to the GuardAccount.rule_spec_json shape -------------
 
@@ -147,9 +161,12 @@ class FirmRuleSpec:
             daily_loss=DailyLossRule(
                 pct=money(dl["pct"]),
                 basis=Basis(dl.get("basis", Basis.EQUITY.value)),
+                type=DailyType(dl.get("type", DailyType.STATIC.value)),
                 anchor=DailyAnchor(dl.get("anchor", DailyAnchor.DAY_START_BALANCE.value)),
                 reset_hour=int(dl.get("reset_hour", 0)),
+                reset_minute=int(dl.get("reset_minute", 0)),
                 reset_tz=dl.get("reset_tz", "UTC"),
+                soft_pct=money(dl.get("soft_pct", 0)),
             ),
             max_drawdown=MaxDrawdownRule(
                 pct=money(dd["pct"]),

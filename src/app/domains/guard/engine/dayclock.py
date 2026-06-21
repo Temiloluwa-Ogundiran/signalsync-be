@@ -10,15 +10,17 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 
-def firm_day_key(ts: datetime, reset_hour: int, tz_name: str) -> str:
+def firm_day_key(ts: datetime, reset_hour: int, tz_name: str,
+                 reset_minute: int = 0) -> str:
     """A stable key identifying the firm-day that ``ts`` falls in.
 
-    Day rolls at ``reset_hour`` in ``tz_name``. A tick before the reset hour
-    belongs to the previous calendar day's session.
+    Day rolls at ``reset_hour:reset_minute`` in ``tz_name`` (firms reset at e.g.
+    16:59 EST, not just on the hour). A tick before the reset time belongs to the
+    previous calendar day's session.
     """
     local = _to_tz(ts, tz_name)
     session_date = local.date()
-    if local.time() < time(hour=reset_hour):
+    if local.time() < time(hour=reset_hour, minute=reset_minute):
         session_date = (local - timedelta(days=1)).date()
     return session_date.isoformat()
 

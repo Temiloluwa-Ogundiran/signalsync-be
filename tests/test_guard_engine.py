@@ -17,6 +17,7 @@ from app.domains.guard.enums import (
     Basis,
     ConsistencyBasis,
     DailyAnchor,
+    DailyType,
     DrawdownAnchorRef,
     DrawdownType,
     Status,
@@ -261,3 +262,77 @@ def test_spec_validate_rejects_loose_daily():
     with pytest.raises(ValueError):
         _spec(daily_loss=DailyLossRule.of(12),
               max_drawdown=MaxDrawdownRule.of(10)).validate()
+
+
+# -- trailing daily loss (E8 Signature / Goat Instant) ------------------------
+
+def test_trailing_daily_floor_follows_intraday_peak():
+    spec = _spec(daily_loss=DailyLossRule.of(
+        5, basis=Basis.EQUITY, type=DailyType.TRAILING))
+    eng = _engine(spec)
+    mem = eng.init_memory()
+    # start of day at 100k -> floor 95k.
+    res = eng.process(mem, Tick.of(_ts(), balance=SIZE, equity=SIZE))
+    assert res.state.daily.floor == Decimal("95000")
+    # equity rises to 104k intraday -> floor trails up to 99k.
+    res = eng.process(res.memory, Tick.of(_ts(13), balance=SIZE, equity=Decimal("104000")))
+    assert res.state.daily.floor == Decimal("99000")
+    # equity falls back to 100k -> floor stays at 99k (never moves down within the day).
+    res = eng.process(res.memory, Tick.of(_ts(14), balance=SIZE, equity=Decimal("100000")))
+    assert res.state.daily.floor == Decimal("99000")
+    # below the trailed floor -> breach, even though equity > start-of-day.
+    res = eng.process(res.memory, Tick.of(_ts(15), balance=SIZE, equity=Decimal("98900")))
+    assert res.state.daily.room <= 0
+    assert res.state.breached is True
+
+
+def test_trailing_daily_resets_next_firm_day():
+    spec = _spec(daily_loss=DailyLossRule.of(5, type=DailyType.TRAILING))
+    eng = _engine(spec)
+    mem = eng.init_memory()
+    res = eng.process(mem, Tick.of(_ts(day=1), balance=SIZE, equity=Decimal("106000")))
+    assert res.state.daily.floor == Decimal("101000")  # trailed to 106k - 5k
+    # next firm-day: peak resets to that day's opening equity.
+    res = eng.process(res.memory, Tick.of(_ts(hour=12, day=2),
+                                          balance=Decimal("106000"), equity=Decimal("106000")))
+    assert res.state.daily.floor == Decimal("101000")  # 106k - 5k, fresh day
+
+
+# -- soft breach / PAUSED -----------------------------------------------------
+
+def test_soft_breach_sets_paused_not_critical():
+    # 5% daily allowance = 5000; soft at 50% consumed = 2500 drawdown.
+    spec = _spec(daily_loss=DailyLossRule.of(5, soft_pct=Decimal("0.5")))
+    eng = _engine(spec)
+    mem = eng.init_memory()
+    res = eng.process(mem, Tick.of(_ts(), balance=SIZE, equity=SIZE))
+    anchor = res.memory
+    # consume 60% (-3000) -> past soft threshold, not the hard floor -> PAUSED.
+    res = eng.process(anchor, Tick.of(_ts(13), balance=SIZE, equity=Decimal("97000")))
+    assert res.state.status == Status.PAUSED
+    assert res.state.daily.room > 0
+    # at the hard floor -> firm breach wins (CRITICAL), not PAUSED.
+    res = eng.process(anchor, Tick.of(_ts(14), balance=SIZE, equity=Decimal("95000")))
+    assert res.state.status == Status.CRITICAL
+    assert res.state.breached is True
+
+
+def test_no_soft_breach_when_soft_pct_zero():
+    spec = _spec(daily_loss=DailyLossRule.of(5))  # soft_pct defaults to 0
+    eng = _engine(spec)
+    mem = eng.init_memory()
+    res = eng.process(mem, Tick.of(_ts(), balance=SIZE, equity=SIZE))
+    res = eng.process(res.memory, Tick.of(_ts(13), balance=SIZE, equity=Decimal("97000")))
+    assert res.state.status != Status.PAUSED
+
+
+# -- reset minute -------------------------------------------------------------
+
+def test_reset_minute_shifts_firm_day_boundary():
+    from app.domains.guard.engine.dayclock import firm_day_key
+    from datetime import datetime, timezone
+    # reset at 16:59 UTC. 16:58 is still the previous session; 17:00 is the new one.
+    before = datetime(2026, 6, 2, 16, 58, tzinfo=timezone.utc)
+    after = datetime(2026, 6, 2, 17, 0, tzinfo=timezone.utc)
+    assert firm_day_key(before, 16, "UTC", 59) == "2026-06-01"
+    assert firm_day_key(after, 16, "UTC", 59) == "2026-06-02"

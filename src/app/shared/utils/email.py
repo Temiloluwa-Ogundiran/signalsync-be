@@ -195,6 +195,7 @@ _GUARD_TIER_COLOR = {
     "CAUTION": "#E3A008",
     "WARNING": "#F08C2E",
     "CRITICAL": "#F0555C",
+    "PAUSED": "#F08C2E",
     "BREACHED": "#F0555C",
     "OFFLINE": "#64748b",
 }
