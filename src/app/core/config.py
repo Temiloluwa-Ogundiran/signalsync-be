@@ -65,9 +65,6 @@ class Settings(BaseSettings):
     IS_PRODUCTION: bool = False
     # Canonical frontend URL used for email/deep links.
     FRONTEND_URL: str = "http://localhost:3000"
-    # Partna Guard: how often the watcher polls each enabled account (seconds).
-    # The deliberate scheduled-sync exception; tune against mt5-core latency/cost.
-    GUARD_POLL_INTERVAL_SECONDS: int = 10
     # Google Sign-In: the OAuth client ID Google ID tokens are issued for. Used
     # as the audience when verifying tokens server-side. Empty disables it.
     GOOGLE_CLIENT_ID: str = ""

@@ -6,11 +6,7 @@ celery_app = Celery(
     "synctrades",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=[
-        "app.tasks.journal_sync_tasks",
-        "app.tasks.auth_tasks",
-        "app.tasks.guard_tasks",
-    ],
+    include=["app.tasks.journal_sync_tasks", "app.tasks.auth_tasks"],
 )
 
 celery_app.conf.update(
@@ -21,17 +17,6 @@ celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
-
-# Partna Guard: the always-on watcher fan-out. This is the ONE scheduled-sync path
-# in the app (see the RULES.md Guard exception). Interval is the
-# GUARD_POLL_INTERVAL_SECONDS knob — a watchdog must keep checking, so this beat
-# entry must stay enabled.
-celery_app.conf.beat_schedule = {
-    "guard-enqueue-polls": {
-        "task": "guard.enqueue_polls",
-        "schedule": float(settings.GUARD_POLL_INTERVAL_SECONDS),
-    },
-}
 
 
 @celery_app.task(name="health.ping")

@@ -64,14 +64,6 @@ from app.domains.copy_trading.models import (
     TradeIntent,
     TradeIntentState,
 )
-from app.domains.guard.models import (
-    GuardAccount,
-    GuardAlert,
-    GuardConnectionHealth,
-    GuardDailyResult,
-    GuardState,
-    GuardTick,
-)
 
 __all__ = [
     "User",
@@ -131,10 +123,4 @@ __all__ = [
     "TradeIntentState",
     "CopiedTrade",
     "SymbolMapping",
-    "GuardAccount",
-    "GuardState",
-    "GuardDailyResult",
-    "GuardTick",
-    "GuardAlert",
-    "GuardConnectionHealth",
 ]

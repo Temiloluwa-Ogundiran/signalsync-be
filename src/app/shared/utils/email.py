@@ -191,43 +191,6 @@ def send_password_reset_email(to_email: str, raw_token: str) -> None:
     _send(to_email, "Reset your TradePartna password", html_body, context="password-reset")
 
 
-_GUARD_TIER_COLOR = {
-    "CAUTION": "#E3A008",
-    "WARNING": "#F08C2E",
-    "CRITICAL": "#F0555C",
-    "PAUSED": "#F08C2E",
-    "BREACHED": "#F0555C",
-    "OFFLINE": "#64748b",
-}
-
-
-def send_guard_alert_email(to_email: str, *, tier: str, headline: str, detail: str,
-                           guard_id: str) -> None:
-    """A Partna Guard awareness alert. Read-only — we warn, we don't act.
-
-    ``tier`` is the standing crossed (CAUTION/WARNING/CRITICAL/BREACHED/OFFLINE).
-    """
-    import html
-
-    color = _GUARD_TIER_COLOR.get(tier, _BRAND)
-    link = f"{settings.FRONTEND_URL.rstrip('/')}/guard"
-    body = _render_email(
-        heading=html.escape(headline),
-        intro=html.escape(detail),
-        button_label="View Partna Guard",
-        button_url=link,
-        expiry_note=(
-            "Partna Guard is read-only — it warns, it does not close your trades. "
-            "It reduces breach risk but cannot guarantee passing or prevent all "
-            "losses; outages, gaps and news spikes are disclaimed."
-        ),
-        footnote="You're receiving this because Guard alerts are enabled on this account.",
-    )
-    # Tint the heading rule with the tier color via a leading marker the shell keeps.
-    body = body.replace(_BRAND, color) if tier in _GUARD_TIER_COLOR else body
-    _send(to_email, f"Partna Guard · {html.escape(headline)}", body, context="guard")
-
-
 def send_copy_trading_email(to_email: str, *, subject: str, details: dict) -> None:
     import html
     rows = "".join(
