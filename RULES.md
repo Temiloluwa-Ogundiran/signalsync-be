@@ -153,6 +153,12 @@ Query discipline:
 - **Sync is on-demand only.** There is NO scheduled/periodic sync — this protects the external
   MT5 service. Do not add Celery beat schedules, cron syncs, or "auto-refresh" endpoints.
   The only entry point is `POST /accounts/{id}/sync` → admission checks → Celery task.
+  - **EXCEPTION — Partna Guard.** The Guard watcher (`guard.enqueue_polls` beat →
+    `guard.poll_account`) polls each enabled account on a schedule. This is deliberate and is
+    the ONLY scheduled path in the app: a watchdog that only checks on demand is useless. The
+    `guard-enqueue-polls` beat entry and `GUARD_POLL_INTERVAL_SECONDS` must stay — do not
+    "fix" them to on-demand. Guard reads positions only (no trade sync), so the mt5-core load
+    is bounded by the poll interval × enabled-account count; tune the interval, don't remove it.
 - Per-account mutual exclusion = the transaction-scoped advisory lock (§3). Do not add
   in-process locks/sets for cross-request coordination — module-level state cannot work
   across workers and WILL silently no-op (we shipped exactly that bug).
