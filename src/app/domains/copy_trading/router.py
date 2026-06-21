@@ -319,6 +319,18 @@ def update_source_pause(source_id: uuid.UUID, payload: CopyTradingSettingsUpdate
     return TelegramSourceResponse.model_validate(source)
 
 
+@router.delete("/sources/{source_id}", status_code=204)
+def delete_source(source_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    source = repo.get_source_for_user(db, source_id=source_id, user_id=current_user.id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Telegram source not found.")
+    routes = repo.list_routes_for_user(db, user_id=current_user.id)
+    if any(r.source_id == source_id for r in routes):
+        raise HTTPException(status_code=409, detail="Cannot delete a channel that still has copy routes. Remove the routes first.")
+    db.delete(source)
+    db.commit()
+
+
 @router.get("/activity/{event_id}/raw")
 def reveal_activity_raw(event_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     event = db.get(__import__("app.domains.copy_trading.models", fromlist=["CopyActivityEvent"]).CopyActivityEvent, event_id)
