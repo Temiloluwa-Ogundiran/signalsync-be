@@ -8,12 +8,18 @@ from enum import Enum
 
 
 class Status(str, Enum):
-    """Account health tier, worst-of across all rules for a tick."""
+    """Account health tier, worst-of across all rules for a tick.
+
+    PAUSED = a firm "soft breach": the day's trading is halted but the account
+    survives and resumes at the next reset (e.g. The 5%ers, E8 2% soft breach).
+    It sits just below a hard (account-ending) breach, which maps to CRITICAL.
+    """
 
     HEALTHY = "HEALTHY"
     CAUTION = "CAUTION"
     WARNING = "WARNING"
     CRITICAL = "CRITICAL"
+    PAUSED = "PAUSED"
     LOCKED = "LOCKED"
 
     @property
@@ -26,7 +32,8 @@ _STATUS_ORDER = {
     Status.CAUTION: 1,
     Status.WARNING: 2,
     Status.CRITICAL: 3,
-    Status.LOCKED: 4,
+    Status.PAUSED: 4,
+    Status.LOCKED: 5,
 }
 
 
@@ -47,6 +54,20 @@ class DailyAnchor(str, Enum):
 
     DAY_START_BALANCE = "DAY_START_BALANCE"
     HIGHER_OF_BALANCE_EQUITY = "HIGHER_OF_BALANCE_EQUITY"
+
+
+class DailyType(str, Enum):
+    """Whether the daily floor is fixed for the day or trails intraday peak.
+
+    STATIC = floor set once at the firm reset from ``anchor`` (start-of-day balance
+    or higher-of-balance-equity).
+    TRAILING = floor follows the day's *highest equity* up and never moves down,
+    then resets at the next firm-day (E8 Signature, Goat Instant). This is the
+    strictest daily model — every floating profit raises the floor.
+    """
+
+    STATIC = "STATIC"
+    TRAILING = "TRAILING"
 
 
 class DrawdownType(str, Enum):

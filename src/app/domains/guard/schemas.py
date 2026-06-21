@@ -16,6 +16,7 @@ from .enums import (
     Basis,
     ConsistencyBasis,
     DailyAnchor,
+    DailyType,
     DrawdownAnchorRef,
     DrawdownType,
     TradingDayRule,
@@ -27,9 +28,14 @@ from .enums import (
 class DailyLossInput(BaseModel):
     pct: Decimal = Field(gt=0, lt=1)            # fraction, e.g. 0.05
     basis: Basis = Basis.EQUITY
+    type: DailyType = DailyType.STATIC
     anchor: DailyAnchor = DailyAnchor.DAY_START_BALANCE
     reset_hour: int = Field(default=0, ge=0, le=23)
+    reset_minute: int = Field(default=0, ge=0, le=59)
     reset_tz: str = Field(default="UTC", max_length=64)
+    # Optional soft-breach: fraction of the daily allowance consumed that pauses
+    # the day (e.g. 0.5 = E8's 2% pause inside a 4% limit). 0 disables it.
+    soft_pct: Decimal = Field(default=Decimal(0), ge=0, lt=1)
 
 
 class MaxDrawdownInput(BaseModel):

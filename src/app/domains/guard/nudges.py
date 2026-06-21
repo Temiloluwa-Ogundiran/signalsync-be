@@ -23,6 +23,9 @@ def nudge_for(state: AccountState) -> str:
     if personal:
         return "🟠 " + personal[0].message + " Stepping back here keeps the firm line intact."
 
+    if state.status == Status.PAUSED:
+        return ("⏸️ Soft breach — your firm pauses trading for the day here. The "
+                "account survives; it resumes at the next reset. Stand down for today.")
     if state.status == Status.CRITICAL:
         tight = _tightest(state)
         return (f"⚠️ {tight} — only {_money(_room(state, tight))} of room left. "
