@@ -129,6 +129,7 @@ def start_worker() -> None:
 
 def start_copy_worker(role: str) -> None:
     wait_for_deps()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
     from app.domains.copy_trading.worker_runtime import run_process
     run_process(role)
 
