@@ -1,4 +1,6 @@
 from decimal import Decimal
+from unittest.mock import MagicMock, patch
+import uuid
 
 import pytest
 
@@ -20,6 +22,13 @@ from app.domains.copy_trading.models import (
     SignalThread,
     SymbolMapping,
     TradeIntent,
+    TelegramSourceState,
+)
+from app.domains.copy_trading.worker_runtime import (
+    _build_learning_prompt,
+    _learn_source_with_timeout,
+    learning_handler,
+    recover_learning_sources,
 )
 
 
@@ -105,6 +114,72 @@ def test_complete_copy_trading_domain_tables_are_declared():
         "copied_trades",
         "symbol_mappings",
     }
+
+
+def test_learning_prompt_is_bounded_for_busy_groups():
+    samples = [
+        {"message_id": index, "text": "X" * 4000, "date": "2026-06-21T00:00:00+00:00"}
+        for index in range(250)
+    ]
+
+    prompt = _build_learning_prompt(samples)
+
+    assert len(prompt) <= 60_000
+    assert '"message_id": 0' in prompt
+
+
+@patch("app.domains.copy_trading.worker_runtime._mark_learning_failed")
+@patch("app.domains.copy_trading.worker_runtime.asyncio.run")
+def test_learning_handler_marks_source_failed_instead_of_crashing(run, mark_failed):
+    source_id = uuid.uuid4()
+    def fail(coroutine):
+        coroutine.close()
+        raise RuntimeError("Telegram history request failed")
+
+    run.side_effect = fail
+    event = CopyEvent.new(
+        stream=StreamName.learning_jobs,
+        event_type="source.learn",
+        correlation_id="learn-1",
+        payload={"source_id": str(source_id)},
+        idempotency_key=f"learn:{source_id}",
+    )
+
+    learning_handler(event, MagicMock())
+
+    mark_failed.assert_called_once_with(
+        source_id,
+        "Channel analysis failed. Try analyzing the channel again.",
+        "Telegram history request failed",
+    )
+
+
+@patch("app.domains.copy_trading.worker_runtime.RedisStreamBus")
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_recover_learning_sources_republishes_stranded_jobs(session_local, bus_class):
+    source = MagicMock(id=uuid.uuid4(), state=TelegramSourceState.learning)
+    session_local.return_value.__enter__.return_value.execute.return_value.scalars.return_value = [source]
+    bus = bus_class.return_value
+
+    recover_learning_sources(MagicMock())
+
+    published = bus.publish.call_args.args[0]
+    assert published.event_type == "source.learn"
+    assert published.payload == {"source_id": str(source.id)}
+    assert published.idempotency_key.startswith(f"recover-learn:{source.id}:")
+
+
+@patch("app.domains.copy_trading.worker_runtime._learn_source")
+def test_learning_timeout_prevents_indefinite_loading(learn_source):
+    async def never_finishes(_source_id):
+        await __import__("asyncio").sleep(60)
+
+    learn_source.side_effect = never_finishes
+
+    with pytest.raises(TimeoutError):
+        __import__("asyncio").run(
+            _learn_source_with_timeout(uuid.uuid4(), timeout_seconds=0.01)
+        )
 
 
 @pytest.fixture

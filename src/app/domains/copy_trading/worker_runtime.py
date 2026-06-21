@@ -19,6 +19,8 @@ from app.domains.copy_trading.models import (
     AutomationConfidence,
     ChannelMessageSample,
     ChannelProfile,
+    CopyActivityEvent,
+    CopyActivityLevel,
     TelegramConnection,
     TelegramConnectionState,
     TelegramSource,
@@ -46,6 +48,8 @@ class StreamWorker:
         if self.group == "copy-execution":
             from app.domains.copy_trading.workers import publish_unresolved_intents
             publish_unresolved_intents(self.client)
+        elif self.group == "copy-learning":
+            recover_learning_sources(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
             rows = self.client.xreadgroup(self.group, self.consumer, {self.stream.value: ">"}, count=10, block=settings.COPY_TRADING_CONSUMER_BLOCK_MS)
@@ -249,7 +253,86 @@ class TelegramSessionRuntime:
 def learning_handler(event: CopyEvent, client) -> None:
     if event.event_type != "source.learn":
         return
-    asyncio.run(_learn_source(uuid.UUID(event.payload["source_id"])))
+    source_id = uuid.UUID(event.payload["source_id"])
+    try:
+        asyncio.run(_learn_source_with_timeout(source_id))
+    except Exception as exc:
+        logger.exception(
+            "Channel learning failed source_id=%s correlation_id=%s",
+            source_id,
+            event.correlation_id,
+        )
+        _mark_learning_failed(
+            source_id,
+            "Channel analysis failed. Try analyzing the channel again.",
+            str(exc),
+        )
+
+
+async def _learn_source_with_timeout(
+    source_id: uuid.UUID, timeout_seconds: float = 180
+) -> None:
+    await asyncio.wait_for(_learn_source(source_id), timeout=timeout_seconds)
+
+
+def _mark_learning_failed(source_id: uuid.UUID, user_message: str, internal_error: str) -> None:
+    with SessionLocal() as db:
+        source = db.get(TelegramSource, source_id)
+        if source is None:
+            return
+        source.state = TelegramSourceState.unsupported
+        source.unsupported_reason = user_message
+        db.add(
+            CopyActivityEvent(
+                user_id=source.user_id,
+                source_id=source.id,
+                correlation_id=str(uuid.uuid4()),
+                action="source.learning_failed",
+                level=CopyActivityLevel.error,
+                title="Channel analysis failed",
+                body=user_message,
+                parsed_details={"reason": "learning_failed"},
+                broker_details={},
+            )
+        )
+        db.commit()
+
+
+def recover_learning_sources(client) -> None:
+    bus = RedisStreamBus(client)
+    recovered_at = int(datetime.now(timezone.utc).timestamp())
+    with SessionLocal() as db:
+        sources = list(
+            db.execute(
+                select(TelegramSource).where(
+                    TelegramSource.state == TelegramSourceState.learning
+                )
+            ).scalars()
+        )
+    for source in sources:
+        bus.publish(
+            CopyEvent.new(
+                stream=StreamName.learning_jobs,
+                event_type="source.learn",
+                correlation_id=str(uuid.uuid4()),
+                payload={"source_id": str(source.id)},
+                idempotency_key=f"recover-learn:{source.id}:{recovered_at}",
+            )
+        )
+    if sources:
+        logger.info("Republished %s stranded channel learning jobs", len(sources))
+
+
+def _build_learning_prompt(samples: list[dict], max_chars: int = 60_000) -> str:
+    compact = []
+    for sample in samples[:60]:
+        item = dict(sample)
+        item["text"] = str(item.get("text", ""))[:900]
+        candidate = json.dumps([*compact, item], ensure_ascii=True)
+        if len(candidate) > max_chars:
+            break
+        compact.append(item)
+    return json.dumps(compact, ensure_ascii=True)
 
 
 class LearningResult(BaseModel):
@@ -304,7 +387,7 @@ async def _learn_source(source_id: uuid.UUID) -> None:
         result = LearningResult(signal_style="No usable text signals", recommended_assembly_window_seconds=90, confidence=AutomationConfidence.low, confidence_score=0, image_primary=image_count > 0, supported_actions=[], author_pattern={})
     else:
         model = ChatOpenAI(model=settings.COPY_TRADING_LEARNING_MODEL, api_key=settings.OPENAI_API_KEY, timeout=45, max_retries=1).with_structured_output(LearningResult, method="json_schema")
-        result = await model.ainvoke([("system", "Analyze this Telegram trading source. Detect complete vs multi-message signals, safe assembly timing, supported actions, author patterns and image dependence. Be conservative. Assembly window must be 1-600 seconds."), ("human", json.dumps(samples, ensure_ascii=True))])
+        result = await model.ainvoke([("system", "Analyze this Telegram trading source. Detect complete vs multi-message signals, safe assembly timing, supported actions, author patterns and image dependence. Be conservative. Assembly window must be 1-600 seconds."), ("human", _build_learning_prompt(samples))])
     image_frequency = image_count / max(len(samples) + image_count, 1)
     image_primary = result.image_primary or image_frequency >= 0.5
     now = datetime.now(timezone.utc)
