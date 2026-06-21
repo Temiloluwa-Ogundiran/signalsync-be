@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.domains.copy_trading.models import TelegramSourceState, TelegramSourceType
-from app.domains.copy_trading.router import update_source_pause
+from app.domains.copy_trading.router import _request_live_dialogs, update_source_pause
 from app.domains.copy_trading.schemas import CopyTradingSettingsUpdate
 from app.shared.deps import get_current_user
 
@@ -70,3 +70,26 @@ def test_source_pause_does_not_bypass_unsupported_learning_result(repo) -> None:
 
     assert source.state == TelegramSourceState.unsupported
     assert source.is_paused is False
+
+
+@patch("app.domains.copy_trading.router._publish_command")
+def test_live_dialog_request_uses_telegram_session_worker(publish_command) -> None:
+    connection_id = uuid.uuid4()
+    client = MagicMock()
+    client.get.return_value = (
+        '[{"chat_id":-1001,"title":"New group","username":null,'
+        '"source_type":"group","is_admin":false}]'
+    )
+
+    dialogs = _request_live_dialogs(
+        client,
+        connection_id,
+        timeout_seconds=0.1,
+    )
+
+    assert dialogs[0]["title"] == "New group"
+    event_type, correlation_id, payload, key = publish_command.call_args.args
+    assert event_type == "dialogs.refresh"
+    assert correlation_id == payload["request_id"]
+    assert payload["connection_id"] == str(connection_id)
+    assert key == f"dialogs-refresh:{payload['request_id']}"

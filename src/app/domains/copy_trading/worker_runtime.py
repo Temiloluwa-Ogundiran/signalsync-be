@@ -144,7 +144,7 @@ class TelegramSessionRuntime:
         self._auth_update(auth_id, state="ready", message="Telegram connected")
         await self._attach_updates(auth_id, client)
 
-    async def _cache_dialogs(self, connection_id: str, client) -> None:
+    async def _cache_dialogs(self, connection_id: str, client) -> list[dict]:
         dialogs = []
         async for dialog in client.iter_dialogs():
             entity = dialog.entity
@@ -154,6 +154,7 @@ class TelegramSessionRuntime:
                 continue
             dialogs.append({"chat_id": int(dialog.id), "title": dialog.name or "Untitled", "username": getattr(entity, "username", None), "source_type": "channel" if is_channel else "group", "is_admin": bool(getattr(entity, "admin_rights", None) or getattr(entity, "creator", False))})
         self.redis.setex(f"copy:telegram:dialogs:{connection_id}", 86400, json.dumps(dialogs))
+        return dialogs
 
     async def _attach_updates(self, connection_id: str, client) -> None:
         from telethon import events
@@ -271,6 +272,49 @@ class TelegramSessionRuntime:
             qr_data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
             self._auth_update(auth_id, state="qr_required", qr_url=qr_data_url, message="Scan this QR code in Telegram")
             asyncio.create_task(self._wait_qr(auth_id, client, qr_login))
+        elif event.event_type == "dialogs.refresh":
+            connection_id = event.payload["connection_id"]
+            request_id = event.payload["request_id"]
+            response_key = f"copy:telegram:dialogs-response:{request_id}"
+            client = self.clients.get(f"connection:{connection_id}")
+            if client is None:
+                self.redis.setex(
+                    response_key,
+                    30,
+                    json.dumps(
+                        {
+                            "error": (
+                                "The Telegram session is reconnecting. "
+                                "Try refreshing again in a moment."
+                            )
+                        }
+                    ),
+                )
+                return
+            try:
+                dialogs = await self._cache_dialogs(connection_id, client)
+                self.redis.setex(
+                    response_key,
+                    30,
+                    json.dumps(dialogs),
+                )
+            except Exception:
+                logger.exception(
+                    "Could not refresh Telegram dialogs connection_id=%s",
+                    connection_id,
+                )
+                self.redis.setex(
+                    response_key,
+                    30,
+                    json.dumps(
+                        {
+                            "error": (
+                                "Telegram could not refresh channels and groups. "
+                                "Try again in a moment."
+                            )
+                        }
+                    ),
+                )
         elif event.event_type == "connection.disconnect":
             client = self.clients.pop(f"connection:{event.payload['connection_id']}", None)
             if client:

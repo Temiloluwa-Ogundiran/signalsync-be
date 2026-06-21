@@ -1,5 +1,5 @@
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
@@ -33,6 +33,7 @@ from app.domains.copy_trading.worker_runtime import (
     purge_expired_samples,
     recover_learning_sources,
     StreamWorker,
+    TelegramSessionRuntime,
 )
 
 
@@ -203,6 +204,48 @@ def test_stream_worker_marks_event_processed_only_after_handler_succeeds():
         604800,
         event.event_id,
     )
+
+
+def test_telegram_worker_refreshes_dialogs_from_live_session():
+    connection_id = str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.redis = MagicMock()
+    runtime.clients = {
+        f"connection:{connection_id}": MagicMock(),
+    }
+    runtime._cache_dialogs = AsyncMock(
+        return_value=[
+            {
+                "chat_id": -1001,
+                "title": "Joined today",
+                "username": None,
+                "source_type": "group",
+                "is_admin": False,
+            }
+        ]
+    )
+    event = CopyEvent.new(
+        stream=StreamName.telegram_commands,
+        event_type="dialogs.refresh",
+        correlation_id=request_id,
+        payload={
+            "connection_id": connection_id,
+            "request_id": request_id,
+        },
+        idempotency_key=f"dialogs-refresh:{request_id}",
+    )
+
+    __import__("asyncio").run(runtime.handle(event))
+
+    runtime._cache_dialogs.assert_awaited_once_with(
+        connection_id,
+        runtime.clients[f"connection:{connection_id}"],
+    )
+    key, ttl, value = runtime.redis.setex.call_args.args
+    assert key == f"copy:telegram:dialogs-response:{request_id}"
+    assert ttl == 30
+    assert "Joined today" in value
 
 
 @patch("app.domains.copy_trading.worker_runtime._mark_learning_failed")

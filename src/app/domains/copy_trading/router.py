@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import json
 import redis
+import time
 import uuid as uuid_module
 from sqlalchemy.orm import Session
 
@@ -52,6 +53,42 @@ def _publish_command(event_type: str, correlation_id: str, payload: dict, key: s
 def _require_telegram_configuration() -> None:
     if not settings.COPY_TRADING_ENABLED or not settings.TELEGRAM_API_ID or not settings.TELEGRAM_API_HASH:
         raise HTTPException(status_code=503, detail="Telegram connection is temporarily unavailable while service credentials are being configured.")
+
+
+def _request_live_dialogs(
+    client,
+    connection_id: uuid.UUID,
+    *,
+    timeout_seconds: float = 8,
+) -> list[dict]:
+    request_id = str(uuid_module.uuid4())
+    response_key = f"copy:telegram:dialogs-response:{request_id}"
+    _publish_command(
+        "dialogs.refresh",
+        request_id,
+        {
+            "connection_id": str(connection_id),
+            "request_id": request_id,
+        },
+        f"dialogs-refresh:{request_id}",
+    )
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        raw = client.get(response_key)
+        if raw:
+            client.delete(response_key)
+            result = json.loads(raw)
+            if isinstance(result, dict) and result.get("error"):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=result["error"],
+                )
+            return result
+        time.sleep(0.05)
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Telegram groups could not be refreshed. Try again in a moment.",
+    )
 
 
 def _owned_auth(auth_id: uuid.UUID, current_user: User) -> dict:
@@ -274,10 +311,16 @@ def disconnect_telegram(connection_id: uuid.UUID, db: Session = Depends(get_db),
 
 @router.get("/telegram/connections/{connection_id}/dialogs", response_model=list[TelegramDialogResponse])
 def list_telegram_dialogs(connection_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if repo.get_connection_for_user(db, connection_id=connection_id, user_id=current_user.id) is None:
+    connection = repo.get_connection_for_user(db, connection_id=connection_id, user_id=current_user.id)
+    if connection is None:
         raise HTTPException(status_code=404, detail="Telegram connection not found.")
-    raw = _redis_client().get(f"copy:telegram:dialogs:{connection_id}")
-    return [TelegramDialogResponse.model_validate(item) for item in json.loads(raw or "[]")]
+    if connection.state.value != "ready":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Reconnect Telegram before searching channels and groups.",
+        )
+    dialogs = _request_live_dialogs(_redis_client(), connection_id)
+    return [TelegramDialogResponse.model_validate(item) for item in dialogs]
 
 
 @router.get("/sources", response_model=list[TelegramSourceResponse])
