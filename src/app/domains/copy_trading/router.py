@@ -33,6 +33,7 @@ from app.core.config import settings
 from app.domains.copy_trading import repository as repo
 from app.domains.copy_trading.models import CopyActivityLevel, TelegramConnection, TelegramSource, TelegramSourceState
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
+from app.domains.copy_trading.security import SessionCipher
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
 
@@ -46,6 +47,11 @@ def _redis_client():
 
 def _publish_command(event_type: str, correlation_id: str, payload: dict, key: str) -> None:
     RedisStreamBus(_redis_client()).publish(CopyEvent.new(stream=StreamName.telegram_commands, event_type=event_type, correlation_id=correlation_id, payload=payload, idempotency_key=key))
+
+
+def _require_telegram_configuration() -> None:
+    if not settings.COPY_TRADING_ENABLED or not settings.TELEGRAM_API_ID or not settings.TELEGRAM_API_HASH:
+        raise HTTPException(status_code=503, detail="Telegram connection is temporarily unavailable while service credentials are being configured.")
 
 
 def _owned_auth(auth_id: uuid.UUID, current_user: User) -> dict:
@@ -188,6 +194,7 @@ def list_activity(
 
 @router.post("/telegram/auth/phone", response_model=TelegramAuthResponse, status_code=202)
 def start_phone_auth(payload: TelegramPhoneAuthStart, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_telegram_configuration()
     connection = TelegramConnection(user_id=current_user.id, phone_hint=f"***{payload.phone[-4:]}")
     db.add(connection)
     db.commit()
@@ -202,6 +209,7 @@ def start_phone_auth(payload: TelegramPhoneAuthStart, db: Session = Depends(get_
 
 @router.post("/telegram/auth/qr", response_model=TelegramAuthResponse, status_code=202)
 def start_qr_auth(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    _require_telegram_configuration()
     connection = TelegramConnection(user_id=current_user.id)
     db.add(connection)
     db.commit()
@@ -237,6 +245,16 @@ def submit_auth_password(auth_id: uuid.UUID, payload: TelegramPasswordSubmit, cu
 @router.get("/telegram/connections", response_model=list[TelegramConnectionResponse])
 def list_telegram_connections(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return [TelegramConnectionResponse.model_validate(item) for item in repo.list_connections_for_user(db, user_id=current_user.id)]
+
+
+@router.patch("/telegram/connections/{connection_id}", response_model=TelegramConnectionResponse)
+def update_telegram_connection(connection_id: uuid.UUID, payload: CopyTradingSettingsUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    connection = repo.get_connection_for_user(db, connection_id=connection_id, user_id=current_user.id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Telegram connection not found.")
+    connection.is_paused = payload.is_paused
+    db.commit(); db.refresh(connection)
+    return TelegramConnectionResponse.model_validate(connection)
 
 
 @router.delete("/telegram/connections/{connection_id}", status_code=204)
@@ -288,6 +306,27 @@ def relearn_source(source_id: uuid.UUID, db: Session = Depends(get_db), current_
     db.commit()
     RedisStreamBus(_redis_client()).publish(CopyEvent.new(stream=StreamName.learning_jobs, event_type="source.learn", correlation_id=str(uuid_module.uuid4()), payload={"source_id": str(source.id)}, idempotency_key=f"learn:{source.id}:{int(datetime.now().timestamp())}"))
     return TelegramSourceResponse.model_validate(source)
+
+
+@router.patch("/sources/{source_id}/pause", response_model=TelegramSourceResponse)
+def update_source_pause(source_id: uuid.UUID, payload: CopyTradingSettingsUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    source = repo.get_source_for_user(db, source_id=source_id, user_id=current_user.id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Telegram source not found.")
+    source.is_paused = payload.is_paused
+    source.state = TelegramSourceState.paused if payload.is_paused else (TelegramSourceState.ready if source.profile_id else TelegramSourceState.learning)
+    db.commit(); db.refresh(source)
+    return TelegramSourceResponse.model_validate(source)
+
+
+@router.get("/activity/{event_id}/raw")
+def reveal_activity_raw(event_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    event = db.get(__import__("app.domains.copy_trading.models", fromlist=["CopyActivityEvent"]).CopyActivityEvent, event_id)
+    if event is None or event.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Activity event not found.")
+    if not event.encrypted_raw_message:
+        return {"raw_message": None}
+    return {"raw_message": SessionCipher(settings.ENCRYPTION_KEY).decrypt(event.encrypted_raw_message)}
 
 
 @router.post("/emergency", status_code=202)

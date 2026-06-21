@@ -42,6 +42,9 @@ class StreamWorker:
 
     def run(self) -> None:
         self.bus.ensure_group(self.stream, self.group)
+        if self.group == "copy-execution":
+            from app.domains.copy_trading.workers import publish_unresolved_intents
+            publish_unresolved_intents(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
             rows = self.client.xreadgroup(self.group, self.consumer, {self.stream.value: ">"}, count=10, block=settings.COPY_TRADING_CONSUMER_BLOCK_MS)
@@ -108,7 +111,8 @@ class TelegramSessionRuntime:
             chat_id = int(event.chat_id)
             with SessionLocal() as db:
                 source = db.execute(select(TelegramSource).where(TelegramSource.connection_id == uuid.UUID(connection_id), TelegramSource.telegram_chat_id == chat_id)).scalar_one_or_none()
-                if source is None or source.is_paused or source.state not in {TelegramSourceState.ready, TelegramSourceState.active}:
+                connection = db.get(TelegramConnection, uuid.UUID(connection_id))
+                if source is None or connection is None or connection.is_paused or source.is_paused or source.state not in {TelegramSourceState.ready, TelegramSourceState.active}:
                     return
                 source_id = str(source.id)
             message = event.message
@@ -130,6 +134,18 @@ class TelegramSessionRuntime:
 
         client.add_event_handler(lambda event: publish_message("message.created", event), events.NewMessage())
         client.add_event_handler(lambda event: publish_message("message.edited", event), events.MessageEdited())
+        async def publish_deleted(event) -> None:
+            chat_id = int(event.chat_id) if event.chat_id else None
+            if chat_id is None:
+                return
+            with SessionLocal() as db:
+                source = db.execute(select(TelegramSource).where(TelegramSource.connection_id == uuid.UUID(connection_id), TelegramSource.telegram_chat_id == chat_id)).scalar_one_or_none()
+                if source is None:
+                    return
+                source_id = str(source.id)
+            for message_id in event.deleted_ids:
+                self.bus.publish(CopyEvent.new(stream=StreamName.telegram_messages, event_type="message.deleted", correlation_id=str(uuid.uuid4()), payload={"connection_id": connection_id, "source_id": source_id, "chat_id": chat_id, "message_id": int(message_id)}, idempotency_key=f"{connection_id}:{chat_id}:{message_id}:deleted"))
+        client.add_event_handler(publish_deleted, events.MessageDeleted())
         self.clients[f"connection:{connection_id}"] = client
 
     async def _new_client(self):

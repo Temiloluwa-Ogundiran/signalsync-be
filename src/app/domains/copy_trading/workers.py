@@ -66,6 +66,9 @@ def _activity(db, *, route: CopyRoute, correlation_id: str, action: str, title: 
 
 
 def signal_handler(event: CopyEvent, client) -> None:
+    if event.event_type == "message.deleted":
+        _handle_deleted_message(event)
+        return
     if event.event_type not in {"message.created", "message.edited"}:
         return
     source_id = uuid.UUID(event.payload["source_id"])
@@ -77,6 +80,9 @@ def signal_handler(event: CopyEvent, client) -> None:
         if not routes:
             return
         now = datetime.now(timezone.utc)
+        expired = list(db.execute(select(SignalThread).where(SignalThread.source_id == source_id, SignalThread.state == SignalThreadState.assembling, SignalThread.assembly_deadline <= now)).scalars())
+        for old_thread in expired:
+            old_thread.state = SignalThreadState.expired
         thread = db.execute(select(SignalThread).where(SignalThread.source_id == source_id, SignalThread.state == SignalThreadState.assembling, SignalThread.assembly_deadline > now).order_by(SignalThread.updated_at.desc())).scalars().first()
         context = thread.context if thread else {}
         try:
@@ -179,6 +185,9 @@ def execution_handler(event: CopyEvent, client) -> None:
     if event.event_type == "emergency.execute":
         asyncio.run(_execute_emergency(event))
         return
+    if event.event_type == "intent.reconcile":
+        _reconcile_intent(event, client)
+        return
     if event.event_type != "intent.execute":
         return
     intent_id = uuid.UUID(event.payload["intent_id"])
@@ -197,6 +206,8 @@ def execution_handler(event: CopyEvent, client) -> None:
                 intent.state = TradeIntentState.failed
                 intent.last_error_code = "ROUTE_PAUSED"
                 db.commit()
+                if not permanent:
+                    RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.reconcile", correlation_id=event.correlation_id, payload={"intent_id": str(intent.id)}, idempotency_key=f"reconcile:{intent.id}:{intent.attempt_count}"))
                 return
             password_value = account.encrypted_trader_password or account.encrypted_investor_password
             credentials = {"login": account.broker_login, "password": decrypt_secret(password_value), "server": account.broker_server}
@@ -266,6 +277,63 @@ def execution_handler(event: CopyEvent, client) -> None:
                     pass
         finally:
             lock.release()
+
+
+def publish_unresolved_intents(client) -> None:
+    with SessionLocal() as db:
+        intents = list(db.execute(select(TradeIntent).where(TradeIntent.state.in_([TradeIntentState.uncertain, TradeIntentState.reconciling]))).scalars())
+        for intent in intents:
+            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.reconcile", correlation_id=str(uuid.uuid4()), payload={"intent_id": str(intent.id)}, idempotency_key=f"startup-reconcile:{intent.id}:{intent.attempt_count}"))
+
+
+def _reconcile_intent(event: CopyEvent, client) -> None:
+    intent_id = uuid.UUID(event.payload["intent_id"])
+    with SessionLocal() as db:
+        intent = db.get(TradeIntent, intent_id)
+        if intent is None or intent.state not in {TradeIntentState.uncertain, TradeIntentState.reconciling}:
+            return
+        route = db.get(CopyRoute, intent.route_id)
+        account = db.get(TradingAccount, intent.account_id)
+        intent.state = TradeIntentState.reconciling
+        db.commit()
+
+
+def _handle_deleted_message(event: CopyEvent) -> None:
+    with SessionLocal() as db:
+        threads = list(db.execute(select(SignalThread).where(SignalThread.source_id == uuid.UUID(event.payload["source_id"]))).scalars())
+        for thread in threads:
+            if not any(ref.get("message_id") == event.payload["message_id"] for ref in thread.message_references):
+                continue
+            routes = list(db.execute(select(CopyRoute).where(CopyRoute.source_id == thread.source_id)).scalars())
+            if thread.state in {SignalThreadState.assembling, SignalThreadState.complete, SignalThreadState.validated}:
+                thread.state = SignalThreadState.expired
+                for route in routes:
+                    _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.deleted", title="Signal removed before execution", level=CopyActivityLevel.warning, details={})
+            else:
+                for route in routes:
+                    _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.deleted_after_execution", title="Source deleted an executed signal", level=CopyActivityLevel.warning, details={})
+        db.commit()
+        credentials = {"login": account.broker_login, "password": decrypt_secret(account.encrypted_trader_password or account.encrypted_investor_password), "server": account.broker_server, "magic": route.magic_number, "comment": f"cp:{str(route.id)[:8]}"}
+        try:
+            result = asyncio.run(_submit_mt5("/account/reconcile", credentials))
+        except Exception as exc:
+            intent = db.get(TradeIntent, intent_id)
+            intent.state = TradeIntentState.uncertain
+            intent.broker_result = {"message": str(exc)}
+            db.commit()
+            return
+        data = result.get("data", result)
+        accepted = any(data.get(key) for key in ("positions", "orders", "history_orders", "deals"))
+        intent = db.get(TradeIntent, intent_id)
+        if accepted:
+            intent.state = TradeIntentState.confirmed
+            intent.broker_result = data
+            intent.resolved_at = datetime.now(timezone.utc)
+            _activity(db, route=route, correlation_id=event.correlation_id, action="broker.reconciled", title="Broker action confirmed", level=CopyActivityLevel.success, details=intent.request_payload)
+        else:
+            intent.state = TradeIntentState.retryable
+            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=event.correlation_id, payload={"intent_id": str(intent.id)}, idempotency_key=f"retry:{intent.id}:{intent.attempt_count}"))
+        db.commit()
 
 
 async def _execute_emergency(event: CopyEvent) -> None:
