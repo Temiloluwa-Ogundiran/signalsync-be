@@ -11,6 +11,10 @@ from app.domains.copy_trading.models import (
     LotDistribution,
     MinimumFields,
     TakeProfitMode,
+    AutomationConfidence,
+    TelegramConnectionState,
+    TelegramSourceState,
+    TelegramSourceType,
 )
 
 
@@ -160,3 +164,99 @@ class CopyActivityResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TelegramPhoneAuthStart(BaseModel):
+    phone: str = Field(min_length=7, max_length=32)
+
+
+class TelegramCodeSubmit(BaseModel):
+    code: str = Field(min_length=3, max_length=16)
+
+
+class TelegramPasswordSubmit(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+class TelegramAuthResponse(BaseModel):
+    auth_id: uuid.UUID
+    method: str
+    state: str
+    qr_url: Optional[str] = None
+    message: str
+
+
+class TelegramConnectionResponse(BaseModel):
+    id: uuid.UUID
+    telegram_user_id: Optional[int]
+    phone_hint: Optional[str]
+    display_name: Optional[str]
+    username: Optional[str]
+    state: TelegramConnectionState
+    is_paused: bool
+    reauthentication_reason: Optional[str]
+    last_heartbeat_at: Optional[datetime]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TelegramDialogResponse(BaseModel):
+    chat_id: int
+    title: str
+    username: Optional[str] = None
+    source_type: TelegramSourceType
+    is_admin: bool = False
+
+
+class TelegramSourceCreate(BaseModel):
+    connection_id: uuid.UUID
+    telegram_chat_id: int
+    title: str = Field(min_length=1, max_length=255)
+    username: Optional[str] = Field(default=None, max_length=255)
+    source_type: TelegramSourceType
+
+
+class ChannelProfileResponse(BaseModel):
+    id: uuid.UUID
+    signal_style: str
+    recommended_assembly_window_seconds: int
+    confidence: AutomationConfidence
+    confidence_score: float
+    image_frequency: float
+    image_primary: bool
+    supported_actions: list
+    sample_count: int
+    validated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TelegramSourceResponse(BaseModel):
+    id: uuid.UUID
+    connection_id: uuid.UUID
+    telegram_chat_id: int
+    title: str
+    username: Optional[str]
+    source_type: TelegramSourceType
+    state: TelegramSourceState
+    unsupported_reason: Optional[str]
+    is_paused: bool
+    profile: Optional[ChannelProfileResponse] = None
+
+    model_config = {"from_attributes": True}
+
+
+class EmergencyActionRequest(BaseModel):
+    action: str = Field(pattern="^(close_positions|cancel_pending|both)$")
+    scope: str = Field(pattern="^(global|account|source|route)$")
+    scope_id: Optional[uuid.UUID] = None
+    confirmation: str
+
+    @model_validator(mode="after")
+    def validate_confirmation(self):
+        if self.confirmation != "EMERGENCY":
+            raise ValueError("Emergency action requires the confirmation word EMERGENCY.")
+        if self.scope != "global" and self.scope_id is None:
+            raise ValueError("The selected emergency scope requires an id.")
+        return self

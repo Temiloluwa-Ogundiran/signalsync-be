@@ -364,6 +364,20 @@ def resume_route(
     return route
 
 
+def activate_route(db: Session, *, current_user: User, route_id: uuid.UUID) -> CopyRoute:
+    route = _owned_route(db, current_user=current_user, route_id=route_id)
+    source = repo.get_source_for_user(db, source_id=route.source_id, user_id=current_user.id)
+    _owned_ready_mt5_account(db, current_user=current_user, account_id=route.target_account_id)
+    if source is None or source.state not in {TelegramSourceState.ready, TelegramSourceState.active}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Channel learning must complete before activation.")
+    route.state = CopyRouteState.active
+    source.state = TelegramSourceState.active
+    record_activity(db, user_id=current_user.id, route_id=route.id, source_id=route.source_id, account_id=route.target_account_id, correlation_id=str(uuid.uuid4()), action="route.activated", title="Automatic copying started", level=CopyActivityLevel.success)
+    db.commit()
+    db.refresh(route)
+    return route
+
+
 def list_activity(
     db: Session,
     *,
