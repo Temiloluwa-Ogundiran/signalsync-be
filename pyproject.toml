@@ -39,6 +39,8 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0.0",
     "psycopg[binary,pool]>=3.1.0",
     "redis>=5.0.0",
+    "telethon>=1.40.0",
+    "qrcode[pil]>=8.2",
     "anyio>=4.0.0",
 ]
 

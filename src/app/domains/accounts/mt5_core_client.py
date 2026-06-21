@@ -281,6 +281,19 @@ class Mt5CoreClient:
                 return result["data"]
             return result
 
+    async def submit_action(self, *, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        async with self._new_client() as client:
+            try:
+                response = await client.post(f"{self.base_url}{path}", json=payload)
+                if response.is_error:
+                    self._raise_submit_error(response)
+                data = response.json()
+                return await self._poll_job(client, data["job_id"])
+            except Mt5CoreClientHttpError:
+                raise
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                raise Mt5CoreClientError(f"Failed to submit broker action: {exc}") from exc
+
     async def _poll_job(self, client: httpx.AsyncClient, job_id: str) -> dict[str, Any]:
         """Poll the status of a job until succeeded or failed.
 

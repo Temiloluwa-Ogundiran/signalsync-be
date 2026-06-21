@@ -53,6 +53,16 @@ from app.domains.copy_trading.models import (
     TelegramSource,
     TelegramSourceState,
     TelegramSourceType,
+    AutomationConfidence,
+    ChannelMessageSample,
+    ChannelProfile,
+    CopiedTrade,
+    ParsedAction,
+    SignalThread,
+    SignalThreadState,
+    SymbolMapping,
+    TradeIntent,
+    TradeIntentState,
 )
 
 __all__ = [
@@ -103,4 +113,14 @@ __all__ = [
     "MinimumFields",
     "CopyActivityEvent",
     "CopyActivityLevel",
+    "AutomationConfidence",
+    "ChannelProfile",
+    "ChannelMessageSample",
+    "SignalThread",
+    "SignalThreadState",
+    "ParsedAction",
+    "TradeIntent",
+    "TradeIntentState",
+    "CopiedTrade",
+    "SymbolMapping",
 ]

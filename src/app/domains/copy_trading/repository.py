@@ -13,6 +13,8 @@ from app.domains.copy_trading.models import (
     CopyRoute,
     CopyTradingUserSettings,
     TelegramSource,
+    TelegramConnection,
+    ChannelProfile,
 )
 
 
@@ -141,3 +143,17 @@ def list_activity_for_user(
         stmt = stmt.where(CopyActivityEvent.created_at < before)
     stmt = stmt.order_by(CopyActivityEvent.created_at.desc()).limit(limit)
     return list(db.execute(stmt).scalars().all())
+
+
+def list_connections_for_user(db: Session, *, user_id: uuid.UUID) -> list[TelegramConnection]:
+    stmt = select(TelegramConnection).where(TelegramConnection.user_id == user_id).order_by(TelegramConnection.created_at.desc())
+    return list(db.execute(stmt).scalars().all())
+
+
+def get_connection_for_user(db: Session, *, connection_id: uuid.UUID, user_id: uuid.UUID) -> Optional[TelegramConnection]:
+    return db.execute(select(TelegramConnection).where(TelegramConnection.id == connection_id, TelegramConnection.user_id == user_id)).scalar_one_or_none()
+
+
+def list_sources_for_user(db: Session, *, user_id: uuid.UUID) -> list[tuple[TelegramSource, Optional[ChannelProfile]]]:
+    stmt = select(TelegramSource, ChannelProfile).outerjoin(ChannelProfile, ChannelProfile.id == TelegramSource.profile_id).where(TelegramSource.user_id == user_id).order_by(TelegramSource.created_at.desc())
+    return list(db.execute(stmt).all())

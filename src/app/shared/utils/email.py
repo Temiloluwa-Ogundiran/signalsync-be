@@ -189,3 +189,15 @@ def send_password_reset_email(to_email: str, raw_token: str) -> None:
         "your password won't change.",
     )
     _send(to_email, "Reset your TradePartna password", html_body, context="password-reset")
+
+
+def send_copy_trading_email(to_email: str, *, subject: str, details: dict) -> None:
+    import html
+    rows = "".join(
+        f"<tr><td style='padding:8px;border-bottom:1px solid {_BORDER};color:{_MUTED}'>{html.escape(str(key).replace('_', ' ').title())}</td>"
+        f"<td style='padding:8px;border-bottom:1px solid {_BORDER};color:{_INK}'>{html.escape(str(value))}</td></tr>"
+        for key, value in details.items()
+        if value not in (None, "", [], {})
+    )
+    body = f"<html><body style='font-family:Segoe UI,Arial;background:{_CANVAS};padding:24px'><div style='max-width:560px;margin:auto;background:white;border:1px solid {_BORDER};border-radius:12px;padding:24px'><h2 style='color:{_INK}'>{html.escape(subject)}</h2><table style='width:100%;border-collapse:collapse'>{rows}</table></div></body></html>"
+    _send(to_email, subject, body, context="copy-trading")
