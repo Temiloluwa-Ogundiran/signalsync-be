@@ -15,6 +15,7 @@ from app.domains.copy_trading.models import CopyRouteState, TelegramSourceState
 from app.domains.copy_trading.schemas import CopyAccountPolicyUpdate, CopyRouteCreate
 from app.domains.copy_trading.service import (
     create_route,
+    delete_route,
     magic_number_for_route,
     pause_route,
     resume_route,
@@ -140,3 +141,37 @@ def test_account_cap_cannot_drop_below_existing_route_lot(repo, get_account) -> 
 
     assert exc.value.status_code == 409
     assert "2.00" in exc.value.detail
+
+
+@patch("app.domains.copy_trading.service.repo")
+def test_delete_route_rejects_active_route(repo) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    route = MagicMock(id=uuid.uuid4(), state=CopyRouteState.active)
+    repo.get_route_for_user.return_value = route
+    db = MagicMock()
+
+    with pytest.raises(HTTPException) as exc:
+        delete_route(db, current_user=user, route_id=route.id)
+
+    assert exc.value.status_code == 409
+    db.delete.assert_not_called()
+    db.commit.assert_not_called()
+
+
+@patch("app.domains.copy_trading.service.repo")
+def test_delete_paused_route_records_activity_and_commits(repo) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    route = MagicMock(
+        id=uuid.uuid4(),
+        source_id=uuid.uuid4(),
+        target_account_id=uuid.uuid4(),
+        state=CopyRouteState.paused,
+    )
+    repo.get_route_for_user.return_value = route
+    db = MagicMock()
+
+    delete_route(db, current_user=user, route_id=route.id)
+
+    repo.create_activity.assert_called_once()
+    db.delete.assert_called_once_with(route)
+    db.commit.assert_called_once()

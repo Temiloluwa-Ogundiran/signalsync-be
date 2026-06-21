@@ -378,6 +378,30 @@ def activate_route(db: Session, *, current_user: User, route_id: uuid.UUID) -> C
     return route
 
 
+def delete_route(
+    db: Session, *, current_user: User, route_id: uuid.UUID
+) -> None:
+    route = _owned_route(db, current_user=current_user, route_id=route_id)
+    if route.state == CopyRouteState.active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Pause the route before deleting it.",
+        )
+    record_activity(
+        db,
+        user_id=current_user.id,
+        route_id=route.id,
+        source_id=route.source_id,
+        account_id=route.target_account_id,
+        correlation_id=str(uuid.uuid4()),
+        action="route.deleted",
+        title="Copy route deleted",
+        level=CopyActivityLevel.warning,
+    )
+    db.delete(route)
+    db.commit()
+
+
 def list_activity(
     db: Session,
     *,

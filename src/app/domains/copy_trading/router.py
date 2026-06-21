@@ -176,6 +176,11 @@ def activate_route(route_id: uuid.UUID, db: Session = Depends(get_db), current_u
     return CopyRouteResponse.model_validate(service.activate_route(db, current_user=current_user, route_id=route_id))
 
 
+@router.delete("/routes/{route_id}", status_code=204)
+def delete_route(route_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    service.delete_route(db, current_user=current_user, route_id=route_id)
+
+
 @router.get("/activity", response_model=list[CopyActivityResponse])
 def list_activity(
     limit: int = Query(default=50, ge=1, le=100),
