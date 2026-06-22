@@ -13,6 +13,7 @@ from app.domains.accounts.models import (
     TradingPlatform,
 )
 from app.domains.copy_trading import repository as repo
+from app.domains.copy_trading.execution import is_trade_ready
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -49,12 +50,18 @@ def _owned_ready_mt5_account(db: Session, *, current_user: User, account_id: uui
     account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
     if account is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found.")
-    if (
-        account.platform != TradingPlatform.mt5
-        or account.import_method != ImportMethod.auto_sync
-        or account.connection_state != TradingAccountConnectionState.ready
-        or account.is_archived
-    ):
+    if not is_trade_ready(account):
+        if (
+            account.platform == TradingPlatform.mt5
+            and account.import_method == ImportMethod.auto_sync
+            and account.connection_state == TradingAccountConnectionState.ready
+            and not account.is_archived
+            and not account.encrypted_trader_password
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Trader access is required for automatic copying.",
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="The target MT5 account must be connected and ready.",

@@ -31,6 +31,7 @@ def ready_account(user_id: uuid.UUID) -> MagicMock:
     account.import_method = ImportMethod.auto_sync
     account.connection_state = TradingAccountConnectionState.ready
     account.is_archived = False
+    account.encrypted_trader_password = "encrypted-trader-password"
     return account
 
 

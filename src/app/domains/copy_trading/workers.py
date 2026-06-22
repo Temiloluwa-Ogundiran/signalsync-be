@@ -21,6 +21,11 @@ from app.domains.copy_trading.assembly import (
     route_deadline,
 )
 from app.domains.copy_trading.delivery import DeliveryResult
+from app.domains.copy_trading.execution import (
+    calculate_signal_volume,
+    catalog_fingerprint,
+    ensure_exposure_within_limit,
+)
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -455,6 +460,48 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     title = validation.reason or "Signal skipped"
                     _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.waiting" if "waiting" in title.lower() else "signal.skipped", title=title, level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
                     continue
+                active_copied_trades = list(
+                    db.execute(
+                        select(CopiedTrade)
+                        .join(CopyRoute, CopyRoute.id == CopiedTrade.route_id)
+                        .where(
+                            CopyRoute.target_account_id == route.target_account_id,
+                            CopiedTrade.lifecycle_state.in_(["open", "pending"]),
+                        )
+                    ).scalars()
+                )
+                current_exposure = sum(
+                    (
+                        Decimal(str(trade.current_volume or trade.original_volume or 0))
+                        for trade in active_copied_trades
+                    ),
+                    Decimal("0"),
+                )
+                signal_volume = calculate_signal_volume(
+                    fixed_lot=route.fixed_lot,
+                    take_profit_count=len(signal.take_profits),
+                    take_profit_mode=route.take_profit_mode.value,
+                    distribution=route.lot_distribution.value,
+                )
+                try:
+                    ensure_exposure_within_limit(
+                        current_exposure=current_exposure,
+                        signal_volume=signal_volume,
+                        maximum=policy_row.max_lot,
+                    )
+                except ValueError as exc:
+                    assembly.state = RouteAssemblyState.skipped
+                    _activity(
+                        db,
+                        route=route,
+                        correlation_id=conversation.correlation_id,
+                        action="signal.skipped",
+                        title=str(exc),
+                        level=CopyActivityLevel.warning,
+                        details=merged,
+                        raw_message=event.payload.get("text"),
+                    )
+                    continue
                 legs = build_tp_legs(fixed_lot=route.fixed_lot, take_profits=signal.take_profits, mode=route.take_profit_mode.value, distribution=route.lot_distribution.value) or [None]
                 for index, leg in enumerate(legs):
                     intent_payload = dict(merged)
@@ -484,16 +531,32 @@ async def _submit_mt5(path: str, payload: dict) -> dict:
     return await client.submit_action(path=path, payload=payload)
 
 
-async def _broker_symbol(db, route: CopyRoute, account: TradingAccount, credentials: dict, signal_symbol: str) -> str:
+async def _broker_symbol(db, route: CopyRoute, account: TradingAccount, credentials: dict, signal_symbol: str, redis_client=None) -> str:
     normalized = normalize_symbol(signal_symbol)
     saved = db.execute(select(SymbolMapping).where(SymbolMapping.route_id == route.id, SymbolMapping.account_id == account.id, SymbolMapping.normalized_signal_symbol == normalized)).scalar_one_or_none()
-    if saved:
+    cache_key = f"copy:symbol-catalog:{account.id}"
+    cached_catalog = redis_client.get(cache_key) if redis_client else None
+    if cached_catalog:
+        catalog = json.loads(cached_catalog)
+    else:
+        catalog_result = await _submit_mt5("/symbols", credentials)
+        catalog = catalog_result.get("data", catalog_result).get("symbols", [])
+        if redis_client:
+            redis_client.setex(cache_key, 300, json.dumps(catalog, default=str))
+    version = catalog_fingerprint(catalog)
+    catalog_by_name = {str(item.get("name")): item for item in catalog}
+    saved_item = catalog_by_name.get(saved.broker_symbol) if saved else None
+    if saved and saved.catalog_version == version and saved_item and int(saved_item.get("trade_mode", 0) or 0) not in {0, 3}:
         return saved.broker_symbol
-    catalog_result = await _submit_mt5("/symbols", credentials)
-    catalog = catalog_result.get("data", catalog_result).get("symbols", [])
     candidates = [BrokerSymbol(name=item["name"], contract_size=Decimal(str(item.get("contract_size", 0))), spread=int(item.get("spread", 0)), trade_mode=int(item.get("trade_mode", 0)), visible=bool(item.get("visible", False))) for item in catalog]
     selected = resolve_symbol(signal_symbol, candidates)
-    db.add(SymbolMapping(route_id=route.id, account_id=account.id, normalized_signal_symbol=normalized, broker_symbol=selected.name, selection_evidence={"contract_size": str(selected.contract_size), "spread": selected.spread, "visible": selected.visible}, catalog_version=datetime.now(timezone.utc).strftime("%Y-%m-%d")))
+    evidence = {"contract_size": str(selected.contract_size), "spread": selected.spread, "visible": selected.visible}
+    if saved:
+        saved.broker_symbol = selected.name
+        saved.selection_evidence = evidence
+        saved.catalog_version = version
+    else:
+        db.add(SymbolMapping(route_id=route.id, account_id=account.id, normalized_signal_symbol=normalized, broker_symbol=selected.name, selection_evidence=evidence, catalog_version=version))
     db.flush()
     return selected.name
 
@@ -559,7 +622,7 @@ def execution_handler(event: CopyEvent, client) -> None:
             credentials = {"login": account.broker_login, "password": decrypt_secret(password_value), "server": account.broker_server}
             payload = intent.request_payload
             action = payload["action"]
-            broker_symbol = asyncio.run(_broker_symbol(db, route, account, credentials, payload.get("symbol"))) if payload.get("symbol") else None
+            broker_symbol = asyncio.run(_broker_symbol(db, route, account, credentials, payload.get("symbol"), client)) if payload.get("symbol") else None
             order_payload = {**credentials, "symbol": broker_symbol, "volume": float(payload.get("volume", route.fixed_lot)), "sl": payload.get("stop_loss"), "tp": payload.get("take_profit"), "magic": route.magic_number, "comment": f"cp:{str(route.id)[:8]}"}
             copied_trades = list(
                 db.execute(
