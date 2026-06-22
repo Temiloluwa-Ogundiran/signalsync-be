@@ -152,7 +152,6 @@ def test_is_account_sync_locked() -> None:
         conn_a.close()
         db_b.close()
         conn_b.close()
-        connection.close()
 
 
 def test_refresh_token_grace_window() -> None:
@@ -204,9 +203,10 @@ def test_refresh_token_grace_window() -> None:
         refresh_res2 = refresh_access_token(db, raw_refresh, res2)
         assert refresh_res2.access_token is not None
         
-        # Verify second response does NOT have Set-Cookie (grace path does not rotate refresh token)
+        # The grace path reissues the already-live replacement cookie so the
+        # losing concurrent response cannot overwrite the winner with an old token.
         cookies2 = res2.headers.getlist("set-cookie")
-        assert not any("refresh_token=" in c for c in cookies2)
+        assert any("refresh_token=" in c for c in cookies2)
         
     finally:
         db.close()
@@ -864,7 +864,6 @@ def test_analytics_curve_accepts_nonnumeric_broker_trade_ids_db() -> None:
     try:
         user = User(
             id=uuid.uuid4(),
-            username=f"user-{uuid.uuid4()}",
             email=f"test-{uuid.uuid4()}@example.com",
             hashed_password="hash",
             display_name="Test User",
