@@ -221,7 +221,7 @@ def create_route(
         magic_number=magic_number_for_route(route_id),
         state=(
             CopyRouteState.ready
-            if source.state in {TelegramSourceState.ready, TelegramSourceState.active}
+            if source.state in {TelegramSourceState.ready, TelegramSourceState.advisory, TelegramSourceState.active}
             else CopyRouteState.draft
         ),
         unsafe_minimum_confirmed_at=(
@@ -375,7 +375,7 @@ def activate_route(db: Session, *, current_user: User, route_id: uuid.UUID) -> C
     route = _owned_route(db, current_user=current_user, route_id=route_id)
     source = repo.get_source_for_user(db, source_id=route.source_id, user_id=current_user.id)
     _owned_ready_mt5_account(db, current_user=current_user, account_id=route.target_account_id)
-    if source is None or source.state not in {TelegramSourceState.ready, TelegramSourceState.active}:
+    if source is None or source.state not in {TelegramSourceState.ready, TelegramSourceState.advisory, TelegramSourceState.active}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Channel learning must complete before activation.")
     route.state = CopyRouteState.active
     source.state = TelegramSourceState.active

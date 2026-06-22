@@ -29,11 +29,20 @@ from app.domains.copy_trading.models import (
     TelegramSource,
     TelegramSourceState,
     TelegramSourceType,
+    CopyRoute,
+    TelegramAuthAttempt,
 )
 from app.domains.copy_trading.delivery import (
     DeliveryDisposition,
     DeliveryResult,
     normalize_delivery_result,
+)
+from app.domains.copy_trading.telegram_auth import (
+    auth_state_from_public,
+    decode_auth_state,
+    encode_auth_state,
+    image_message_outcome,
+    merge_auth_state,
 )
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
@@ -212,6 +221,16 @@ class TelegramSessionRuntime:
         self.cipher = SessionCipher(settings.ENCRYPTION_KEY)
 
     def _auth_update(self, auth_id: str, **values) -> None:
+        with SessionLocal() as db:
+            attempt = db.execute(select(TelegramAuthAttempt).where(TelegramAuthAttempt.auth_id == auth_id)).scalar_one_or_none()
+            if attempt:
+                current = decode_auth_state(attempt, self.cipher)
+                merged = merge_auth_state(current, values)
+                attempt.encrypted_state = encode_auth_state(merged, self.cipher)
+                public_state = str(values.get("state", merged.get("state", "starting")))
+                attempt.state = auth_state_from_public(public_state)
+                attempt.message = values.get("message", attempt.message)
+                db.commit()
         key = f"copy:telegram:auth:{auth_id}"
         self.redis.hset(key, mapping={name: str(value) for name, value in values.items() if value is not None})
         self.redis.expire(key, 600)
@@ -255,15 +274,29 @@ class TelegramSessionRuntime:
 
         async def publish_message(event_type: str, event) -> None:
             chat_id = int(event.chat_id)
+            message = event.message
+            text = message.message or ""
             with SessionLocal() as db:
                 source = db.execute(select(TelegramSource).where(TelegramSource.connection_id == uuid.UUID(connection_id), TelegramSource.telegram_chat_id == chat_id)).scalar_one_or_none()
                 connection = db.get(TelegramConnection, uuid.UUID(connection_id))
-                if source is None or connection is None or connection.is_paused or source.is_paused or source.state not in {TelegramSourceState.ready, TelegramSourceState.active}:
+                if source is None or connection is None or connection.is_paused or source.is_paused or source.state not in {TelegramSourceState.ready, TelegramSourceState.advisory, TelegramSourceState.active}:
+                    return
+                if not text.strip() and message.media:
+                    counter_key = f"copy:telegram:image-only:{source.id}"
+                    count = int(self.redis.incr(counter_key))
+                    self.redis.expire(counter_key, 86400)
+                    outcome = image_message_outcome(count)
+                    routes = list(db.execute(select(CopyRoute).where(CopyRoute.source_id == source.id)).scalars())
+                    for route in routes:
+                        db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=source.id, account_id=route.target_account_id, correlation_id=str(uuid.uuid4()), action="source.image_message", level=CopyActivityLevel.warning, title="Image signal skipped", body=outcome.message, parsed_details={"recent_image_only_count": count}, broker_details={}))
+                    if outcome.disconnect:
+                        source.state = TelegramSourceState.unsupported_image_primary
+                        source.is_paused = True
+                        source.unsupported_reason = outcome.message
+                    db.commit()
                     return
                 source_id = str(source.id)
                 source_type = source.source_type
-            message = event.message
-            text = message.message or ""
             if not text.strip():
                 return
             sender_is_admin = source_type == TelegramSourceType.channel
@@ -330,6 +363,22 @@ class TelegramSessionRuntime:
         from telethon.sessions import StringSession
         return TelegramClient(StringSession(), settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
 
+    async def _restore_auth_client(self, auth_id: str):
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+
+        with SessionLocal() as db:
+            attempt = db.execute(select(TelegramAuthAttempt).where(TelegramAuthAttempt.auth_id == auth_id)).scalar_one()
+            state = decode_auth_state(attempt, self.cipher)
+        session_value = state.get("session")
+        if not session_value:
+            raise RuntimeError("Telegram sign-in session expired. Start again.")
+        client = TelegramClient(StringSession(session_value), settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
+        await client.connect()
+        restored = (client, state.get("phone"), state.get("phone_code_hash"))
+        self.clients[auth_id] = restored
+        return restored
+
     async def handle(self, event: CopyEvent) -> None:
         from telethon.errors import SessionPasswordNeededError
 
@@ -339,19 +388,20 @@ class TelegramSessionRuntime:
             await client.connect()
             sent = await client.send_code_request(event.payload["phone"])
             self.clients[auth_id] = (client, event.payload["phone"], sent.phone_code_hash)
-            self._auth_update(auth_id, state="code_required", message="Enter the code Telegram sent")
+            from telethon.sessions import StringSession
+            self._auth_update(auth_id, state="code_required", message="Enter the code Telegram sent", phone=event.payload["phone"], phone_code_hash=sent.phone_code_hash, session=StringSession.save(client.session))
         elif event.event_type == "auth.phone.code":
-            client, phone, code_hash = self.clients[auth_id]
+            client, phone, code_hash = self.clients.get(auth_id) or await self._restore_auth_client(auth_id)
             try:
-                await client.sign_in(phone=phone, code=event.payload["code"], phone_code_hash=code_hash)
+                await client.sign_in(phone=phone, code=self.cipher.decrypt(event.payload["code_encrypted"]), phone_code_hash=code_hash)
             except SessionPasswordNeededError:
                 self._auth_update(auth_id, state="password_required", message="Enter your Telegram two-step password")
                 return
             await self._finalize(auth_id, client)
         elif event.event_type == "auth.phone.password":
-            client, _, _ = self.clients[auth_id]
-            await client.sign_in(password=event.payload["password"])
-            event.payload["password"] = ""
+            client, _, _ = self.clients.get(auth_id) or await self._restore_auth_client(auth_id)
+            await client.sign_in(password=self.cipher.decrypt(event.payload["password_encrypted"]))
+            event.payload["password_encrypted"] = ""
             await self._finalize(auth_id, client)
         elif event.event_type == "auth.qr.start":
             client = await self._new_client()
@@ -364,7 +414,8 @@ class TelegramSessionRuntime:
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
             qr_data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
-            self._auth_update(auth_id, state="qr_required", qr_url=qr_data_url, message="Scan this QR code in Telegram")
+            from telethon.sessions import StringSession
+            self._auth_update(auth_id, state="qr_required", qr_url=qr_data_url, session=StringSession.save(client.session), message="Scan this QR code in Telegram")
             asyncio.create_task(self._wait_qr(auth_id, client, qr_login))
         elif event.event_type == "dialogs.refresh":
             connection_id = event.payload["connection_id"]
@@ -459,16 +510,29 @@ class TelegramSessionRuntime:
                         await self.handle(event)
                     except Exception as exc:
                         logger.exception("Telegram command failed", extra={"correlation_id": event.correlation_id})
-                        if event.payload.get("auth_id"):
+                        attempt = int(event.payload.get("_attempt", 1))
+                        if attempt < 5:
+                            retry_payload = dict(event.payload)
+                            retry_payload["_attempt"] = attempt + 1
+                            self.bus.publish(
+                                CopyEvent.new(
+                                    stream=StreamName.telegram_commands,
+                                    event_type=event.event_type,
+                                    correlation_id=event.correlation_id,
+                                    payload=retry_payload,
+                                    idempotency_key=f"{event.idempotency_key}:retry:{attempt + 1}",
+                                )
+                            )
+                        elif event.payload.get("auth_id"):
                             self._auth_update(event.payload["auth_id"], state="failed", message=f"Telegram sign-in failed: {exc}")
                     finally:
                         self.redis.xack(StreamName.telegram_commands.value, group, message_id)
                         self.redis.xdel(StreamName.telegram_commands.value, message_id)
 
 
-def learning_handler(event: CopyEvent, client) -> None:
+def learning_handler(event: CopyEvent, client) -> DeliveryResult:
     if event.event_type != "source.learn":
-        return
+        return DeliveryResult.success()
     source_id = uuid.UUID(event.payload["source_id"])
     lock = client.lock(
         f"copy:learning-lock:{source_id}",
@@ -476,9 +540,10 @@ def learning_handler(event: CopyEvent, client) -> None:
         blocking_timeout=1,
     )
     if not lock.acquire(blocking=True):
-        return
+        return DeliveryResult.retry("LEARNING_BUSY", "Channel analysis is already running.")
     try:
         asyncio.run(_learn_source_with_timeout(source_id))
+        return DeliveryResult.success()
     except Exception as exc:
         logger.exception(
             "Channel learning failed source_id=%s correlation_id=%s",
@@ -490,6 +555,7 @@ def learning_handler(event: CopyEvent, client) -> None:
             "Channel analysis failed. Try analyzing the channel again.",
             str(exc),
         )
+        return DeliveryResult.retry(type(exc).__name__.upper(), str(exc))
     finally:
         lock.release()
 
@@ -505,7 +571,7 @@ def _mark_learning_failed(source_id: uuid.UUID, user_message: str, internal_erro
         source = db.get(TelegramSource, source_id)
         if source is None:
             return
-        source.state = TelegramSourceState.unsupported
+        source.state = TelegramSourceState.failed_retryable
         source.unsupported_reason = user_message
         db.add(
             CopyActivityEvent(
@@ -587,8 +653,13 @@ def _learning_source_outcome(
 ) -> tuple[TelegramSourceState, str | None]:
     if image_primary:
         return (
-            TelegramSourceState.unsupported,
+            TelegramSourceState.unsupported_image_primary,
             "This source primarily uses image signals, which are not supported.",
+        )
+    if confidence == AutomationConfidence.low:
+        return (
+            TelegramSourceState.advisory,
+            "Automation confidence is low. Review the learned pattern before copying.",
         )
     return TelegramSourceState.ready, None
 
@@ -606,8 +677,10 @@ async def _learn_source(source_id: uuid.UUID) -> None:
         now = datetime.now(timezone.utc)
         if existing and existing.validated_at > now - timedelta(days=1):
             source.profile_id = existing.id
-            source.state = TelegramSourceState.unsupported if existing.image_primary else TelegramSourceState.ready
-            source.unsupported_reason = "This source primarily uses image signals, which are not supported." if existing.image_primary else None
+            source.state, source.unsupported_reason = _learning_source_outcome(
+                confidence=existing.confidence,
+                image_primary=existing.image_primary,
+            )
             db.commit()
             return
         connection = db.get(TelegramConnection, source.connection_id)

@@ -140,8 +140,8 @@ def test_low_confidence_learning_is_advisory_not_blocking():
         image_primary=False,
     )
 
-    assert state == TelegramSourceState.ready
-    assert reason is None
+    assert state == TelegramSourceState.advisory
+    assert "review" in reason.lower()
 
 
 def test_image_primary_learning_remains_unsupported():
@@ -150,7 +150,7 @@ def test_image_primary_learning_remains_unsupported():
         image_primary=True,
     )
 
-    assert state == TelegramSourceState.unsupported
+    assert state == TelegramSourceState.unsupported_image_primary
     assert "image signals" in reason.lower()
 
 

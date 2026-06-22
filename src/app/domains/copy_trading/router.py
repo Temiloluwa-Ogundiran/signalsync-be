@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -32,7 +32,8 @@ from app.domains.copy_trading.schemas import (
 )
 from app.core.config import settings
 from app.domains.copy_trading import repository as repo
-from app.domains.copy_trading.models import CopyActivityLevel, TelegramConnection, TelegramSource, TelegramSourceState
+from app.domains.copy_trading.models import CopyActivityLevel, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState
+from app.domains.copy_trading.telegram_auth import decode_auth_state, encode_auth_state
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.users.models import User
@@ -91,11 +92,32 @@ def _request_live_dialogs(
     )
 
 
-def _owned_auth(auth_id: uuid.UUID, current_user: User) -> dict:
-    data = _redis_client().hgetall(f"copy:telegram:auth:{auth_id}")
-    if not data or data.get("user_id") != str(current_user.id):
+def _owned_auth(auth_id: uuid.UUID, current_user: User, db: Session) -> dict:
+    attempt = db.query(TelegramAuthAttempt).filter(
+        TelegramAuthAttempt.auth_id == str(auth_id),
+        TelegramAuthAttempt.user_id == current_user.id,
+    ).one_or_none()
+    if attempt is None or attempt.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=404, detail="Telegram sign-in was not found or has expired.")
+    data = decode_auth_state(attempt, SessionCipher(settings.ENCRYPTION_KEY))
+    data.update({"method": attempt.method, "state": data.get("state", attempt.state.value), "message": attempt.message or data.get("message", "Processing")})
     return data
+
+
+def _create_auth_attempt(db: Session, *, connection: TelegramConnection, user_id: uuid.UUID, method: str, initial: dict) -> TelegramAuthAttempt:
+    cipher = SessionCipher(settings.ENCRYPTION_KEY)
+    attempt = TelegramAuthAttempt(
+        auth_id=str(connection.id),
+        user_id=user_id,
+        connection_id=connection.id,
+        method=method,
+        state=TelegramAuthState.pending,
+        encrypted_state=encode_auth_state(initial, cipher),
+        message=initial["message"],
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+    )
+    db.add(attempt)
+    return attempt
 
 
 @router.get("/settings", response_model=CopyTradingSettingsResponse)
@@ -239,9 +261,10 @@ def start_phone_auth(payload: TelegramPhoneAuthStart, db: Session = Depends(get_
     _require_telegram_configuration()
     connection = TelegramConnection(user_id=current_user.id, phone_hint=f"***{payload.phone[-4:]}")
     db.add(connection)
-    db.commit()
-    db.refresh(connection)
+    db.flush()
     auth_id = connection.id
+    _create_auth_attempt(db, connection=connection, user_id=current_user.id, method="phone", initial={"state": "starting", "message": "Contacting Telegram", "phone": payload.phone})
+    db.commit(); db.refresh(connection)
     client = _redis_client()
     client.hset(f"copy:telegram:auth:{auth_id}", mapping={"user_id": str(current_user.id), "connection_id": str(connection.id), "method": "phone", "state": "starting", "message": "Contacting Telegram"})
     client.expire(f"copy:telegram:auth:{auth_id}", 600)
@@ -254,9 +277,10 @@ def start_qr_auth(db: Session = Depends(get_db), current_user: User = Depends(ge
     _require_telegram_configuration()
     connection = TelegramConnection(user_id=current_user.id)
     db.add(connection)
-    db.commit()
-    db.refresh(connection)
+    db.flush()
     auth_id = connection.id
+    _create_auth_attempt(db, connection=connection, user_id=current_user.id, method="qr", initial={"state": "starting", "message": "Preparing QR code"})
+    db.commit(); db.refresh(connection)
     client = _redis_client()
     client.hset(f"copy:telegram:auth:{auth_id}", mapping={"user_id": str(current_user.id), "connection_id": str(connection.id), "method": "qr", "state": "starting", "message": "Preparing QR code"})
     client.expire(f"copy:telegram:auth:{auth_id}", 600)
@@ -265,22 +289,24 @@ def start_qr_auth(db: Session = Depends(get_db), current_user: User = Depends(ge
 
 
 @router.get("/telegram/auth/{auth_id}", response_model=TelegramAuthResponse)
-def get_auth_status(auth_id: uuid.UUID, current_user: User = Depends(get_current_user)):
-    data = _owned_auth(auth_id, current_user)
+def get_auth_status(auth_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    data = _owned_auth(auth_id, current_user, db)
     return TelegramAuthResponse(auth_id=auth_id, method=data["method"], state=data["state"], qr_url=data.get("qr_url"), message=data.get("message", "Processing"))
 
 
 @router.post("/telegram/auth/{auth_id}/code", response_model=TelegramAuthResponse, status_code=202)
-def submit_auth_code(auth_id: uuid.UUID, payload: TelegramCodeSubmit, current_user: User = Depends(get_current_user)):
-    data = _owned_auth(auth_id, current_user)
-    _publish_command("auth.phone.code", str(auth_id), {"auth_id": str(auth_id), "code": payload.code}, f"auth:{auth_id}:code:{payload.code}")
+def submit_auth_code(auth_id: uuid.UUID, payload: TelegramCodeSubmit, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    data = _owned_auth(auth_id, current_user, db)
+    encrypted = SessionCipher(settings.ENCRYPTION_KEY).encrypt(payload.code)
+    _publish_command("auth.phone.code", str(auth_id), {"auth_id": str(auth_id), "code_encrypted": encrypted}, f"auth:{auth_id}:code:{uuid_module.uuid4()}")
     return TelegramAuthResponse(auth_id=auth_id, method=data["method"], state="verifying", message="Verifying code")
 
 
 @router.post("/telegram/auth/{auth_id}/password", response_model=TelegramAuthResponse, status_code=202)
-def submit_auth_password(auth_id: uuid.UUID, payload: TelegramPasswordSubmit, current_user: User = Depends(get_current_user)):
-    data = _owned_auth(auth_id, current_user)
-    _publish_command("auth.phone.password", str(auth_id), {"auth_id": str(auth_id), "password": payload.password}, f"auth:{auth_id}:password")
+def submit_auth_password(auth_id: uuid.UUID, payload: TelegramPasswordSubmit, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    data = _owned_auth(auth_id, current_user, db)
+    encrypted = SessionCipher(settings.ENCRYPTION_KEY).encrypt(payload.password)
+    _publish_command("auth.phone.password", str(auth_id), {"auth_id": str(auth_id), "password_encrypted": encrypted}, f"auth:{auth_id}:password:{uuid_module.uuid4()}")
     return TelegramAuthResponse(auth_id=auth_id, method=data["method"], state="verifying", message="Verifying two-step password")
 
 
