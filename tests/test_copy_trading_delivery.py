@@ -1,7 +1,8 @@
 from unittest.mock import MagicMock
+from threading import Event, Lock
 import uuid
 
-from app.domains.copy_trading.delivery import DeliveryResult
+from app.domains.copy_trading.delivery import DeliveryResult, KeyedSerialExecutor
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.worker_runtime import StreamWorker
 
@@ -82,3 +83,38 @@ def test_stream_publish_uses_bounded_retention() -> None:
         maxlen=10_000,
         approximate=True,
     )
+
+
+def test_keyed_executor_serializes_one_source_but_runs_other_sources_concurrently() -> None:
+    executor = KeyedSerialExecutor(max_workers=3)
+    first_started = Event()
+    release_first = Event()
+    other_finished = Event()
+    values = []
+    values_lock = Lock()
+
+    def first():
+        first_started.set()
+        release_first.wait(2)
+        with values_lock:
+            values.append("source-a-1")
+
+    def second():
+        with values_lock:
+            values.append("source-a-2")
+
+    def other():
+        with values_lock:
+            values.append("source-b")
+        other_finished.set()
+
+    executor.submit("source-a", first)
+    assert first_started.wait(1)
+    executor.submit("source-a", second)
+    executor.submit("source-b", other)
+
+    assert other_finished.wait(1)
+    assert values == ["source-b"]
+    release_first.set()
+    executor.shutdown(wait=True)
+    assert values == ["source-b", "source-a-1", "source-a-2"]

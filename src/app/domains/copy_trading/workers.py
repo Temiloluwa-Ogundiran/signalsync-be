@@ -532,7 +532,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                             db.flush()
                     except IntegrityError:
                         continue
-                    RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id)}, idempotency_key=key))
+                    RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id), "account_id": str(route.target_account_id)}, idempotency_key=key))
                 assembly.state = RouteAssemblyState.executing
                 assembly.accepted_at = now
                 _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
@@ -608,7 +608,7 @@ def execution_handler(event: CopyEvent, client) -> None:
                         stream=StreamName.execution_intents,
                         event_type="intent.execute",
                         correlation_id=event.correlation_id,
-                        payload={"intent_id": str(intent.id)},
+                        payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)},
                         idempotency_key=f"lock-retry:{intent.id}:{retry_count}",
                     )
                 )
@@ -703,7 +703,7 @@ def execution_handler(event: CopyEvent, client) -> None:
                             stream=StreamName.execution_intents,
                             event_type="intent.reconcile",
                             correlation_id=event.correlation_id,
-                            payload={"intent_id": str(intent.id)},
+                            payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)},
                             idempotency_key=(
                                 f"reconcile:{intent.id}:"
                                 f"{intent.attempt_count}"
@@ -749,7 +749,7 @@ def publish_unresolved_intents(client) -> None:
         intents = list(db.execute(select(TradeIntent).where(TradeIntent.state.in_([TradeIntentState.uncertain, TradeIntentState.reconciling]))).scalars())
         for intent in intents:
             bucket = int(datetime.now(timezone.utc).timestamp() // 30)
-            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.reconcile", correlation_id=str(uuid.uuid4()), payload={"intent_id": str(intent.id)}, idempotency_key=f"reconcile-sweep:{intent.id}:{intent.attempt_count}:{bucket}"))
+            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.reconcile", correlation_id=str(uuid.uuid4()), payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)}, idempotency_key=f"reconcile-sweep:{intent.id}:{intent.attempt_count}:{bucket}"))
 
 
 def reconcile_copied_trades() -> int:
@@ -862,7 +862,7 @@ def _reconcile_intent(event: CopyEvent, client) -> None:
             )
         elif should_retry_after_reconcile(intent, submission_started=bool(intent.submitted_at)):
             intent.state = TradeIntentState.retryable
-            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=event.correlation_id, payload={"intent_id": str(intent.id)}, idempotency_key=f"retry:{intent.id}:{intent.attempt_count}"))
+            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=event.correlation_id, payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)}, idempotency_key=f"retry:{intent.id}:{intent.attempt_count}"))
         else:
             intent.state = TradeIntentState.uncertain
             _activity(db, route=route, correlation_id=event.correlation_id, action="broker.uncertain", title="Broker confirmation still pending", level=CopyActivityLevel.warning, details=intent.request_payload)

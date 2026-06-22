@@ -36,6 +36,7 @@ from app.domains.copy_trading.models import (
 from app.domains.copy_trading.delivery import (
     DeliveryDisposition,
     DeliveryResult,
+    KeyedSerialExecutor,
     normalize_delivery_result,
 )
 from app.domains.copy_trading.telegram_auth import (
@@ -67,6 +68,7 @@ class StreamWorker:
         self.running = True
         self.last_maintenance_at = 0.0
         self.last_health_at = 0.0
+        self.executor = KeyedSerialExecutor(max_workers=8)
 
     def run(self) -> None:
         self.bus.ensure_group(self.stream, self.group)
@@ -85,7 +87,15 @@ class StreamWorker:
             self._record_health()
             for _, messages in rows:
                 for message_id, fields in messages:
-                    self._process_message(message_id, fields)
+                    self.executor.submit(self._ordering_key(fields), self._process_message, message_id, fields)
+
+    def _ordering_key(self, fields: dict) -> str:
+        try:
+            event = CopyEvent.from_fields(fields)
+        except Exception:
+            return f"invalid:{uuid.uuid4()}"
+        payload = event.payload
+        return str(payload.get("source_id") or payload.get("account_id") or payload.get("connection_id") or payload.get("intent_id") or event.idempotency_key)
 
     def _record_health(self) -> None:
         now = time.monotonic()
