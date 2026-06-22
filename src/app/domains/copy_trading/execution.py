@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import json
 from decimal import Decimal
 
@@ -7,6 +8,11 @@ from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingPlatform,
 )
+
+
+def client_order_id_for_key(idempotency_key: str) -> str:
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).digest()
+    return base64.b32encode(digest).decode("ascii").rstrip("=")[:20]
 
 
 def is_trade_ready(account) -> bool:

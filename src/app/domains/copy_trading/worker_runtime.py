@@ -75,16 +75,28 @@ class StreamWorker:
                     self._process_message(message_id, fields)
 
     def _run_maintenance(self) -> None:
-        if self.group != "copy-signal":
+        if self.group not in {"copy-signal", "copy-execution"}:
             return
         now = time.monotonic()
-        if now - self.last_maintenance_at < 5:
+        interval = 5 if self.group == "copy-signal" else 30
+        if now - self.last_maintenance_at < interval:
             return
-        from app.domains.copy_trading.workers import expire_signal_threads
+        if self.group == "copy-signal":
+            from app.domains.copy_trading.workers import expire_signal_threads
 
-        expired_count = expire_signal_threads()
-        if expired_count:
-            logger.info("Expired incomplete signal threads count=%s", expired_count)
+            expired_count = expire_signal_threads()
+            if expired_count:
+                logger.info("Expired incomplete signal threads count=%s", expired_count)
+        else:
+            from app.domains.copy_trading.workers import (
+                publish_unresolved_intents,
+                reconcile_copied_trades,
+            )
+
+            publish_unresolved_intents(self.client)
+            updated = reconcile_copied_trades()
+            if updated:
+                logger.info("Reconciled copied trade state count=%s", updated)
         self.last_maintenance_at = now
 
     def _process_message(self, message_id: str, fields: dict) -> None:
