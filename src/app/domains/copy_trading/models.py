@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -47,6 +48,9 @@ class TelegramSourceState(str, enum.Enum):
     active = "active"
     paused = "paused"
     unsupported = "unsupported"
+    advisory = "advisory"
+    failed_retryable = "failed_retryable"
+    unsupported_image_primary = "unsupported_image_primary"
 
 
 class CopyRouteState(str, enum.Enum):
@@ -57,6 +61,7 @@ class CopyRouteState(str, enum.Enum):
     reauthentication_required = "reauthentication_required"
     unsupported = "unsupported"
     target_unavailable = "target_unavailable"
+    needs_attention = "needs_attention"
 
 
 class TakeProfitMode(str, enum.Enum):
@@ -110,6 +115,44 @@ class TradeIntentState(str, enum.Enum):
     uncertain = "uncertain"
     reconciling = "reconciling"
     retryable = "retryable"
+    failed = "failed"
+
+
+class SignalConversationState(str, enum.Enum):
+    active = "active"
+    completed = "completed"
+    expired = "expired"
+    ambiguous = "ambiguous"
+
+
+class RouteAssemblyState(str, enum.Enum):
+    assembling = "assembling"
+    ready = "ready"
+    executing = "executing"
+    completed = "completed"
+    expired = "expired"
+    skipped = "skipped"
+    failed = "failed"
+
+
+class TelegramAuthState(str, enum.Enum):
+    pending = "pending"
+    awaiting_code = "awaiting_code"
+    awaiting_password = "awaiting_password"
+    ready = "ready"
+    failed = "failed"
+    expired = "expired"
+
+
+class DeadLetterState(str, enum.Enum):
+    pending = "pending"
+    replayed = "replayed"
+    resolved = "resolved"
+
+
+class WorkerHealthState(str, enum.Enum):
+    healthy = "healthy"
+    degraded = "degraded"
     failed = "failed"
 
 
@@ -391,6 +434,53 @@ class SignalThread(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class SignalConversation(Base):
+    __tablename__ = "signal_conversations"
+    __table_args__ = (
+        Index("ix_signal_conversation_source_state", "source_id", "state"),
+        Index("ix_signal_conversation_reply_root", "source_id", "reply_root_message_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    state: Mapped[SignalConversationState] = mapped_column(Enum(SignalConversationState, values_callable=enum_values, name="signalconversationstateenum"), nullable=False, default=SignalConversationState.active)
+    reply_root_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    explicit_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    symbol: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    direction: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    last_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_message_revision: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class RouteSignalAssembly(Base):
+    __tablename__ = "route_signal_assemblies"
+    __table_args__ = (
+        Index("ix_route_signal_assembly_route_state", "route_id", "state"),
+        Index(
+            "uq_route_signal_active_conversation",
+            "route_id",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("state IN ('assembling','ready','executing')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("signal_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    route_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_routes.id", ondelete="CASCADE"), nullable=False, index=True)
+    state: Mapped[RouteAssemblyState] = mapped_column(Enum(RouteAssemblyState, values_callable=enum_values, name="routeassemblystateenum"), nullable=False, default=RouteAssemblyState.assembling)
+    context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    message_references: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    assembly_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class ParsedAction(Base):
     __tablename__ = "parsed_actions"
     __table_args__ = (UniqueConstraint("thread_id", "telegram_message_id", "route_id", "action_type", "revision"),)
@@ -411,7 +501,11 @@ class ParsedAction(Base):
 
 class TradeIntent(Base):
     __tablename__ = "trade_intents"
-    __table_args__ = (UniqueConstraint("idempotency_key"), Index("ix_trade_intent_account_state", "account_id", "state"))
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        UniqueConstraint("client_order_id", name="uq_trade_intent_client_order_id"),
+        Index("ix_trade_intent_account_state", "account_id", "state"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -419,6 +513,7 @@ class TradeIntent(Base):
     account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trading_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
     parsed_action_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("parsed_actions.id", ondelete="CASCADE"), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     state: Mapped[TradeIntentState] = mapped_column(Enum(TradeIntentState, values_callable=enum_values, name="tradeintentstateenum"), nullable=False, default=TradeIntentState.created)
     request_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     broker_result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
@@ -446,6 +541,11 @@ class CopiedTrade(Base):
     broker_deal_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     broker_position_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     lifecycle_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    original_volume: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4), nullable=True)
+    current_volume: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4), nullable=True)
+    stop_loss: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 8), nullable=True)
+    broker_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     detached_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -462,5 +562,60 @@ class SymbolMapping(Base):
     broker_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
     selection_evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     catalog_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class TelegramAuthAttempt(Base):
+    __tablename__ = "telegram_auth_attempts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    auth_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_connections.id", ondelete="CASCADE"), nullable=True, index=True)
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[TelegramAuthState] = mapped_column(Enum(TelegramAuthState, values_callable=enum_values, name="telegramauthstateenum"), nullable=False, default=TelegramAuthState.pending)
+    encrypted_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class CopyDeadLetter(Base):
+    __tablename__ = "copy_dead_letters"
+    __table_args__ = (Index("ix_copy_dead_letter_state_created", "state", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_stream: Mapped[str] = mapped_column(String(100), nullable=False)
+    consumer_group: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_message_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    event_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    attempts: Mapped[int] = mapped_column(nullable=False, default=1)
+    error_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    error_message: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[DeadLetterState] = mapped_column(Enum(DeadLetterState, values_callable=enum_values, name="deadletterstateenum"), nullable=False, default=DeadLetterState.pending)
+    replayed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class CopyWorkerHealth(Base):
+    __tablename__ = "copy_worker_health"
+    __table_args__ = (UniqueConstraint("worker_role", "instance_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    worker_role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    instance_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    state: Mapped[WorkerHealthState] = mapped_column(Enum(WorkerHealthState, values_callable=enum_values, name="workerhealthstateenum"), nullable=False, default=WorkerHealthState.healthy)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    stream_lag: Mapped[int] = mapped_column(nullable=False, default=0)
+    pending_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
