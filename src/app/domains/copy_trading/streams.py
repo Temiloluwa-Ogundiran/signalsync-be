@@ -76,11 +76,18 @@ class CopyEvent:
 
 
 class RedisStreamBus:
+    max_stream_length = 10_000
+
     def __init__(self, redis_client):
         self.redis = redis_client
 
     def publish(self, event: CopyEvent) -> str:
-        return self.redis.xadd(event.stream.value, event.to_fields())
+        return self.redis.xadd(
+            event.stream.value,
+            event.to_fields(),
+            maxlen=self.max_stream_length,
+            approximate=True,
+        )
 
     def ensure_group(self, stream: StreamName, group: str) -> None:
         try:

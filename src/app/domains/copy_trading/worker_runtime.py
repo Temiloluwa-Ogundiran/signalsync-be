@@ -22,11 +22,18 @@ from app.domains.copy_trading.models import (
     ChannelProfile,
     CopyActivityEvent,
     CopyActivityLevel,
+    CopyDeadLetter,
+    DeadLetterState,
     TelegramConnection,
     TelegramConnectionState,
     TelegramSource,
     TelegramSourceState,
     TelegramSourceType,
+)
+from app.domains.copy_trading.delivery import (
+    DeliveryDisposition,
+    DeliveryResult,
+    normalize_delivery_result,
 )
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
@@ -36,6 +43,9 @@ logger = logging.getLogger("copy-trading.worker")
 
 
 class StreamWorker:
+    max_attempts = 5
+    retry_idle_ms = 5_000
+
     def __init__(self, *, stream: StreamName, group: str, handler):
         self.client = redis.Redis.from_url(settings.COPY_TRADING_REDIS_URL, decode_responses=True)
         self.bus = RedisStreamBus(self.client)
@@ -82,9 +92,9 @@ class StreamWorker:
         dedupe_key = f"copy:processed:{self.group}:{event.idempotency_key}"
         try:
             if self.client.get(dedupe_key):
+                self.client.xack(self.stream.value, self.group, message_id)
                 return
-            self.handler(event, self.client)
-            self.client.setex(dedupe_key, 604800, event.event_id)
+            result = normalize_delivery_result(self.handler(event, self.client))
         except Exception as exc:
             logger.exception(
                 "Copy-trading event failed stream=%s group=%s event_type=%s correlation_id=%s",
@@ -93,18 +103,74 @@ class StreamWorker:
                 event.event_type,
                 event.correlation_id,
             )
-            self.client.xadd(
-                StreamName.dead_letters.value,
-                {
-                    **event.to_fields(),
-                    "source_stream": self.stream.value,
-                    "consumer_group": self.group,
-                    "source_message_id": message_id,
-                    "error": str(exc),
-                },
+            result = DeliveryResult.retry(
+                exc.__class__.__name__.upper(), str(exc)
             )
-        finally:
+
+        attempts = self._pending_attempts(message_id)
+        if result.disposition == DeliveryDisposition.retry and attempts < self.max_attempts:
+            return
+        if result.disposition in {
+            DeliveryDisposition.retry,
+            DeliveryDisposition.dead_letter,
+        }:
+            self._persist_dead_letter(
+                event=event,
+                message_id=message_id,
+                attempts=attempts,
+                error_code=result.error_code or "DELIVERY_FAILED",
+                error_message=result.message or "Event processing failed.",
+            )
             self.client.xack(self.stream.value, self.group, message_id)
+            return
+
+        self.client.setex(dedupe_key, 604800, event.event_id)
+        self.client.xack(self.stream.value, self.group, message_id)
+
+    def _pending_attempts(self, message_id: str) -> int:
+        try:
+            rows = self.client.xpending_range(
+                self.stream.value,
+                self.group,
+                min=message_id,
+                max=message_id,
+                count=1,
+            )
+        except Exception:
+            return 1
+        if not rows:
+            return 1
+        row = rows[0]
+        return int(row.get("times_delivered", row.get("delivery_count", 1)))
+
+    def _persist_dead_letter(
+        self,
+        *,
+        event: CopyEvent,
+        message_id: str,
+        attempts: int,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        user_id = event.payload.get("user_id")
+        with SessionLocal() as db:
+            db.add(
+                CopyDeadLetter(
+                    user_id=uuid.UUID(user_id) if user_id else None,
+                    source_stream=self.stream.value,
+                    consumer_group=self.group,
+                    source_message_id=message_id,
+                    event_type=event.event_type,
+                    correlation_id=event.correlation_id,
+                    idempotency_key=event.idempotency_key,
+                    event_payload=event.to_fields(),
+                    attempts=attempts,
+                    error_code=error_code,
+                    error_message=error_message,
+                    state=DeadLetterState.pending,
+                )
+            )
+            db.commit()
 
     def _claim_stale_messages(self) -> None:
         try:
@@ -112,7 +178,7 @@ class StreamWorker:
                 self.stream.value,
                 self.group,
                 self.consumer,
-                min_idle_time=300_000,
+                min_idle_time=self.retry_idle_ms,
                 start_id="0-0",
                 count=10,
             )

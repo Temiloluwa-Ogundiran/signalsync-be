@@ -11,6 +11,7 @@ from app.domains.copy_trading.engine import (
     build_tp_legs,
     validate_signal,
 )
+from app.domains.copy_trading.delivery import DeliveryResult
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.symbols import BrokerSymbol, resolve_symbol
@@ -153,13 +154,17 @@ def test_image_primary_learning_remains_unsupported():
     assert "image signals" in reason.lower()
 
 
-def test_stream_worker_dead_letters_handler_failures_and_keeps_consuming():
+def test_stream_worker_dead_letters_permanent_handler_failures_and_keeps_consuming():
     worker = object.__new__(StreamWorker)
     worker.client = MagicMock()
     worker.client.get.return_value = None
     worker.stream = StreamName.learning_jobs
     worker.group = "copy-learning"
-    worker.handler = MagicMock(side_effect=RuntimeError("boom"))
+    worker.handler = MagicMock(
+        return_value=DeliveryResult.dead_letter("TEST_FAILURE", "boom")
+    )
+    worker._pending_attempts = MagicMock(return_value=1)
+    worker._persist_dead_letter = MagicMock()
     event = CopyEvent.new(
         stream=StreamName.learning_jobs,
         event_type="source.learn",
@@ -170,10 +175,7 @@ def test_stream_worker_dead_letters_handler_failures_and_keeps_consuming():
 
     worker._process_message("1-0", event.to_fields())
 
-    worker.client.xadd.assert_called_once()
-    stream, fields = worker.client.xadd.call_args.args
-    assert stream == StreamName.dead_letters.value
-    assert fields["error"] == "boom"
+    worker._persist_dead_letter.assert_called_once()
     worker.client.xack.assert_called_once_with(
         StreamName.learning_jobs.value,
         "copy-learning",
@@ -187,7 +189,9 @@ def test_stream_worker_marks_event_processed_only_after_handler_succeeds():
     worker.client.get.return_value = None
     worker.stream = StreamName.learning_jobs
     worker.group = "copy-learning"
-    worker.handler = MagicMock()
+    worker.handler = MagicMock(return_value=DeliveryResult.success())
+    worker._pending_attempts = MagicMock(return_value=1)
+    worker._persist_dead_letter = MagicMock()
     event = CopyEvent.new(
         stream=StreamName.learning_jobs,
         event_type="source.learn",
