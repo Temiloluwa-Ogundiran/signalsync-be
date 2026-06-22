@@ -225,24 +225,30 @@ def test_expired_incomplete_signal_is_marked_missed(
     session_local,
     record_activity,
 ):
-    source_id = uuid.uuid4()
-    thread = SimpleNamespace(
-        source_id=source_id,
+    route_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    assembly = SimpleNamespace(
+        route_id=route_id,
+        conversation_id=conversation_id,
         state="assembling",
-        correlation_id="corr-expired",
         context={"direction": "buy", "symbol": "XAUUSD"},
+    )
+    conversation = SimpleNamespace(
+        id=conversation_id,
+        correlation_id="corr-expired",
+        legacy_thread_id=uuid.uuid4(),
     )
     route = SimpleNamespace()
     db = session_local.return_value.__enter__.return_value
-    db.execute.side_effect = [
-        MagicMock(scalars=MagicMock(return_value=[thread])),
-        MagicMock(scalars=MagicMock(return_value=[route])),
-    ]
+    db.execute.return_value = MagicMock(scalars=MagicMock(return_value=[assembly]))
+    db.get.side_effect = lambda model, identifier: (
+        route if identifier == route_id else conversation
+    )
 
     count = expire_signal_threads(datetime.now(timezone.utc))
 
     assert count == 1
-    assert thread.state.value == "expired"
+    assert assembly.state.value == "expired"
     record_activity.assert_called_once_with(
         db,
         route=route,

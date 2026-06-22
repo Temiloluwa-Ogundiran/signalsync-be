@@ -1,0 +1,89 @@
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import uuid
+
+
+def normalize_symbol(value: str | None) -> str | None:
+    if not value:
+        return None
+    return "".join(character for character in value.upper() if character.isalnum())
+
+
+def normalize_direction(value: str | None) -> str | None:
+    return value.strip().lower() if value else None
+
+
+@dataclass(frozen=True)
+class ConversationCandidate:
+    id: uuid.UUID
+    reply_root_message_id: int | None
+    last_message_id: int
+    symbol: str | None
+    direction: str | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class ConversationChoice:
+    selected: ConversationCandidate | None
+    ambiguous: bool = False
+
+
+def choose_conversation(
+    *,
+    reply_to_message_id: int | None,
+    symbol: str | None,
+    direction: str | None,
+    candidates: list[ConversationCandidate],
+) -> ConversationChoice:
+    ordered = sorted(candidates, key=lambda item: item.updated_at, reverse=True)
+    if reply_to_message_id is not None:
+        reply_matches = [
+            item
+            for item in ordered
+            if reply_to_message_id
+            in {item.reply_root_message_id, item.last_message_id}
+        ]
+        if len(reply_matches) == 1:
+            return ConversationChoice(reply_matches[0])
+        if len(reply_matches) > 1:
+            return ConversationChoice(None, ambiguous=True)
+
+    normalized_symbol = normalize_symbol(symbol)
+    normalized_direction = normalize_direction(direction)
+    if normalized_symbol:
+        exact = [
+            item
+            for item in ordered
+            if normalize_symbol(item.symbol) == normalized_symbol
+            and (
+                normalized_direction is None
+                or normalize_direction(item.direction) == normalized_direction
+            )
+        ]
+        if len(exact) == 1:
+            return ConversationChoice(exact[0])
+        if len(exact) > 1:
+            return ConversationChoice(None, ambiguous=True)
+        return ConversationChoice(None)
+
+    # Action-only updates may safely use an implicit conversation only when
+    # there is exactly one possible target.
+    if len(ordered) == 1:
+        candidate = ordered[0]
+        if normalized_direction and normalize_direction(candidate.direction) != normalized_direction:
+            return ConversationChoice(None)
+        return ConversationChoice(candidate)
+    return ConversationChoice(None, ambiguous=len(ordered) > 1)
+
+
+def route_deadline(now: datetime, assembly_window_seconds: int | None) -> datetime:
+    return now + timedelta(seconds=assembly_window_seconds or 90)
+
+
+def merge_context(current: dict, update: dict) -> dict:
+    merged = dict(current)
+    for key, value in update.items():
+        if value not in (None, [], ""):
+            merged[key] = value
+    return merged

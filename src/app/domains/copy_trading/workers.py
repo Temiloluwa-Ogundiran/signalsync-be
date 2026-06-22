@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -14,6 +14,13 @@ from app.core.database import SessionLocal
 from app.domains.accounts.models import TradingAccount
 from app.domains.accounts.mt5_core_client import Mt5CoreClient, Mt5CoreClientHttpError, Mt5CoreClientJobFailed
 from app.domains.copy_trading.engine import ParsedSignal, RouteExecutionPolicy, SignalAction, build_tp_legs, validate_signal
+from app.domains.copy_trading.assembly import (
+    ConversationCandidate,
+    choose_conversation,
+    merge_context,
+    route_deadline,
+)
+from app.domains.copy_trading.delivery import DeliveryResult
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -23,6 +30,10 @@ from app.domains.copy_trading.models import (
     CopyTradingUserSettings,
     CopiedTrade,
     ParsedAction,
+    RouteAssemblyState,
+    RouteSignalAssembly,
+    SignalConversation,
+    SignalConversationState,
     SignalThread,
     SignalThreadState,
     SymbolMapping,
@@ -126,38 +137,51 @@ def _select_copied_trade(
 def expire_signal_threads(now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     with SessionLocal() as db:
-        expired = list(
+        expired_assemblies = list(
             db.execute(
-                select(SignalThread).where(
-                    SignalThread.state == SignalThreadState.assembling,
-                    SignalThread.assembly_deadline <= now,
+                select(RouteSignalAssembly).where(
+                    RouteSignalAssembly.state == RouteAssemblyState.assembling,
+                    RouteSignalAssembly.assembly_deadline <= now,
                 )
             )
             .scalars()
         )
-        for thread in expired:
-            routes = list(
-                db.execute(
-                    select(CopyRoute).where(
-                        CopyRoute.source_id == thread.source_id,
-                        CopyRoute.state == CopyRouteState.active,
-                    )
-                ).scalars()
-            )
-            for route in routes:
+        for assembly in expired_assemblies:
+            route = db.get(CopyRoute, assembly.route_id)
+            conversation = db.get(SignalConversation, assembly.conversation_id)
+            if route and conversation:
                 _activity(
                     db,
                     route=route,
-                    correlation_id=thread.correlation_id,
+                    correlation_id=conversation.correlation_id,
                     action="signal.expired",
                     title="Incomplete signal expired",
                     level=CopyActivityLevel.info,
-                    details=thread.context,
+                    details=assembly.context,
                 )
-            thread.state = SignalThreadState.expired
-        if expired:
+            assembly.state = RouteAssemblyState.expired
+        conversation_ids = {item.conversation_id for item in expired_assemblies}
+        for conversation_id in conversation_ids:
+            still_active = db.execute(
+                select(RouteSignalAssembly.id).where(
+                    RouteSignalAssembly.conversation_id == conversation_id,
+                    RouteSignalAssembly.state.in_([
+                        RouteAssemblyState.assembling,
+                        RouteAssemblyState.ready,
+                        RouteAssemblyState.executing,
+                    ]),
+                )
+            ).first()
+            if still_active is None:
+                conversation = db.get(SignalConversation, conversation_id)
+                if conversation:
+                    conversation.state = SignalConversationState.expired
+                    legacy = db.get(SignalThread, conversation.legacy_thread_id)
+                    if legacy:
+                        legacy.state = SignalThreadState.expired
+        if expired_assemblies:
             db.commit()
-        return len(expired)
+        return len(expired_assemblies)
 
 
 def _broker_timestamp(item: dict) -> float | None:
@@ -227,112 +251,232 @@ def _reconciliation_accepts(
     return False
 
 
-def signal_handler(event: CopyEvent, client) -> None:
+def signal_handler(event: CopyEvent, client) -> DeliveryResult:
     if event.event_type == "message.deleted":
         _handle_deleted_message(event)
-        return
+        return DeliveryResult.success()
     if event.event_type not in {"message.created", "message.edited"}:
-        return
+        return DeliveryResult.success()
     source_id = uuid.UUID(event.payload["source_id"])
-    with SessionLocal() as db:
-        source = db.get(TelegramSource, source_id)
-        if source is None or source.is_paused:
-            return
-        routes = list(db.execute(select(CopyRoute).where(CopyRoute.source_id == source_id, CopyRoute.state == CopyRouteState.active)).scalars())
-        routes = [
-            route
-            for route in routes
-            if _route_accepts_message(route, source, event.payload)
-        ]
-        if not routes:
-            return
-        now = datetime.now(timezone.utc)
-        expired = list(db.execute(select(SignalThread).where(SignalThread.source_id == source_id, SignalThread.state == SignalThreadState.assembling, SignalThread.assembly_deadline <= now)).scalars())
-        for old_thread in expired:
-            old_thread.state = SignalThreadState.expired
-        thread = db.execute(select(SignalThread).where(SignalThread.source_id == source_id, SignalThread.state == SignalThreadState.assembling, SignalThread.assembly_deadline > now).order_by(SignalThread.updated_at.desc())).scalars().first()
-        context = thread.context if thread else {}
-        try:
-            parsed = _parse_message(event.payload["text"], context)
-        except Exception as exc:
-            logger.warning(
-                "Signal parsing failed correlation_id=%s error_type=%s error=%s",
-                event.correlation_id,
-                type(exc).__name__,
-                exc,
+    lock = client.lock(
+        f"copy:source-lock:{source_id}", timeout=30, blocking_timeout=5
+    )
+    if not lock.acquire(blocking=True):
+        return DeliveryResult.retry("SOURCE_BUSY", "Signal source is busy.")
+    try:
+        with SessionLocal() as db:
+            source = db.get(TelegramSource, source_id)
+            if source is None or source.is_paused:
+                return DeliveryResult.success()
+            routes = list(db.execute(select(CopyRoute).where(CopyRoute.source_id == source_id, CopyRoute.state == CopyRouteState.active)).scalars())
+            routes = [
+                route
+                for route in routes
+                if _route_accepts_message(route, source, event.payload)
+            ]
+            if not routes:
+                return DeliveryResult.success()
+            now = datetime.now(timezone.utc)
+            conversations = list(
+                db.execute(
+                    select(SignalConversation).where(
+                        SignalConversation.source_id == source_id,
+                        SignalConversation.state == SignalConversationState.active,
+                    )
+                ).scalars()
             )
+            candidates = [
+                ConversationCandidate(
+                    id=item.id,
+                    reply_root_message_id=item.reply_root_message_id,
+                    last_message_id=item.last_message_id,
+                    symbol=item.symbol,
+                    direction=item.direction,
+                    updated_at=item.updated_at,
+                )
+                for item in conversations
+            ]
+            initial_context = (
+                conversations[0].context
+                if len(conversations) == 1
+                and not event.payload.get("reply_to_message_id")
+                else {}
+            )
+            try:
+                parsed = _parse_message(event.payload["text"], initial_context)
+            except Exception as exc:
+                logger.warning(
+                    "Signal parsing failed correlation_id=%s error_type=%s error=%s",
+                    event.correlation_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                return DeliveryResult.retry(type(exc).__name__.upper(), str(exc))
+
+            choice = choose_conversation(
+                reply_to_message_id=event.payload.get("reply_to_message_id"),
+                symbol=parsed.symbol,
+                direction=parsed.direction,
+                candidates=candidates,
+            )
+            if choice.ambiguous:
+                for route in routes:
+                    _activity(
+                        db,
+                        route=route,
+                        correlation_id=event.correlation_id,
+                        action="signal.ambiguous",
+                        title="Signal update needs a clear reference",
+                        level=CopyActivityLevel.warning,
+                        details=parsed.model_dump(mode="json"),
+                        raw_message=event.payload.get("text"),
+                    )
+                db.commit()
+                return DeliveryResult.success()
+
+            conversation = (
+                db.get(SignalConversation, choice.selected.id)
+                if choice.selected
+                else None
+            )
+            if conversation is None:
+                longest_window = max(route.assembly_window_seconds or 90 for route in routes)
+                legacy = SignalThread(
+                    source_id=source_id,
+                    correlation_id=event.correlation_id,
+                    state=SignalThreadState.assembling,
+                    assembly_deadline=route_deadline(now, longest_window),
+                    context={},
+                    message_references=[],
+                )
+                db.add(legacy)
+                db.flush()
+                conversation = SignalConversation(
+                    source_id=source_id,
+                    legacy_thread_id=legacy.id,
+                    correlation_id=event.correlation_id,
+                    state=SignalConversationState.active,
+                    reply_root_message_id=event.payload["message_id"],
+                    explicit_reference=parsed.explicit_reference,
+                    symbol=parsed.symbol,
+                    direction=parsed.direction,
+                    context={},
+                    last_message_id=event.payload["message_id"],
+                )
+                db.add(conversation)
+                db.flush()
+
+            parsed_update = parsed.model_dump(mode="json")
+            conversation.context = merge_context(conversation.context, parsed_update)
+            conversation.symbol = conversation.context.get("symbol")
+            conversation.direction = conversation.context.get("direction")
+            conversation.last_message_id = event.payload["message_id"]
+            if event.event_type == "message.edited":
+                conversation.last_message_revision += 1
+            legacy = db.get(SignalThread, conversation.legacy_thread_id)
+            if legacy:
+                legacy.context = conversation.context
+                legacy.symbol = conversation.symbol
+                legacy.direction = conversation.direction
+
             for route in routes:
-                _activity(db, route=route, correlation_id=event.correlation_id, action="signal.failed", title="Signal analysis failed", level=CopyActivityLevel.error, details={"reason": str(exc)}, raw_message=event.payload.get("text"))
-            db.commit()
-            return
-        if thread is None:
-            minimum_window = max((route.assembly_window_seconds or 90) for route in routes)
-            thread = SignalThread(source_id=source_id, correlation_id=event.correlation_id, state=SignalThreadState.assembling, assembly_deadline=now + timedelta(seconds=minimum_window), context={}, message_references=[])
-            db.add(thread)
-            db.flush()
-        merged = dict(thread.context)
-        for key, value in parsed.model_dump(mode="json").items():
-            if value not in (None, [], ""):
-                merged[key] = value
-        thread.context = merged
-        thread.symbol = merged.get("symbol")
-        thread.direction = merged.get("direction")
-        refs = list(thread.message_references)
-        refs.append({"connection_id": event.payload["connection_id"], "chat_id": event.payload["chat_id"], "message_id": event.payload["message_id"], "revision": event.event_type})
-        thread.message_references = refs
-        signal = ParsedSignal(
-            action=SignalAction(merged["action"]),
-            symbol=merged.get("symbol"),
-            direction=merged.get("direction"),
-            entry=Decimal(str(merged["entry"])) if merged.get("entry") is not None else None,
-            entry_high=Decimal(str(merged["entry_high"])) if merged.get("entry_high") is not None else None,
-            stop_loss=Decimal(str(merged["stop_loss"])) if merged.get("stop_loss") is not None else None,
-            take_profits=[Decimal(str(value)) for value in merged.get("take_profits", [])],
-            close_fraction=Decimal(str(merged["close_fraction"])) if merged.get("close_fraction") is not None else None,
-            age_seconds=max(0, (now - datetime.fromisoformat(event.payload["occurred_at"])).total_seconds()),
-            confidence=float(parsed.confidence),
-        )
-        for route in routes:
-            user_settings = db.get(CopyTradingUserSettings, route.user_id)
-            policy_row = db.execute(select(CopyAccountPolicy).where(CopyAccountPolicy.account_id == route.target_account_id)).scalar_one_or_none()
-            if (user_settings and user_settings.is_paused) or (policy_row and policy_row.is_paused):
-                continue
-            validation = validate_signal(signal, RouteExecutionPolicy(
-                minimum_fields=route.minimum_fields.value,
-                confidence_threshold=settings.COPY_TRADING_CONFIDENCE_THRESHOLD,
-                market_freshness_seconds=settings.COPY_TRADING_MARKET_FRESHNESS_SECONDS,
-                pending_orders_enabled=route.pending_orders_enabled,
-                allow_sl_tp_updates=route.allow_sl_tp_updates,
-                allow_break_even=route.allow_break_even,
-                allow_partial_close=route.allow_partial_close,
-                allow_full_close=route.allow_full_close,
-                allow_pending_cancel=route.allow_pending_cancel,
-                allow_additional_tp=route.allow_additional_tp,
-            ))
-            action = ParsedAction(thread_id=thread.id, route_id=route.id, telegram_message_id=event.payload["message_id"], action_type=signal.action.value, revision=len(refs), model_name=settings.COPY_TRADING_AI_MODEL, parser_version="v1", confidence=signal.confidence, payload=merged, validation_result={"accepted": validation.accepted, "reason": validation.reason})
-            db.add(action)
-            db.flush()
-            if not validation.accepted:
-                title = validation.reason or "Signal skipped"
-                _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.waiting" if "waiting" in title.lower() else "signal.skipped", title=title, level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
-                continue
-            legs = build_tp_legs(fixed_lot=route.fixed_lot, take_profits=signal.take_profits, mode=route.take_profit_mode.value, distribution=route.lot_distribution.value) or [None]
-            for index, leg in enumerate(legs):
-                intent_payload = dict(merged)
-                intent_payload["volume"] = str(leg.lot if leg else route.fixed_lot)
-                intent_payload["take_profit"] = str(leg.take_profit) if leg else None
-                key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{route.id}:{signal.action.value}:{index}"
-                intent = TradeIntent(user_id=route.user_id, route_id=route.id, account_id=route.target_account_id, parsed_action_id=action.id, idempotency_key=key, state=TradeIntentState.created, request_payload=intent_payload)
-                try:
-                    with db.begin_nested():
-                        db.add(intent)
-                        db.flush()
-                except IntegrityError:
+                user_settings = db.get(CopyTradingUserSettings, route.user_id)
+                policy_row = db.execute(select(CopyAccountPolicy).where(CopyAccountPolicy.account_id == route.target_account_id)).scalar_one_or_none()
+                if (user_settings and user_settings.is_paused) or (policy_row and policy_row.is_paused):
                     continue
-                RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=thread.correlation_id, payload={"intent_id": str(intent.id)}, idempotency_key=key))
-            thread.state = SignalThreadState.executing
-            _activity(db, route=route, correlation_id=thread.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
-        db.commit()
+                assembly = db.execute(
+                    select(RouteSignalAssembly).where(
+                        RouteSignalAssembly.conversation_id == conversation.id,
+                        RouteSignalAssembly.route_id == route.id,
+                        RouteSignalAssembly.state.in_([
+                            RouteAssemblyState.assembling,
+                            RouteAssemblyState.ready,
+                            RouteAssemblyState.executing,
+                        ]),
+                    )
+                ).scalar_one_or_none()
+                if assembly is None:
+                    assembly = RouteSignalAssembly(
+                        conversation_id=conversation.id,
+                        route_id=route.id,
+                        state=RouteAssemblyState.assembling,
+                        context={},
+                        message_references=[],
+                        assembly_deadline=route_deadline(now, route.assembly_window_seconds),
+                    )
+                    db.add(assembly)
+                    db.flush()
+                merged = merge_context(assembly.context, parsed_update)
+                assembly.context = merged
+                refs = list(assembly.message_references)
+                revision = 1 + max(
+                    [
+                        int(ref.get("revision", 0))
+                        for ref in refs
+                        if ref.get("message_id") == event.payload["message_id"]
+                    ]
+                    or [0]
+                )
+                refs.append({
+                    "connection_id": event.payload["connection_id"],
+                    "chat_id": event.payload["chat_id"],
+                    "message_id": event.payload["message_id"],
+                    "revision": revision,
+                })
+                assembly.message_references = refs
+                signal = ParsedSignal(
+                    action=SignalAction(merged["action"]),
+                    symbol=merged.get("symbol"),
+                    direction=merged.get("direction"),
+                    entry=Decimal(str(merged["entry"])) if merged.get("entry") is not None else None,
+                    entry_high=Decimal(str(merged["entry_high"])) if merged.get("entry_high") is not None else None,
+                    stop_loss=Decimal(str(merged["stop_loss"])) if merged.get("stop_loss") is not None else None,
+                    take_profits=[Decimal(str(value)) for value in merged.get("take_profits", [])],
+                    close_fraction=Decimal(str(merged["close_fraction"])) if merged.get("close_fraction") is not None else None,
+                    age_seconds=max(0, (now - datetime.fromisoformat(event.payload["occurred_at"])).total_seconds()),
+                    confidence=float(parsed.confidence),
+                )
+                validation = validate_signal(signal, RouteExecutionPolicy(
+                    minimum_fields=route.minimum_fields.value,
+                    confidence_threshold=settings.COPY_TRADING_CONFIDENCE_THRESHOLD,
+                    market_freshness_seconds=settings.COPY_TRADING_MARKET_FRESHNESS_SECONDS,
+                    pending_orders_enabled=route.pending_orders_enabled,
+                    allow_sl_tp_updates=route.allow_sl_tp_updates,
+                    allow_break_even=route.allow_break_even,
+                    allow_partial_close=route.allow_partial_close,
+                    allow_full_close=route.allow_full_close,
+                    allow_pending_cancel=route.allow_pending_cancel,
+                    allow_additional_tp=route.allow_additional_tp,
+                ))
+                action = ParsedAction(thread_id=conversation.legacy_thread_id, route_id=route.id, telegram_message_id=event.payload["message_id"], action_type=signal.action.value, revision=revision, model_name=settings.COPY_TRADING_AI_MODEL, parser_version="v2", confidence=signal.confidence, payload=merged, validation_result={"accepted": validation.accepted, "reason": validation.reason, "assembly_id": str(assembly.id)})
+                db.add(action)
+                db.flush()
+                if not validation.accepted:
+                    title = validation.reason or "Signal skipped"
+                    _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.waiting" if "waiting" in title.lower() else "signal.skipped", title=title, level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
+                    continue
+                legs = build_tp_legs(fixed_lot=route.fixed_lot, take_profits=signal.take_profits, mode=route.take_profit_mode.value, distribution=route.lot_distribution.value) or [None]
+                for index, leg in enumerate(legs):
+                    intent_payload = dict(merged)
+                    intent_payload["volume"] = str(leg.lot if leg else route.fixed_lot)
+                    intent_payload["take_profit"] = str(leg.take_profit) if leg else None
+                    intent_payload["conversation_id"] = str(conversation.id)
+                    key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{revision}:{route.id}:{signal.action.value}:{index}"
+                    intent = TradeIntent(user_id=route.user_id, route_id=route.id, account_id=route.target_account_id, parsed_action_id=action.id, idempotency_key=key, state=TradeIntentState.created, request_payload=intent_payload)
+                    try:
+                        with db.begin_nested():
+                            db.add(intent)
+                            db.flush()
+                    except IntegrityError:
+                        continue
+                    RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id)}, idempotency_key=key))
+                assembly.state = RouteAssemblyState.executing
+                assembly.accepted_at = now
+                _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
+            db.commit()
+            return DeliveryResult.success()
+    finally:
+        lock.release()
 
 
 async def _submit_mt5(path: str, payload: dict) -> dict:

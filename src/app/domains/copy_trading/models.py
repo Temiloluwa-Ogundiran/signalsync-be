@@ -443,6 +443,7 @@ class SignalConversation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    legacy_thread_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("signal_threads.id", ondelete="CASCADE"), nullable=False, unique=True)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     state: Mapped[SignalConversationState] = mapped_column(Enum(SignalConversationState, values_callable=enum_values, name="signalconversationstateenum"), nullable=False, default=SignalConversationState.active)
     reply_root_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

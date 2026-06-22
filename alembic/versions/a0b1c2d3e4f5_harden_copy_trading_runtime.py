@@ -39,6 +39,7 @@ def upgrade() -> None:
         "signal_conversations",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("source_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("legacy_thread_id", postgresql.UUID(as_uuid=True), nullable=False, unique=True),
         sa.Column("correlation_id", sa.String(64), nullable=False, unique=True),
         sa.Column("state", conversation_state, server_default="active", nullable=False),
         sa.Column("reply_root_message_id", sa.BigInteger(), nullable=True),
@@ -51,6 +52,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["source_id"], ["telegram_sources.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["legacy_thread_id"], ["signal_threads.id"], ondelete="CASCADE"),
     )
     op.create_index("ix_signal_conversation_source_state", "signal_conversations", ["source_id", "state"])
     op.create_index("ix_signal_conversation_reply_root", "signal_conversations", ["source_id", "reply_root_message_id"])
