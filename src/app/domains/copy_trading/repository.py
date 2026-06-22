@@ -3,13 +3,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import TradingAccount
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
+    CopyActivityLevel,
     CopyRoute,
     CopyTradingUserSettings,
     TelegramSource,
@@ -137,10 +138,23 @@ def list_activity_for_user(
     user_id: uuid.UUID,
     limit: int,
     before: Optional[datetime],
+    level: CopyActivityLevel | None = None,
+    source_id: uuid.UUID | None = None,
+    account_id: uuid.UUID | None = None,
+    search: str | None = None,
 ) -> list[CopyActivityEvent]:
     stmt = select(CopyActivityEvent).where(CopyActivityEvent.user_id == user_id)
     if before is not None:
         stmt = stmt.where(CopyActivityEvent.created_at < before)
+    if level is not None:
+        stmt = stmt.where(CopyActivityEvent.level == level)
+    if source_id is not None:
+        stmt = stmt.where(CopyActivityEvent.source_id == source_id)
+    if account_id is not None:
+        stmt = stmt.where(CopyActivityEvent.account_id == account_id)
+    if search:
+        term = f"%{search.strip()}%"
+        stmt = stmt.where(or_(CopyActivityEvent.title.ilike(term), CopyActivityEvent.body.ilike(term)))
     stmt = stmt.order_by(CopyActivityEvent.created_at.desc()).limit(limit)
     return list(db.execute(stmt).scalars().all())
 

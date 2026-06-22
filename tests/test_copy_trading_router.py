@@ -93,3 +93,20 @@ def test_live_dialog_request_uses_telegram_session_worker(publish_command) -> No
     assert correlation_id == payload["request_id"]
     assert payload["connection_id"] == str(connection_id)
     assert key == f"dialogs-refresh:{payload['request_id']}"
+
+
+def test_copy_trading_openapi_exposes_health_and_dead_letter_recovery() -> None:
+    paths = TestClient(app).get("/openapi.json").json()["paths"]
+
+    assert "/copy-trading/health" in paths
+    assert "/copy-trading/dead-letters" in paths
+    assert "/copy-trading/dead-letters/{dead_letter_id}/replay" in paths
+
+
+def test_activity_endpoint_accepts_server_side_filters() -> None:
+    operation = TestClient(app).get("/openapi.json").json()["paths"][
+        "/copy-trading/activity"
+    ]["get"]
+    parameters = {item["name"] for item in operation["parameters"]}
+
+    assert {"cursor", "level", "source_id", "account_id", "search"} <= parameters

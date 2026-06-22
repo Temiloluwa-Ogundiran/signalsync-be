@@ -31,6 +31,7 @@ from app.domains.copy_trading.models import (
     TelegramSourceType,
     CopyRoute,
     TelegramAuthAttempt,
+    TradeIntent,
 )
 from app.domains.copy_trading.delivery import (
     DeliveryDisposition,
@@ -44,6 +45,7 @@ from app.domains.copy_trading.telegram_auth import (
     image_message_outcome,
     merge_auth_state,
 )
+from app.domains.copy_trading.health import record_worker_health
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 
@@ -64,6 +66,7 @@ class StreamWorker:
         self.handler = handler
         self.running = True
         self.last_maintenance_at = 0.0
+        self.last_health_at = 0.0
 
     def run(self) -> None:
         self.bus.ensure_group(self.stream, self.group)
@@ -79,9 +82,26 @@ class StreamWorker:
             self._claim_stale_messages()
             rows = self.client.xreadgroup(self.group, self.consumer, {self.stream.value: ">"}, count=10, block=settings.COPY_TRADING_CONSUMER_BLOCK_MS)
             self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
+            self._record_health()
             for _, messages in rows:
                 for message_id, fields in messages:
                     self._process_message(message_id, fields)
+
+    def _record_health(self) -> None:
+        now = time.monotonic()
+        if now - self.last_health_at < 10:
+            return
+        lag = 0
+        pending = 0
+        try:
+            group = next((item for item in self.client.xinfo_groups(self.stream.value) if item.get("name") == self.group), None)
+            if group:
+                lag = int(group.get("lag") or 0)
+                pending = int(group.get("pending") or 0)
+        except Exception:
+            logger.exception("Could not read stream health group=%s", self.group)
+        record_worker_health(worker_role=self.group, instance_id=self.consumer, stream_lag=lag, pending_count=pending)
+        self.last_health_at = now
 
     def _run_maintenance(self) -> None:
         if self.group not in {"copy-signal", "copy-execution"}:
@@ -175,6 +195,12 @@ class StreamWorker:
     ) -> None:
         user_id = event.payload.get("user_id")
         with SessionLocal() as db:
+            if not user_id and event.payload.get("source_id"):
+                source = db.get(TelegramSource, uuid.UUID(event.payload["source_id"]))
+                user_id = str(source.user_id) if source else None
+            if not user_id and event.payload.get("intent_id"):
+                intent = db.get(TradeIntent, uuid.UUID(event.payload["intent_id"]))
+                user_id = str(intent.user_id) if intent else None
             db.add(
                 CopyDeadLetter(
                     user_id=uuid.UUID(user_id) if user_id else None,
@@ -219,6 +245,7 @@ class TelegramSessionRuntime:
         self.clients = {}
         self.qr_logins = {}
         self.cipher = SessionCipher(settings.ENCRYPTION_KEY)
+        self.last_health_at = 0.0
 
     def _auth_update(self, auth_id: str, **values) -> None:
         with SessionLocal() as db:
@@ -503,6 +530,10 @@ class TelegramSessionRuntime:
         while True:
             rows = await asyncio.to_thread(self.redis.xreadgroup, group, consumer, {StreamName.telegram_commands.value: ">"}, count=10, block=1000)
             self.redis.setex(f"copy:heartbeat:{group}:{consumer}", 30, datetime.now(timezone.utc).isoformat())
+            now = time.monotonic()
+            if now - self.last_health_at >= 10:
+                await asyncio.to_thread(record_worker_health, worker_role=group, instance_id=consumer)
+                self.last_health_at = now
             for _, messages in rows:
                 for message_id, fields in messages:
                     event = CopyEvent.from_fields(fields)

@@ -166,6 +166,41 @@ class CopyActivityResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CopyActivityPageResponse(BaseModel):
+    items: list[CopyActivityResponse]
+    next_cursor: Optional[str] = None
+
+
+class CopyHealthComponentResponse(BaseModel):
+    role: str
+    status: str
+    heartbeat_at: Optional[datetime] = None
+    stream_lag: int = 0
+    pending_count: int = 0
+    last_error: Optional[str] = None
+
+
+class CopySystemHealthResponse(BaseModel):
+    status: str
+    ready: bool
+    components: list[CopyHealthComponentResponse]
+    issues: list[str]
+
+
+class CopyDeadLetterResponse(BaseModel):
+    id: uuid.UUID
+    source_stream: str
+    event_type: str
+    correlation_id: str
+    attempts: int
+    error_code: str
+    error_message: str
+    state: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class TelegramPhoneAuthStart(BaseModel):
     phone: str = Field(min_length=7, max_length=32)
 

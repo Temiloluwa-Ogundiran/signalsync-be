@@ -415,7 +415,11 @@ def list_activity(
     current_user: User,
     limit: int,
     before: Optional[datetime],
+    level: CopyActivityLevel | None = None,
+    source_id: uuid.UUID | None = None,
+    account_id: uuid.UUID | None = None,
+    search: str | None = None,
 ) -> list[CopyActivityEvent]:
     return repo.list_activity_for_user(
-        db, user_id=current_user.id, limit=limit, before=before
+        db, user_id=current_user.id, limit=limit, before=before, level=level, source_id=source_id, account_id=account_id, search=search
     )

@@ -696,7 +696,7 @@ def execution_handler(event: CopyEvent, client) -> None:
                     try:
                         send_copy_trading_email(user.email, subject="Copy trade failed", details={**payload, "reason": str(exc)})
                     except Exception:
-                        pass
+                        logger.exception("Copy-trading failure email could not be sent user_id=%s intent_id=%s", user.id, intent.id)
                 if not permanent:
                     RedisStreamBus(client).publish(
                         CopyEvent.new(
@@ -739,7 +739,7 @@ def execution_handler(event: CopyEvent, client) -> None:
                 try:
                     send_copy_trading_email(user.email, subject="Copy trade completed", details={**payload, "broker_result": result})
                 except Exception:
-                    pass
+                    logger.exception("Copy-trading success email could not be sent user_id=%s intent_id=%s", user.id, intent.id)
         finally:
             lock.release()
 

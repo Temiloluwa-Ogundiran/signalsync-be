@@ -7,6 +7,7 @@ import json
 import redis
 import time
 import uuid as uuid_module
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -15,6 +16,9 @@ from app.domains.copy_trading.schemas import (
     CopyAccountPolicyResponse,
     CopyAccountPolicyUpdate,
     CopyActivityResponse,
+    CopyActivityPageResponse,
+    CopyDeadLetterResponse,
+    CopySystemHealthResponse,
     CopyRouteCreate,
     CopyRouteResponse,
     CopyRouteUpdate,
@@ -32,7 +36,8 @@ from app.domains.copy_trading.schemas import (
 )
 from app.core.config import settings
 from app.domains.copy_trading import repository as repo
-from app.domains.copy_trading.models import CopyActivityLevel, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState
+from app.domains.copy_trading.models import CopyActivityLevel, CopyDeadLetter, CopyWorkerHealth, DeadLetterState, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState
+from app.domains.copy_trading.health import aggregate_health
 from app.domains.copy_trading.telegram_auth import decode_auth_state, encode_auth_state
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
@@ -240,20 +245,62 @@ def delete_route(route_id: uuid.UUID, db: Session = Depends(get_db), current_use
     service.delete_route(db, current_user=current_user, route_id=route_id)
 
 
-@router.get("/activity", response_model=list[CopyActivityResponse])
+@router.get("/activity", response_model=CopyActivityPageResponse)
 def list_activity(
     limit: int = Query(default=50, ge=1, le=100),
-    before: Optional[datetime] = None,
+    cursor: Optional[str] = None,
+    level: Optional[CopyActivityLevel] = None,
+    source_id: Optional[uuid.UUID] = None,
+    account_id: Optional[uuid.UUID] = None,
+    search: Optional[str] = Query(default=None, max_length=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[CopyActivityResponse]:
+) -> CopyActivityPageResponse:
+    try:
+        before = datetime.fromisoformat(cursor) if cursor else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Activity cursor is invalid.") from exc
     events = service.list_activity(
         db,
         current_user=current_user,
-        limit=limit,
+        limit=limit + 1,
         before=before,
+        level=level,
+        source_id=source_id,
+        account_id=account_id,
+        search=search,
     )
-    return [CopyActivityResponse.model_validate(event) for event in events]
+    has_more = len(events) > limit
+    visible = events[:limit]
+    next_cursor = visible[-1].created_at.isoformat() if has_more and visible else None
+    return CopyActivityPageResponse(items=[CopyActivityResponse.model_validate(event) for event in visible], next_cursor=next_cursor)
+
+
+@router.get("/health", response_model=CopySystemHealthResponse)
+def copy_system_health(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    heartbeats = list(db.execute(select(CopyWorkerHealth)).scalars())
+    return CopySystemHealthResponse.model_validate(aggregate_health(heartbeats).__dict__)
+
+
+@router.get("/dead-letters", response_model=list[CopyDeadLetterResponse])
+def list_dead_letters(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    items = list(db.execute(select(CopyDeadLetter).where(CopyDeadLetter.user_id == current_user.id).order_by(CopyDeadLetter.created_at.desc()).limit(100)).scalars())
+    return [CopyDeadLetterResponse.model_validate(item) for item in items]
+
+
+@router.post("/dead-letters/{dead_letter_id}/replay", response_model=CopyDeadLetterResponse)
+def replay_dead_letter(dead_letter_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    item = db.execute(select(CopyDeadLetter).where(CopyDeadLetter.id == dead_letter_id, CopyDeadLetter.user_id == current_user.id)).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Failed event not found.")
+    fields = dict(item.event_payload)
+    event = CopyEvent.from_fields(fields)
+    replay = CopyEvent.new(stream=event.stream, event_type=event.event_type, correlation_id=event.correlation_id, payload=event.payload, idempotency_key=f"replay:{item.id}:{uuid_module.uuid4()}")
+    RedisStreamBus(_redis_client()).publish(replay)
+    item.state = DeadLetterState.replayed
+    item.replayed_at = datetime.now(timezone.utc)
+    db.commit(); db.refresh(item)
+    return CopyDeadLetterResponse.model_validate(item)
 
 
 @router.post("/telegram/auth/phone", response_model=TelegramAuthResponse, status_code=202)
