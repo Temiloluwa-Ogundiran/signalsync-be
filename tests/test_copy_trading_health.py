@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.domains.copy_trading.health import aggregate_health
+from app.domains.copy_trading.health import REQUIRED_WORKER_ROLES, aggregate_health
 
 
 NOW = datetime(2026, 6, 22, tzinfo=timezone.utc)
@@ -54,4 +54,8 @@ def test_missing_worker_is_reported_as_action_required() -> None:
     result = aggregate_health([], now=NOW)
 
     assert result.status == "action_required"
-    assert len(result.issues) == 4
+    assert len(result.issues) == 3
+
+
+def test_channel_learning_worker_is_not_required_for_runtime_health() -> None:
+    assert "copy-learning" not in REQUIRED_WORKER_ROLES

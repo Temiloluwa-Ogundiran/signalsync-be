@@ -9,7 +9,6 @@ from app.domains.copy_trading.models import CopyWorkerHealth, WorkerHealthState
 
 REQUIRED_WORKER_ROLES = (
     "telegram-session",
-    "copy-learning",
     "copy-signal",
     "copy-execution",
 )

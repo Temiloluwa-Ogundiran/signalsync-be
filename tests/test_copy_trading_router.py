@@ -6,8 +6,12 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.domains.copy_trading.models import TelegramSourceState, TelegramSourceType
-from app.domains.copy_trading.router import _request_live_dialogs, update_source_pause
-from app.domains.copy_trading.schemas import CopyTradingSettingsUpdate
+from app.domains.copy_trading.router import (
+    _request_live_dialogs,
+    create_source,
+    update_source_pause,
+)
+from app.domains.copy_trading.schemas import CopyTradingSettingsUpdate, TelegramSourceCreate
 from app.shared.deps import get_current_user
 
 
@@ -93,6 +97,51 @@ def test_live_dialog_request_uses_telegram_session_worker(publish_command) -> No
     assert correlation_id == payload["request_id"]
     assert payload["connection_id"] == str(connection_id)
     assert key == f"dialogs-refresh:{payload['request_id']}"
+
+
+@patch("app.domains.copy_trading.router._publish_command")
+def test_live_dialog_request_returns_cached_dialogs_without_waiting(publish_command) -> None:
+    connection_id = uuid.uuid4()
+    client = MagicMock()
+    client.get.side_effect = lambda key: (
+        '[{"chat_id":-1001,"title":"Cached group","username":null,'
+        '"source_type":"group","is_admin":false}]'
+        if key == f"copy:telegram:dialogs:{connection_id}"
+        else None
+    )
+
+    dialogs = _request_live_dialogs(client, connection_id)
+
+    assert dialogs[0]["title"] == "Cached group"
+    publish_command.assert_called_once()
+
+
+@patch("app.domains.copy_trading.router.repo.get_connection_for_user")
+def test_create_source_is_ready_immediately_without_channel_analysis(
+    get_connection_for_user,
+) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    get_connection_for_user.return_value = MagicMock()
+    payload = TelegramSourceCreate(
+        connection_id=uuid.uuid4(),
+        telegram_chat_id=-100123,
+        title="Empty but valid channel",
+        username=None,
+        source_type=TelegramSourceType.channel,
+    )
+    db = MagicMock()
+    db.refresh.side_effect = lambda source: (
+        setattr(source, "id", uuid.uuid4()),
+        setattr(source, "is_paused", False),
+    )
+
+    source = create_source(payload, db, user)
+
+    assert source.state == TelegramSourceState.ready
+    assert not hasattr(source, "unsupported_reason")
+    persisted = db.add.call_args.args[0]
+    assert persisted.state == TelegramSourceState.ready
+    assert persisted.unsupported_reason is None
 
 
 def test_copy_trading_openapi_exposes_health_and_dead_letter_recovery() -> None:

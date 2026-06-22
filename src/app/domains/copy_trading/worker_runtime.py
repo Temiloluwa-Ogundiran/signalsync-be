@@ -290,9 +290,9 @@ class TelegramSessionRuntime:
             connection.reauthentication_reason = None
             connection.last_heartbeat_at = datetime.now(timezone.utc)
             db.commit()
-        await self._cache_dialogs(auth_id, client)
         self._auth_update(auth_id, state="ready", message="Telegram connected")
         await self._attach_updates(auth_id, client)
+        asyncio.create_task(self._refresh_dialog_cache(auth_id, client))
 
     async def _cache_dialogs(self, connection_id: str, client) -> list[dict]:
         dialogs = []
@@ -306,6 +306,15 @@ class TelegramSessionRuntime:
         self.redis.setex(f"copy:telegram:dialogs:{connection_id}", 86400, json.dumps(dialogs))
         return dialogs
 
+    async def _refresh_dialog_cache(self, connection_id: str, client) -> None:
+        try:
+            await self._cache_dialogs(connection_id, client)
+        except Exception:
+            logger.exception(
+                "Could not refresh Telegram dialogs connection_id=%s",
+                connection_id,
+            )
+
     async def _attach_updates(self, connection_id: str, client) -> None:
         from telethon import events
 
@@ -316,7 +325,7 @@ class TelegramSessionRuntime:
             with SessionLocal() as db:
                 source = db.execute(select(TelegramSource).where(TelegramSource.connection_id == uuid.UUID(connection_id), TelegramSource.telegram_chat_id == chat_id)).scalar_one_or_none()
                 connection = db.get(TelegramConnection, uuid.UUID(connection_id))
-                if source is None or connection is None or connection.is_paused or source.is_paused or source.state not in {TelegramSourceState.ready, TelegramSourceState.advisory, TelegramSourceState.active}:
+                if source is None or connection is None or connection.is_paused or source.is_paused:
                     return
                 if not text.strip() and message.media:
                     counter_key = f"copy:telegram:image-only:{source.id}"
@@ -326,10 +335,6 @@ class TelegramSessionRuntime:
                     routes = list(db.execute(select(CopyRoute).where(CopyRoute.source_id == source.id)).scalars())
                     for route in routes:
                         db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=source.id, account_id=route.target_account_id, correlation_id=str(uuid.uuid4()), action="source.image_message", level=CopyActivityLevel.warning, title="Image signal skipped", body=outcome.message, parsed_details={"recent_image_only_count": count}, broker_details={}))
-                    if outcome.disconnect:
-                        source.state = TelegramSourceState.unsupported_image_primary
-                        source.is_paused = True
-                        source.unsupported_reason = outcome.message
                     db.commit()
                     return
                 source_id = str(source.id)
@@ -473,30 +478,13 @@ class TelegramSessionRuntime:
                     ),
                 )
                 return
-            try:
-                dialogs = await self._cache_dialogs(connection_id, client)
-                self.redis.setex(
-                    response_key,
-                    30,
-                    json.dumps(dialogs),
-                )
-            except Exception:
-                logger.exception(
-                    "Could not refresh Telegram dialogs connection_id=%s",
-                    connection_id,
-                )
-                self.redis.setex(
-                    response_key,
-                    30,
-                    json.dumps(
-                        {
-                            "error": (
-                                "Telegram could not refresh channels and groups. "
-                                "Try again in a moment."
-                            )
-                        }
-                    ),
-                )
+            cached = self.redis.get(f"copy:telegram:dialogs:{connection_id}")
+            self.redis.setex(
+                response_key,
+                30,
+                cached or "[]",
+            )
+            asyncio.create_task(self._refresh_dialog_cache(connection_id, client))
         elif event.event_type == "connection.disconnect":
             client = self.clients.pop(f"connection:{event.payload['connection_id']}", None)
             if client:
@@ -523,8 +511,10 @@ class TelegramSessionRuntime:
                 await client.connect()
                 if not await client.is_user_authorized():
                     raise RuntimeError("Telegram authorization expired")
-                await self._cache_dialogs(str(connection.id), client)
                 await self._attach_updates(str(connection.id), client)
+                asyncio.create_task(
+                    self._refresh_dialog_cache(str(connection.id), client)
+                )
             except Exception as exc:
                 with SessionLocal() as db:
                     item = db.get(TelegramConnection, connection.id)

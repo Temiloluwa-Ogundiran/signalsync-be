@@ -215,6 +215,10 @@ def test_telegram_worker_refreshes_dialogs_from_live_session():
     request_id = str(uuid.uuid4())
     runtime = object.__new__(TelegramSessionRuntime)
     runtime.redis = MagicMock()
+    runtime.redis.get.return_value = (
+        '[{"chat_id":-1000,"title":"Cached group","username":null,'
+        '"source_type":"group","is_admin":false}]'
+    )
     runtime.clients = {
         f"connection:{connection_id}": MagicMock(),
     }
@@ -249,7 +253,7 @@ def test_telegram_worker_refreshes_dialogs_from_live_session():
     key, ttl, value = runtime.redis.setex.call_args.args
     assert key == f"copy:telegram:dialogs-response:{request_id}"
     assert ttl == 30
-    assert "Joined today" in value
+    assert "Cached group" in value
 
 
 @patch("app.domains.copy_trading.worker_runtime._mark_learning_failed")

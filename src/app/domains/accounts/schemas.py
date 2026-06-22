@@ -37,6 +37,10 @@ class AccountConnectRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=120)
 
 
+class TraderAccessRequest(BaseModel):
+    trader_password: str = Field(min_length=1, max_length=255)
+
+
 class Mt5ServerSearchItem(BaseModel):
     server_name: str
 
@@ -84,6 +88,7 @@ class AccountResponse(BaseModel):
     latest_equity: Optional[Decimal] = None
     is_archived: bool
     import_method: str
+    has_trader_access: bool = False
     created_at: datetime
 
     @computed_field  # type: ignore[prop-decorator]

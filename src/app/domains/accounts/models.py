@@ -84,6 +84,10 @@ class TradingAccount(Base):
     encrypted_investor_password: Mapped[str] = mapped_column(String, nullable=False)
     encrypted_trader_password: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    @property
+    def has_trader_access(self) -> bool:
+        return bool(self.encrypted_trader_password)
+
     account_type: Mapped[TradingAccountType] = mapped_column(
         Enum(
             TradingAccountType,

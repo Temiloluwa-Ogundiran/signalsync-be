@@ -16,7 +16,11 @@ from app.domains.accounts.mt5_core_client import (
     Mt5CoreClientTimeout,
     Mt5CoreClientWorkerUnavailable,
 )
-from app.domains.accounts.schemas import AccountBalanceResponse, AccountConnectRequest
+from app.domains.accounts.schemas import (
+    AccountBalanceResponse,
+    AccountConnectRequest,
+    TraderAccessRequest,
+)
 from app.domains.accounts.sync import ingest_mt5_snapshots
 from app.domains.users.models import User
 from app.shared.utils.encryption import encrypt_secret
@@ -274,6 +278,75 @@ def get_account(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
         )
+    return account
+
+
+async def enable_trader_access(
+    db: Session,
+    *,
+    current_user: User,
+    account_id: uuid.UUID,
+    payload: TraderAccessRequest,
+) -> TradingAccount:
+    account = get_account(
+        db,
+        current_user=current_user,
+        account_id=account_id,
+    )
+    if account.is_archived or account.import_method != ImportMethod.auto_sync:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an active broker-connected MT5 account can enable full access.",
+        )
+
+    client = Mt5CoreClient(
+        poll_timeout=settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS,
+        poll_interval=settings.MT5_CORE_FAST_VERIFY_POLL_INTERVAL_SECONDS,
+    )
+    try:
+        result = await client.verify_credentials(
+            account_id=str(account.id),
+            login=account.broker_login,
+            password=payload.trader_password,
+            server=account.broker_server,
+            broker=account.broker_name,
+        )
+    except Mt5CoreClientJobFailed as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="MT5 rejected this password. Enter the full trading password, not the investor password.",
+        ) from exc
+    except Mt5CoreClientTimeout as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="MT5 verification did not finish in time. Please try again.",
+        ) from exc
+    except (
+        Mt5CoreClientWorkerUnavailable,
+        Mt5CoreClientTransientJobFailed,
+        Mt5CoreClientError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="MT5 verification is temporarily unavailable.",
+        ) from exc
+
+    if (
+        not is_valid_mt5_verification_result(
+            result,
+            requested_login=account.broker_login,
+            requested_server=account.broker_server,
+        )
+        or not bool(result.get("trade_allowed"))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This credential does not provide full trading access. Enter the full trading password.",
+        )
+
+    account.encrypted_trader_password = encrypt_secret(payload.trader_password)
+    db.commit()
+    db.refresh(account)
     return account
 
 

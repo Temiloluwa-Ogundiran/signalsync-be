@@ -21,8 +21,8 @@ from app.domains.accounts.mt5_core_client import (
     Mt5CoreClientTransientJobFailed,
     Mt5CoreClientTimeout,
 )
-from app.domains.accounts.schemas import AccountConnectRequest
-from app.domains.accounts.service import connect_account
+from app.domains.accounts.schemas import AccountConnectRequest, TraderAccessRequest
+from app.domains.accounts.service import connect_account, enable_trader_access
 from app.tasks.journal_sync_tasks import bootstrap_account
 
 
@@ -143,6 +143,83 @@ async def test_connect_account_rejects_invalid_credentials_before_persisting(
     mock_repo.create_account.assert_not_called()
     db_session.commit.assert_not_called()
     mock_bootstrap_delay.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.service.Mt5CoreClient")
+@patch("app.domains.accounts.service.account_repo")
+@patch("app.domains.accounts.service.encrypt_secret")
+async def test_enable_trader_access_requires_mt5_trade_permission(
+    mock_encrypt_secret,
+    mock_repo,
+    mock_client_cls,
+    db_session,
+    current_user,
+    mock_account,
+) -> None:
+    mock_account.connection_state = TradingAccountConnectionState.ready
+    mock_account.is_archived = False
+    mock_account.import_method = "auto_sync"
+    mock_repo.get_account_by_id_for_user.return_value = mock_account
+    mock_client_cls.return_value.verify_credentials = AsyncMock(
+        return_value={
+            "verified": True,
+            "login": int(mock_account.broker_login),
+            "server": mock_account.broker_server,
+            "trade_allowed": False,
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await enable_trader_access(
+            db_session,
+            current_user=current_user,
+            account_id=mock_account.id,
+            payload=TraderAccessRequest(trader_password="investor-password"),
+        )
+
+    assert exc.value.status_code == 400
+    assert "full trading password" in exc.value.detail.lower()
+    mock_encrypt_secret.assert_not_called()
+    db_session.commit.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("app.domains.accounts.service.Mt5CoreClient")
+@patch("app.domains.accounts.service.account_repo")
+@patch("app.domains.accounts.service.encrypt_secret", return_value="encrypted-trader")
+async def test_enable_trader_access_stores_verified_trader_password(
+    mock_encrypt_secret,
+    mock_repo,
+    mock_client_cls,
+    db_session,
+    current_user,
+    mock_account,
+) -> None:
+    mock_account.connection_state = TradingAccountConnectionState.ready
+    mock_account.is_archived = False
+    mock_account.import_method = "auto_sync"
+    mock_repo.get_account_by_id_for_user.return_value = mock_account
+    mock_client_cls.return_value.verify_credentials = AsyncMock(
+        return_value={
+            "verified": True,
+            "login": int(mock_account.broker_login),
+            "server": mock_account.broker_server,
+            "trade_allowed": True,
+        }
+    )
+
+    result = await enable_trader_access(
+        db_session,
+        current_user=current_user,
+        account_id=mock_account.id,
+        payload=TraderAccessRequest(trader_password="real-password"),
+    )
+
+    assert result is mock_account
+    assert mock_account.encrypted_trader_password == "encrypted-trader"
+    mock_encrypt_secret.assert_called_once_with("real-password")
+    db_session.commit.assert_called_once()
 
 
 @pytest.mark.anyio

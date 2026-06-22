@@ -13,6 +13,7 @@ from app.domains.accounts.schemas import (
     AccountResponse,
     AccountUpdateRequest,
     Mt5ServerSearchItem,
+    TraderAccessRequest,
 )
 from app.domains.accounts.models import ImportMethod, TradingAccountType
 from app.domains.accounts.sync_orchestrator import check_manual_sync_admission
@@ -168,5 +169,21 @@ def update_account(
 ) -> AccountResponse:
     account = account_service.update_account(
         db, current_user=current_user, account_id=account_id, display_name=payload.display_name
+    )
+    return AccountResponse.model_validate(account)
+
+
+@router.post("/{account_id}/trader-access", response_model=AccountResponse)
+async def enable_trader_access(
+    account_id: uuid.UUID,
+    payload: TraderAccessRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AccountResponse:
+    account = await account_service.enable_trader_access(
+        db,
+        current_user=current_user,
+        account_id=account_id,
+        payload=payload,
     )
     return AccountResponse.model_validate(account)

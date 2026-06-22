@@ -14,6 +14,7 @@ from app.domains.accounts.models import (
 from app.domains.copy_trading.models import CopyRouteState, TelegramSourceState
 from app.domains.copy_trading.schemas import CopyAccountPolicyUpdate, CopyRouteCreate
 from app.domains.copy_trading.service import (
+    activate_route,
     create_route,
     delete_route,
     magic_number_for_route,
@@ -97,6 +98,53 @@ def test_create_ready_route_commits_with_activity(repo, get_account) -> None:
     repo.create_activity.assert_called_once()
     db.commit.assert_called_once()
     db.refresh.assert_called_once_with(route)
+
+
+@patch("app.domains.copy_trading.service.account_repo.get_account_by_id_for_user")
+@patch("app.domains.copy_trading.service.repo")
+def test_create_route_does_not_depend_on_channel_analysis_state(
+    repo, get_account
+) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    source = MagicMock(id=uuid.uuid4(), state=TelegramSourceState.unsupported)
+    account = ready_account(user.id)
+    repo.get_source_for_user.return_value = source
+    repo.get_route_by_source_and_account.return_value = None
+    repo.get_account_policy.return_value = MagicMock(max_lot=Decimal("2.00"))
+    get_account.return_value = account
+    repo.create_route.side_effect = lambda _db, route: route
+    db = MagicMock()
+
+    route = create_route(
+        db,
+        current_user=user,
+        payload=route_payload(source.id, account.id, "0.10"),
+    )
+
+    assert route.state == CopyRouteState.ready
+
+
+@patch("app.domains.copy_trading.service.account_repo.get_account_by_id_for_user")
+@patch("app.domains.copy_trading.service.repo")
+def test_activate_route_accepts_any_connected_source_state(repo, get_account) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    route = MagicMock(
+        id=uuid.uuid4(),
+        source_id=uuid.uuid4(),
+        target_account_id=uuid.uuid4(),
+        state=CopyRouteState.ready,
+    )
+    source = MagicMock(id=route.source_id, state=TelegramSourceState.unsupported)
+    repo.get_route_for_user.return_value = route
+    repo.get_source_for_user.return_value = source
+    get_account.return_value = ready_account(user.id)
+    db = MagicMock()
+
+    result = activate_route(db, current_user=user, route_id=route.id)
+
+    assert result.state == CopyRouteState.active
+    assert source.state == TelegramSourceState.active
+    db.commit.assert_called_once()
 
 
 @patch("app.domains.copy_trading.service.repo")

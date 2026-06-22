@@ -65,7 +65,7 @@ def _request_live_dialogs(
     client,
     connection_id: uuid.UUID,
     *,
-    timeout_seconds: float = 8,
+    timeout_seconds: float = 1.5,
 ) -> list[dict]:
     request_id = str(uuid_module.uuid4())
     response_key = f"copy:telegram:dialogs-response:{request_id}"
@@ -78,6 +78,9 @@ def _request_live_dialogs(
         },
         f"dialogs-refresh:{request_id}",
     )
+    cached = client.get(f"copy:telegram:dialogs:{connection_id}")
+    if cached:
+        return json.loads(cached)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         raw = client.get(response_key)
@@ -91,10 +94,7 @@ def _request_live_dialogs(
                 )
             return result
         time.sleep(0.05)
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Telegram groups could not be refreshed. Try again in a moment.",
-    )
+    return []
 
 
 def _owned_auth(auth_id: uuid.UUID, current_user: User, db: Session) -> dict:
@@ -398,34 +398,28 @@ def list_telegram_dialogs(connection_id: uuid.UUID, db: Session = Depends(get_db
 
 @router.get("/sources", response_model=list[TelegramSourceResponse])
 def list_sources(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    result = []
-    for source, profile in repo.list_sources_for_user(db, user_id=current_user.id):
-        data = TelegramSourceResponse.model_validate(source).model_dump()
-        data["profile"] = profile
-        result.append(TelegramSourceResponse.model_validate(data))
-    return result
+    return [
+        TelegramSourceResponse.model_validate(source)
+        for source, _profile in repo.list_sources_for_user(
+            db,
+            user_id=current_user.id,
+        )
+    ]
 
 
 @router.post("/sources", response_model=TelegramSourceResponse, status_code=201)
 def create_source(payload: TelegramSourceCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     if repo.get_connection_for_user(db, connection_id=payload.connection_id, user_id=current_user.id) is None:
         raise HTTPException(status_code=404, detail="Telegram connection not found.")
-    source = TelegramSource(user_id=current_user.id, state=TelegramSourceState.learning, **payload.model_dump())
+    source = TelegramSource(
+        user_id=current_user.id,
+        state=TelegramSourceState.ready,
+        unsupported_reason=None,
+        **payload.model_dump(),
+    )
     db.add(source)
     db.commit()
     db.refresh(source)
-    RedisStreamBus(_redis_client()).publish(CopyEvent.new(stream=StreamName.learning_jobs, event_type="source.learn", correlation_id=str(uuid_module.uuid4()), payload={"source_id": str(source.id)}, idempotency_key=f"learn:{source.id}"))
-    return TelegramSourceResponse.model_validate(source)
-
-
-@router.post("/sources/{source_id}/learn", response_model=TelegramSourceResponse, status_code=202)
-def relearn_source(source_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    source = repo.get_source_for_user(db, source_id=source_id, user_id=current_user.id)
-    if source is None:
-        raise HTTPException(status_code=404, detail="Telegram source not found.")
-    source.state = TelegramSourceState.learning
-    db.commit()
-    RedisStreamBus(_redis_client()).publish(CopyEvent.new(stream=StreamName.learning_jobs, event_type="source.learn", correlation_id=str(uuid_module.uuid4()), payload={"source_id": str(source.id)}, idempotency_key=f"learn:{source.id}:{int(datetime.now().timestamp())}"))
     return TelegramSourceResponse.model_validate(source)
 
 

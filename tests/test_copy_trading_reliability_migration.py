@@ -4,7 +4,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 
-REVISION = "a0b1c2d3e4f5"
+REVISION = "c9d8e7f6a5b4"
 MIGRATION = "a0b1c2d3e4f5_harden_copy_trading_runtime.py"
 
 
@@ -13,7 +13,7 @@ def test_reliability_revision_is_the_single_head() -> None:
     script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
 
     assert script.get_heads() == [REVISION]
-    assert script.get_revision(REVISION).down_revision == "9a4d7c2e5f81"
+    assert script.get_revision(REVISION).down_revision == "a0b1c2d3e4f5"
 
 
 def test_reliability_migration_is_additive_and_complete() -> None:

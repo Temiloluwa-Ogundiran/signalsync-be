@@ -275,9 +275,7 @@ class TelegramSourceResponse(BaseModel):
     username: Optional[str]
     source_type: TelegramSourceType
     state: TelegramSourceState
-    unsupported_reason: Optional[str]
     is_paused: bool
-    profile: Optional[ChannelProfileResponse] = None
 
     model_config = {"from_attributes": True}
 
