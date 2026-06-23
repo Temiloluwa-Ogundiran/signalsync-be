@@ -26,6 +26,7 @@ from app.domains.ai.quota import check as quota_check, debit as quota_debit, get
 from app.domains.ai.safety import internal_disclosure_response
 from app.domains.ai.schemas import (
     CoachReadResponse,
+    TradeReviewResponse,
     InsightResponse,
     MessageRequest,
     MessageResponse,
@@ -316,6 +317,29 @@ async def coach_read(
         )
     )
     return CoachReadResponse(**result)
+
+
+@router.get("/trade-review", response_model=TradeReviewResponse)
+async def trade_review(
+    trade_id: uuid.UUID = Query(...),
+    refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate (or return cached) the AI review for one trade."""
+    owned = {a["id"] for a in repo.get_accounts_for_user(db, user_id=user.id)}
+
+    result = await anyio.to_thread.run_sync(
+        lambda: service.generate_trade_review(
+            user_id=user.id,
+            trade_id=trade_id,
+            owned_account_ids=owned,
+            refresh=refresh,
+        )
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found.")
+    return TradeReviewResponse(**result)
 
 
 # ── Suggestions ───────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ from app.domains.ai.service._chat import persist_assistant_turn, prepare_turn
 from app.domains.ai.service._insights import get_insights
 from app.domains.ai.service._memory import get_memory_block
 from app.domains.ai.service._coach_read import generate_coach_read
+from app.domains.ai.service._trade_review import generate_trade_review
 
 __all__ = [
     "create_session",
@@ -21,4 +22,5 @@ __all__ = [
     "get_insights",
     "get_memory_block",
     "generate_coach_read",
+    "generate_trade_review",
 ]

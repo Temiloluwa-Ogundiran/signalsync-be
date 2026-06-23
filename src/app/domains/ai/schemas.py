@@ -78,6 +78,13 @@ class CoachReadResponse(BaseModel):
     cached: bool = False
 
 
+class TradeReviewResponse(BaseModel):
+    trade_id: str
+    review: str
+    insight: str = ""
+    cached: bool = False
+
+
 class UsageResponse(BaseModel):
     credits_used: int
     credits_limit: int

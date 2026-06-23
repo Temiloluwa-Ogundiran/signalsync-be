@@ -373,6 +373,63 @@ def upsert_daily_read(
 
 
 # ---------------------------------------------------------------------------
+# Trade review (cached in ai_insights, kind='trade_review', keyed by trade id)
+# ---------------------------------------------------------------------------
+
+def get_trade_review(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    trade_id: uuid.UUID,
+) -> Optional[dict]:
+    """Return the cached {review, insight} for one trade, or None."""
+    row = (
+        db.query(AiInsight)
+        .filter(
+            AiInsight.user_id == user_id,
+            AiInsight.kind == "trade_review",
+            AiInsight.payload["trade_id"].astext == str(trade_id),
+        )
+        .order_by(AiInsight.generated_at.desc())
+        .first()
+    )
+    if not row:
+        return None
+    return {"review": row.payload.get("review", ""), "insight": row.payload.get("insight", "")}
+
+
+def upsert_trade_review(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    account_id: Optional[uuid.UUID],
+    trade_id: uuid.UUID,
+    payload: dict,
+) -> AiInsight:
+    """Replace any existing trade_review for this trade, then insert fresh."""
+    now = datetime.now(timezone.utc)
+    db.query(AiInsight).filter(
+        AiInsight.user_id == user_id,
+        AiInsight.kind == "trade_review",
+        AiInsight.payload["trade_id"].astext == str(trade_id),
+    ).delete(synchronize_session=False)
+
+    insight = AiInsight(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        account_id=account_id,
+        kind="trade_review",
+        payload={**payload, "trade_id": str(trade_id)},
+        data_version=0,
+        generated_at=now,
+        valid_until=None,
+    )
+    db.add(insight)
+    db.flush()
+    return insight
+
+
+# ---------------------------------------------------------------------------
 # User memory
 # ---------------------------------------------------------------------------
 
