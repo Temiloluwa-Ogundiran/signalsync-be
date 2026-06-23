@@ -482,7 +482,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     allow_pending_cancel=route.allow_pending_cancel,
                     allow_additional_tp=route.allow_additional_tp,
                 ))
-                action = ParsedAction(thread_id=conversation.legacy_thread_id, route_id=route.id, telegram_message_id=event.payload["message_id"], action_type=signal.action.value, revision=revision, model_name=settings.COPY_TRADING_AI_MODEL, parser_version="v2", confidence=signal.confidence, payload=merged, validation_result={"accepted": validation.accepted, "reason": validation.reason, "assembly_id": str(assembly.id)})
+                action = ParsedAction(thread_id=conversation.legacy_thread_id, route_id=route.id, telegram_message_id=event.payload["message_id"], action_type=signal.action.value, revision=revision, model_name=settings.COPY_TRADING_AI_MODEL, parser_version="v2", confidence=signal.confidence, payload=merged, validation_result={"accepted": validation.accepted, "reason": validation.reason, "advisory": validation.advisory, "assembly_id": str(assembly.id)})
                 db.add(action)
                 db.flush()
                 if not validation.accepted:

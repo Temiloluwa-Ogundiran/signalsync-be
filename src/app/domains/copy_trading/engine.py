@@ -48,6 +48,7 @@ class RouteExecutionPolicy:
 class ValidationResult:
     accepted: bool
     reason: Optional[str] = None
+    advisory: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -57,14 +58,21 @@ class TakeProfitLeg:
 
 
 def validate_signal(signal: ParsedSignal, policy: RouteExecutionPolicy) -> ValidationResult:
-    if signal.confidence < policy.confidence_threshold:
-        return ValidationResult(False, "Signal confidence is below the safety threshold.")
+    advisory = (
+        "AI confidence is low."
+        if signal.confidence < policy.confidence_threshold
+        else None
+    )
     if signal.action == SignalAction.status_only:
-        return ValidationResult(False, "Status updates do not perform broker actions.")
+        return ValidationResult(
+            False,
+            "Status updates do not perform broker actions.",
+            advisory,
+        )
     if signal.action == SignalAction.open_market and signal.age_seconds > policy.market_freshness_seconds:
-        return ValidationResult(False, "Signal is too old for immediate entry.")
+        return ValidationResult(False, "Signal is too old for immediate entry.", advisory)
     if signal.action == SignalAction.place_pending and not policy.pending_orders_enabled:
-        return ValidationResult(False, "Pending orders are disabled for this route.")
+        return ValidationResult(False, "Pending orders are disabled for this route.", advisory)
     permission = {
         SignalAction.modify_sl_tp: policy.allow_sl_tp_updates,
         SignalAction.break_even: policy.allow_break_even,
@@ -74,7 +82,11 @@ def validate_signal(signal: ParsedSignal, policy: RouteExecutionPolicy) -> Valid
         SignalAction.additional_tp: policy.allow_additional_tp,
     }.get(signal.action, True)
     if not permission:
-        return ValidationResult(False, "This broker action is disabled for this route.")
+        return ValidationResult(
+            False,
+            "This broker action is disabled for this route.",
+            advisory,
+        )
     if signal.action in {SignalAction.open_market, SignalAction.place_pending}:
         required = {
             "direction_symbol": (signal.direction, signal.symbol),
@@ -89,8 +101,12 @@ def validate_signal(signal: ParsedSignal, policy: RouteExecutionPolicy) -> Valid
             ),
         }[policy.minimum_fields]
         if any(value is None or value == [] for value in required):
-            return ValidationResult(False, "Signal is waiting for required trade details.")
-    return ValidationResult(True)
+            return ValidationResult(
+                False,
+                "Signal is waiting for required trade details.",
+                advisory,
+            )
+    return ValidationResult(True, advisory=advisory)
 
 
 def build_tp_legs(

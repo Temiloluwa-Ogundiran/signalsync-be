@@ -1,7 +1,14 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from decimal import Decimal
 
 from app.core.config import settings
+from app.domains.copy_trading.engine import (
+    ParsedSignal,
+    RouteExecutionPolicy,
+    SignalAction,
+    validate_signal,
+)
 from app.domains.copy_trading.models import CopyActivityLevel
 from app.domains.copy_trading.workers import AiAction, _activity, _parse_message
 
@@ -55,3 +62,34 @@ def test_signal_activity_encrypts_and_retains_the_source_message(
     )
     db.add.assert_called_once_with(activity_event_class.return_value)
     cipher_class.return_value.encrypt.assert_called_once_with("BUY XAUUSD")
+
+
+def test_low_confidence_complete_signal_is_advisory() -> None:
+    signal = ParsedSignal(
+        action=SignalAction.open_market,
+        symbol="XAUUSD",
+        direction="buy",
+        stop_loss=Decimal("2315"),
+        take_profits=[Decimal("2340")],
+        confidence=0.42,
+    )
+
+    result = validate_signal(signal, RouteExecutionPolicy())
+
+    assert result.accepted is True
+    assert result.reason is None
+    assert result.advisory == "AI confidence is low."
+
+
+def test_low_confidence_does_not_override_missing_required_fields() -> None:
+    signal = ParsedSignal(
+        action=SignalAction.open_market,
+        symbol="XAUUSD",
+        direction="buy",
+        confidence=0.42,
+    )
+
+    result = validate_signal(signal, RouteExecutionPolicy())
+
+    assert result.accepted is False
+    assert result.reason == "Signal is waiting for required trade details."
