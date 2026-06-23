@@ -46,5 +46,9 @@ class FakeMt5Broker:
     def positions(self) -> list[dict]:
         return [dict(order) for order in self._orders.values()]
 
+    def find_by_client_order_id(self, client_order_id: str) -> dict | None:
+        order = self._orders.get(client_order_id)
+        return dict(order) if order else None
+
     def _by_ticket(self, ticket: int) -> dict:
         return next(order for order in self._orders.values() if order["ticket"] == ticket)
