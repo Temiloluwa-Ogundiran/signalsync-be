@@ -41,6 +41,18 @@ An open order that times out after submission is marked uncertain. Never manuall
 4. If MT5 explicitly reports that submission never started, the event may be retried.
 5. Escalate unresolved uncertain intents instead of creating a replacement order.
 
+## MT5 AutoTrading
+
+If a synthetic or live copy trade fails with `retcode=10027` or `AutoTrading disabled by client`, the app-side pipeline is working but the MT5 terminal is refusing automated orders.
+
+1. Open the affected MT5 worker terminal through VNC.
+2. Enable Algo Trading / AutoTrading in the terminal.
+3. Confirm the toolbar indicator is enabled for that terminal session.
+4. Publish one synthetic signal to the dedicated test route.
+5. Run `python scripts/copy_trading_launch_check.py` and confirm the synthetic result has one client order ID and one copied trade.
+
+Do not unpause global copy trading until the synthetic flow succeeds after AutoTrading is enabled.
+
 ## Signal Channels
 
 Every connected text channel or group is eligible for copying immediately, including empty channels. Historical learning does not gate activation. Each new message is parsed at runtime, while image-only messages are skipped and recorded without pausing or disconnecting the channel.

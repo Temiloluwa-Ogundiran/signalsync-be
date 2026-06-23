@@ -15,6 +15,7 @@ from app.domains.copy_trading.health import aggregate_health, build_launch_readi
 from app.domains.copy_trading.models import (
     CopiedTrade,
     CopyActivityEvent,
+    CopyActivityLevel,
     CopyDeadLetter,
     CopyWorkerHealth,
     DeadLetterState,
@@ -59,12 +60,26 @@ def synthetic_status(db) -> tuple[bool, dict]:
         )
     ).scalar_one()
     okay = bool(activities) and len(client_ids) == 1 and copied_count == 1
-    return okay, {
+    last_event = max(activities, key=lambda event: event.created_at)
+    failures = [
+        event
+        for event in activities
+        if event.level == CopyActivityLevel.error or event.action.endswith(".failed")
+    ]
+    last_failure = max(failures, key=lambda event: event.created_at) if failures else None
+    result = {
         "correlation_id": correlation_id,
         "activity_events": len(activities),
         "client_order_ids": sorted(client_ids),
         "copied_trades": copied_count,
+        "last_action": last_event.action,
+        "last_title": last_event.title,
     }
+    if last_failure is not None:
+        result["failure_action"] = last_failure.action
+        result["failure_title"] = last_failure.title
+        result["failure_details"] = last_failure.parsed_details or {}
+    return okay, result
 
 
 def main() -> int:
