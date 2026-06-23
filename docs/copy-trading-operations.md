@@ -4,7 +4,7 @@
 
 1. Deploy the API image and run `alembic upgrade head` once.
 2. Deploy the MT5 worker with exact `client_order_id` reconciliation support.
-3. Redeploy the Telegram session, learning, signal, and execution workers.
+3. Redeploy the Telegram session, signal, and execution workers.
 4. Confirm `/api/v1/copy-trading/health` reports every required role.
 5. Deploy the frontend after the backend health and paginated activity contracts are live.
 
@@ -15,7 +15,6 @@ Do not deploy the execution worker before the MT5 worker. The backend intentiona
 The health endpoint expects fresh heartbeats from:
 
 - `telegram-session`
-- `copy-learning`
 - `copy-signal`
 - `copy-execution`
 
@@ -42,12 +41,9 @@ An open order that times out after submission is marked uncertain. Never manuall
 4. If MT5 explicitly reports that submission never started, the event may be retried.
 5. Escalate unresolved uncertain intents instead of creating a replacement order.
 
-## Channel Learning Outcomes
+## Signal Channels
 
-- Low confidence is advisory. Users may activate copy rules and should review activity closely.
-- Dependency timeouts are retryable and leave the source available for another analysis.
-- Image-primary channels are unsupported in v1 and are automatically paused after classification.
-- Raw samples are retained for seven days according to the configured cleanup job.
+Every connected text channel or group is eligible for copying immediately, including empty channels. Historical learning does not gate activation. Each new message is parsed at runtime, while image-only messages are skipped and recorded without pausing or disconnecting the channel.
 
 ## Continuous Reconciliation
 
@@ -73,7 +69,7 @@ Do not downgrade the database while copied trades, route assemblies, dead letter
 
 ## Acceptance Checklist
 
-- All four worker roles report `healthy`.
+- All three worker roles report `healthy`.
 - Stream lag and pending counts are stable.
 - No unexpected pending dead letters exist.
 - A test source creates one correlation ID and one stable client order ID.

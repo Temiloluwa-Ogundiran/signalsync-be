@@ -153,7 +153,6 @@ class Settings(BaseSettings):
     COPY_TRADING_GLOBAL_PAUSED: bool = False
     COPY_TRADING_REDIS_URL: str = "redis://localhost:6379/4"
     COPY_TRADING_AI_MODEL: str = "gpt-5.4-nano"
-    COPY_TRADING_LEARNING_MODEL: str = "gpt-5.4-mini"
     COPY_TRADING_AI_TIMEOUT_SECONDS: float = 3.0
     COPY_TRADING_AI_MAX_RETRIES: int = 1
     COPY_TRADING_CONFIDENCE_THRESHOLD: float = 0.75

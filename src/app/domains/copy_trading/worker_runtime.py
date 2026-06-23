@@ -7,19 +7,15 @@ import time
 import uuid
 import base64
 import io
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import redis
-from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 import app.models  # noqa: F401 - register string-based ORM relationships for standalone workers
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.copy_trading.models import (
-    AutomationConfidence,
-    ChannelMessageSample,
-    ChannelProfile,
     CopyActivityEvent,
     CopyActivityLevel,
     CopyDeadLetter,
@@ -27,7 +23,6 @@ from app.domains.copy_trading.models import (
     TelegramConnection,
     TelegramConnectionState,
     TelegramSource,
-    TelegramSourceState,
     TelegramSourceType,
     CopyRoute,
     TelegramAuthAttempt,
@@ -75,9 +70,6 @@ class StreamWorker:
         if self.group == "copy-execution":
             from app.domains.copy_trading.workers import publish_unresolved_intents
             publish_unresolved_intents(self.client)
-        elif self.group == "copy-learning":
-            purge_expired_samples()
-            recover_learning_sources(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
             self._run_maintenance()
@@ -645,246 +637,6 @@ class TelegramSessionRuntime:
                         self.redis.xdel(StreamName.telegram_commands.value, message_id)
 
 
-def learning_handler(event: CopyEvent, client) -> DeliveryResult:
-    if event.event_type != "source.learn":
-        return DeliveryResult.success()
-    source_id = uuid.UUID(event.payload["source_id"])
-    lock = client.lock(
-        f"copy:learning-lock:{source_id}",
-        timeout=240,
-        blocking_timeout=1,
-    )
-    if not lock.acquire(blocking=True):
-        return DeliveryResult.retry("LEARNING_BUSY", "Channel analysis is already running.")
-    try:
-        asyncio.run(_learn_source_with_timeout(source_id))
-        return DeliveryResult.success()
-    except Exception as exc:
-        logger.exception(
-            "Channel learning failed source_id=%s correlation_id=%s",
-            source_id,
-            event.correlation_id,
-        )
-        _mark_learning_failed(
-            source_id,
-            "Channel analysis failed. Try analyzing the channel again.",
-            str(exc),
-        )
-        return DeliveryResult.retry(type(exc).__name__.upper(), str(exc))
-    finally:
-        lock.release()
-
-
-async def _learn_source_with_timeout(
-    source_id: uuid.UUID, timeout_seconds: float = 180
-) -> None:
-    await asyncio.wait_for(_learn_source(source_id), timeout=timeout_seconds)
-
-
-def _mark_learning_failed(source_id: uuid.UUID, user_message: str, internal_error: str) -> None:
-    with SessionLocal() as db:
-        source = db.get(TelegramSource, source_id)
-        if source is None:
-            return
-        source.state = TelegramSourceState.failed_retryable
-        source.unsupported_reason = user_message
-        db.add(
-            CopyActivityEvent(
-                user_id=source.user_id,
-                source_id=source.id,
-                correlation_id=str(uuid.uuid4()),
-                action="source.learning_failed",
-                level=CopyActivityLevel.error,
-                title="Channel analysis failed",
-                body=user_message,
-                parsed_details={"reason": "learning_failed"},
-                broker_details={},
-            )
-        )
-        db.commit()
-
-
-def recover_learning_sources(client) -> None:
-    bus = RedisStreamBus(client)
-    recovered_at = int(datetime.now(timezone.utc).timestamp())
-    with SessionLocal() as db:
-        sources = list(
-            db.execute(
-                select(TelegramSource).where(
-                    TelegramSource.state == TelegramSourceState.learning
-                )
-            ).scalars()
-        )
-    for source in sources:
-        bus.publish(
-            CopyEvent.new(
-                stream=StreamName.learning_jobs,
-                event_type="source.learn",
-                correlation_id=str(uuid.uuid4()),
-                payload={"source_id": str(source.id)},
-                idempotency_key=f"recover-learn:{source.id}:{recovered_at}",
-            )
-        )
-    if sources:
-        logger.info("Republished %s stranded channel learning jobs", len(sources))
-
-
-def purge_expired_samples() -> None:
-    with SessionLocal() as db:
-        db.execute(
-            delete(ChannelMessageSample).where(
-                ChannelMessageSample.expires_at <= datetime.now(timezone.utc)
-            )
-        )
-        db.commit()
-
-
-def _build_learning_prompt(samples: list[dict], max_chars: int = 60_000) -> str:
-    compact = []
-    for sample in samples[:60]:
-        item = dict(sample)
-        item["text"] = str(item.get("text", ""))[:900]
-        candidate = json.dumps([*compact, item], ensure_ascii=True)
-        if len(candidate) > max_chars:
-            break
-        compact.append(item)
-    return json.dumps(compact, ensure_ascii=True)
-
-
-class LearningResult(BaseModel):
-    signal_style: str
-    recommended_assembly_window_seconds: int
-    confidence: AutomationConfidence
-    confidence_score: float
-    image_primary: bool
-    supported_actions: list[str]
-    author_pattern: dict
-
-
-def _learning_source_outcome(
-    *,
-    confidence: AutomationConfidence,
-    image_primary: bool,
-) -> tuple[TelegramSourceState, str | None]:
-    if image_primary:
-        return (
-            TelegramSourceState.unsupported_image_primary,
-            "This source primarily uses image signals, which are not supported.",
-        )
-    if confidence == AutomationConfidence.low:
-        return (
-            TelegramSourceState.advisory,
-            "Automation confidence is low. Review the learned pattern before copying.",
-        )
-    return TelegramSourceState.ready, None
-
-
-async def _learn_source(source_id: uuid.UUID) -> None:
-    from langchain_openai import ChatOpenAI
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-
-    with SessionLocal() as db:
-        source = db.get(TelegramSource, source_id)
-        if source is None:
-            return
-        existing = db.execute(select(ChannelProfile).where(ChannelProfile.telegram_chat_id == source.telegram_chat_id).order_by(ChannelProfile.validated_at.desc())).scalars().first()
-        now = datetime.now(timezone.utc)
-        if existing and existing.validated_at > now - timedelta(days=1):
-            source.profile_id = existing.id
-            source.state, source.unsupported_reason = _learning_source_outcome(
-                confidence=existing.confidence,
-                image_primary=existing.image_primary,
-            )
-            db.commit()
-            return
-        connection = db.get(TelegramConnection, source.connection_id)
-        encrypted_session = connection.encrypted_session if connection else None
-        chat_id = source.telegram_chat_id
-    if not encrypted_session:
-        raise RuntimeError("Telegram connection is not authorized.")
-    telegram = TelegramClient(StringSession(SessionCipher(settings.ENCRYPTION_KEY).decrypt(encrypted_session)), settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
-    await telegram.connect()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
-    samples = []
-    image_count = 0
-    async for message in telegram.iter_messages(chat_id, offset_date=datetime.now(timezone.utc), reverse=False):
-        if message.date.astimezone(timezone.utc) < cutoff:
-            break
-        text = (message.message or "").strip()
-        if message.media:
-            image_count += 1
-        if text:
-            samples.append({"message_id": int(message.id), "text": text[:4000], "date": message.date.astimezone(timezone.utc).isoformat(), "reply_to": getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None), "has_media": bool(message.media)})
-        if len(samples) >= 250:
-            break
-    await telegram.disconnect()
-    if not samples:
-        result = LearningResult(signal_style="No usable text signals", recommended_assembly_window_seconds=90, confidence=AutomationConfidence.low, confidence_score=0, image_primary=image_count > 0, supported_actions=[], author_pattern={})
-    else:
-        model = ChatOpenAI(model=settings.COPY_TRADING_LEARNING_MODEL, api_key=settings.OPENAI_API_KEY, timeout=45, max_retries=1).with_structured_output(LearningResult, method="json_schema")
-        result = await model.ainvoke([("system", "Analyze this Telegram trading source. Detect complete vs multi-message signals, safe assembly timing, supported actions, author patterns and image dependence. Be conservative. Assembly window must be 1-600 seconds."), ("human", _build_learning_prompt(samples))])
-    image_frequency = image_count / max(len(samples) + image_count, 1)
-    image_primary = result.image_primary or image_frequency >= 0.5
-    now = datetime.now(timezone.utc)
-    cipher = SessionCipher(settings.ENCRYPTION_KEY)
-    with SessionLocal() as db:
-        source = db.get(TelegramSource, source_id)
-        profile = db.execute(
-            select(ChannelProfile).where(
-                ChannelProfile.telegram_chat_id == source.telegram_chat_id,
-                ChannelProfile.parser_version == "v1",
-            )
-        ).scalar_one_or_none()
-        if profile is None:
-            profile = ChannelProfile(
-                telegram_chat_id=source.telegram_chat_id,
-                parser_version="v1",
-                signal_style=result.signal_style,
-                recommended_assembly_window_seconds=90,
-                confidence=result.confidence,
-                confidence_score=result.confidence_score,
-                image_frequency=image_frequency,
-                image_primary=image_primary,
-                supported_actions=[],
-                author_pattern={},
-                analyzed_from=now - timedelta(days=7),
-                analyzed_to=now,
-                sample_count=0,
-                validated_at=now,
-            )
-            db.add(profile)
-        profile.signal_style = result.signal_style
-        profile.recommended_assembly_window_seconds = max(
-            1,
-            min(600, result.recommended_assembly_window_seconds),
-        )
-        profile.confidence = result.confidence
-        profile.confidence_score = result.confidence_score
-        profile.image_frequency = image_frequency
-        profile.image_primary = image_primary
-        profile.supported_actions = result.supported_actions
-        profile.author_pattern = result.author_pattern
-        profile.analyzed_from = now - timedelta(days=7)
-        profile.analyzed_to = now
-        profile.sample_count = len(samples)
-        profile.validated_at = now
-        db.flush()
-        db.execute(
-            delete(ChannelMessageSample).where(
-                ChannelMessageSample.profile_id == profile.id
-            )
-        )
-        for sample in samples:
-            db.add(ChannelMessageSample(profile_id=profile.id, telegram_chat_id=source.telegram_chat_id, telegram_message_id=sample["message_id"], encrypted_raw_message=cipher.encrypt(sample["text"]), message_metadata={key: value for key, value in sample.items() if key != "text"}, purpose="learning", expires_at=now + timedelta(days=7)))
-        source.profile_id = profile.id
-        source.state, source.unsupported_reason = _learning_source_outcome(
-            confidence=result.confidence,
-            image_primary=image_primary,
-        )
-        db.commit()
-
-
 def run_process(role: str) -> None:
     if not settings.COPY_TRADING_ENABLED:
         logger.warning("COPY_TRADING_ENABLED is false; worker remains healthy but does not consume actions")
@@ -892,8 +644,6 @@ def run_process(role: str) -> None:
         logger.info("copy-trading worker started role=%s", role)
     if role == "telegram-session":
         asyncio.run(TelegramSessionRuntime().run())
-    elif role == "copy-learning":
-        StreamWorker(stream=StreamName.learning_jobs, group="copy-learning", handler=learning_handler).run()
     else:
         from app.domains.copy_trading.workers import execution_handler, signal_handler
         stream, group, handler = {

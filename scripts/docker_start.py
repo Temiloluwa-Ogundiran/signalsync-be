@@ -143,14 +143,13 @@ def main() -> None:
         "ai": start_ai,
         "worker": start_worker,
         "telegram-session": lambda: start_copy_worker("telegram-session"),
-        "copy-learning": lambda: start_copy_worker("copy-learning"),
         "copy-signal": lambda: start_copy_worker("copy-signal"),
         "copy-execution": lambda: start_copy_worker("copy-execution"),
     }
 
     handler = handlers.get(process_type)
     if handler is None:
-        print(f"Unknown PROCESS_TYPE={process_type!r}. Use: api | ai | worker | telegram-session | copy-learning | copy-signal | copy-execution", file=sys.stderr)
+        print(f"Unknown PROCESS_TYPE={process_type!r}. Use: api | ai | worker | telegram-session | copy-signal | copy-execution", file=sys.stderr)
         sys.exit(1)
 
     print(f"Starting process type: {process_type}")

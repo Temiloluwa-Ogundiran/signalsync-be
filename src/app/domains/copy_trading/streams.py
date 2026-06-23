@@ -11,7 +11,6 @@ class StreamName(str, Enum):
     telegram_messages = "copy:telegram:messages"
     signal_actions = "copy:signal:actions"
     execution_intents = "copy:execution:intents"
-    learning_jobs = "copy:learning:jobs"
     outcomes = "copy:outcomes"
     dead_letters = "copy:dead-letters"
 

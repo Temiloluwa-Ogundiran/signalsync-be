@@ -27,7 +27,6 @@ def test_all_required_workers_must_be_fresh() -> None:
     result = aggregate_health(
         [
             heartbeat("telegram-session"),
-            heartbeat("copy-learning"),
             heartbeat("copy-signal"),
             heartbeat("copy-execution"),
         ],
@@ -42,7 +41,6 @@ def test_stale_execution_worker_makes_health_degraded() -> None:
     result = aggregate_health(
         [
             heartbeat("telegram-session"),
-            heartbeat("copy-learning"),
             heartbeat("copy-signal"),
             heartbeat("copy-execution", age=91),
         ],

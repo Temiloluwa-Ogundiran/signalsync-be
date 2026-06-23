@@ -28,3 +28,18 @@ def test_worker_runtime_registers_complete_model_graph() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_worker_runtime_has_no_channel_learning_role() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    source = (
+        project_root / "src" / "app" / "domains" / "copy_trading" / "worker_runtime.py"
+    ).read_text(encoding="utf-8")
+    startup = (project_root / "scripts" / "docker_start.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"copy-learning"' not in source
+    assert "source.learn" not in source
+    assert "learning_handler" not in source
+    assert '"copy-learning"' not in startup

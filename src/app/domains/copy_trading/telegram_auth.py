@@ -51,12 +51,7 @@ class ImageMessageOutcome:
 
 
 def image_message_outcome(recent_count: int) -> ImageMessageOutcome:
-    if recent_count >= 3:
-        return ImageMessageOutcome(
-            disconnect=True,
-            message="This source repeatedly posted image-only signals and was paused because image signals are not supported.",
-        )
     return ImageMessageOutcome(
         disconnect=False,
-        message="An image-only message was skipped because image signals are not supported.",
+        message="An image-only message was skipped because image signals are not processed.",
     )
