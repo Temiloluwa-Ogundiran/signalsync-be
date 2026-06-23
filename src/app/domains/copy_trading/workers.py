@@ -29,6 +29,7 @@ from app.domains.copy_trading.execution import (
 )
 from app.domains.copy_trading.generations import (
     OPEN_ACTIONS,
+    corrective_action_for_submitted_edit,
     mark_generation_completed,
     mark_generation_expired,
     mark_generation_failed,
@@ -144,7 +145,7 @@ def _select_copied_trade(
     )
     signal_symbol = payload.get("symbol")
     if not signal_symbol:
-        return ordered[0] if ordered else None
+        return ordered[0] if len(ordered) == 1 else None
     target = normalize_symbol(signal_symbol)
     for trade in ordered:
         candidate = normalize_symbol(trade.signal_symbol)
@@ -351,6 +352,17 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     )
                 ).scalars()
             )
+            submitted_conversation_ids = {
+                row[0]
+                for row in db.execute(
+                    select(RouteSignalAssembly.conversation_id).where(
+                        RouteSignalAssembly.conversation_id.in_(
+                            [item.id for item in conversations]
+                        ),
+                        RouteSignalAssembly.opening_intent_id.is_not(None),
+                    )
+                ).all()
+            } if conversations else set()
             candidates = [
                 ConversationCandidate(
                     id=item.id,
@@ -359,6 +371,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     symbol=item.symbol,
                     direction=item.direction,
                     updated_at=item.updated_at,
+                    opening_submitted=item.id in submitted_conversation_ids,
                 )
                 for item in conversations
             ]
@@ -381,9 +394,12 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
 
             choice = choose_conversation(
                 reply_to_message_id=event.payload.get("reply_to_message_id"),
+                message_id=event.payload.get("message_id"),
+                is_edit=event.event_type == "message.edited",
                 symbol=parsed.symbol,
                 direction=parsed.direction,
                 candidates=candidates,
+                action=parsed.action.value,
             )
             if choice.ambiguous:
                 for route in routes:
@@ -433,6 +449,16 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                 db.flush()
 
             parsed_update = parsed.model_dump(mode="json")
+            if (
+                event.event_type == "message.edited"
+                and choice.selected
+                and choice.selected.opening_submitted
+                and parsed.action.value in OPEN_ACTIONS
+            ):
+                parsed_update = corrective_action_for_submitted_edit(
+                    conversation.context,
+                    parsed_update,
+                )
             conversation.context = merge_context(conversation.context, parsed_update)
             conversation.symbol = conversation.context.get("symbol")
             conversation.direction = conversation.context.get("direction")
@@ -470,12 +496,21 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     )
                 ).scalar_one_or_none()
                 if assembly is None:
+                    previous_generations = list(
+                        db.execute(
+                            select(RouteSignalAssembly.generation).where(
+                                RouteSignalAssembly.conversation_id == conversation.id,
+                                RouteSignalAssembly.route_id == route.id,
+                            )
+                        ).scalars()
+                    )
                     assembly = RouteSignalAssembly(
                         conversation_id=conversation.id,
                         route_id=route.id,
                         state=RouteAssemblyState.assembling,
-                        context={},
+                        context=dict(conversation.context),
                         message_references=[],
+                        generation=max(previous_generations or [0]) + 1,
                         assembly_deadline=route_deadline(now, route.assembly_window_seconds),
                     )
                     db.add(assembly)

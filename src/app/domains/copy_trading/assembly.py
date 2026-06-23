@@ -21,6 +21,7 @@ class ConversationCandidate:
     symbol: str | None
     direction: str | None
     updated_at: datetime
+    opening_submitted: bool = False
 
 
 @dataclass(frozen=True)
@@ -35,8 +36,21 @@ def choose_conversation(
     symbol: str | None,
     direction: str | None,
     candidates: list[ConversationCandidate],
+    action: str | None = None,
+    message_id: int | None = None,
+    is_edit: bool = False,
 ) -> ConversationChoice:
     ordered = sorted(candidates, key=lambda item: item.updated_at, reverse=True)
+    if is_edit and message_id is not None:
+        edit_matches = [
+            item
+            for item in ordered
+            if message_id in {item.reply_root_message_id, item.last_message_id}
+        ]
+        if len(edit_matches) == 1:
+            return ConversationChoice(edit_matches[0])
+        if len(edit_matches) > 1:
+            return ConversationChoice(None, ambiguous=True)
     if reply_to_message_id is not None:
         reply_matches = [
             item
@@ -49,12 +63,17 @@ def choose_conversation(
         if len(reply_matches) > 1:
             return ConversationChoice(None, ambiguous=True)
 
+    matchable = (
+        [item for item in ordered if not item.opening_submitted]
+        if action in {"open_market", "place_pending"}
+        else ordered
+    )
     normalized_symbol = normalize_symbol(symbol)
     normalized_direction = normalize_direction(direction)
     if normalized_symbol:
         exact = [
             item
-            for item in ordered
+            for item in matchable
             if normalize_symbol(item.symbol) == normalized_symbol
             and (
                 normalized_direction is None
@@ -69,12 +88,12 @@ def choose_conversation(
 
     # Action-only updates may safely use an implicit conversation only when
     # there is exactly one possible target.
-    if len(ordered) == 1:
-        candidate = ordered[0]
+    if len(matchable) == 1:
+        candidate = matchable[0]
         if normalized_direction and normalize_direction(candidate.direction) != normalized_direction:
             return ConversationChoice(None)
         return ConversationChoice(candidate)
-    return ConversationChoice(None, ambiguous=len(ordered) > 1)
+    return ConversationChoice(None, ambiguous=len(matchable) > 1)
 
 
 def route_deadline(now: datetime, assembly_window_seconds: int | None) -> datetime:

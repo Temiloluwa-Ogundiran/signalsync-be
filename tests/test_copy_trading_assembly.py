@@ -7,7 +7,10 @@ from app.domains.copy_trading.assembly import (
     choose_conversation,
     route_deadline,
 )
-from app.domains.copy_trading.generations import merge_generation_context
+from app.domains.copy_trading.generations import (
+    corrective_action_for_submitted_edit,
+    merge_generation_context,
+)
 
 
 NOW = datetime(2026, 6, 22, tzinfo=timezone.utc)
@@ -19,6 +22,7 @@ def candidate(
     direction: str | None,
     root: int,
     last: int | None = None,
+    opening_submitted: bool = False,
 ) -> ConversationCandidate:
     return ConversationCandidate(
         id=uuid.uuid4(),
@@ -27,6 +31,7 @@ def candidate(
         symbol=symbol,
         direction=direction,
         updated_at=NOW,
+        opening_submitted=opening_submitted,
     )
 
 
@@ -129,3 +134,99 @@ def test_later_sl_remains_management_action_after_open_submission() -> None:
 
     assert merged["action"] == "modify_sl_tp"
     assert merged["symbol"] == "XAUUSD"
+
+
+def test_new_open_does_not_reuse_a_submitted_conversation() -> None:
+    submitted = candidate(
+        symbol="XAUUSD",
+        direction="buy",
+        root=10,
+        opening_submitted=True,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        symbol="XAUUSD",
+        direction="buy",
+        action="open_market",
+        candidates=[submitted],
+    )
+
+    assert result.selected is None
+    assert result.ambiguous is False
+
+
+def test_management_update_can_reuse_a_submitted_conversation() -> None:
+    submitted = candidate(
+        symbol="XAUUSD",
+        direction="buy",
+        root=10,
+        opening_submitted=True,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        symbol="XAUUSD",
+        direction=None,
+        action="modify_sl_tp",
+        candidates=[submitted],
+    )
+
+    assert result.selected == submitted
+
+
+def test_edit_reuses_its_submitted_conversation() -> None:
+    submitted = candidate(
+        symbol="XAUUSD",
+        direction="buy",
+        root=10,
+        opening_submitted=True,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        message_id=10,
+        is_edit=True,
+        symbol="XAUUSD",
+        direction="buy",
+        action="open_market",
+        candidates=[submitted],
+    )
+
+    assert result.selected == submitted
+
+
+def test_submitted_open_edit_becomes_sl_tp_correction() -> None:
+    update = corrective_action_for_submitted_edit(
+        {
+            "action": "open_market",
+            "symbol": "XAUUSD",
+            "direction": "buy",
+            "stop_loss": "2310",
+            "take_profits": ["2340"],
+        },
+        {
+            "action": "open_market",
+            "symbol": "XAUUSD",
+            "direction": "buy",
+            "stop_loss": "2315",
+            "take_profits": ["2340"],
+        },
+    )
+
+    assert update["action"] == "modify_sl_tp"
+    assert update["stop_loss"] == "2315"
+
+
+def test_submitted_open_edit_without_management_change_is_status_only() -> None:
+    context = {
+        "action": "open_market",
+        "symbol": "XAUUSD",
+        "direction": "buy",
+        "stop_loss": "2315",
+        "take_profits": ["2340"],
+    }
+
+    update = corrective_action_for_submitted_edit(context, dict(context))
+
+    assert update["action"] == "status_only"

@@ -31,6 +31,27 @@ def merge_generation_context(
     return merged
 
 
+def corrective_action_for_submitted_edit(
+    current: dict,
+    update: dict,
+) -> dict:
+    corrected = dict(update)
+    stop_loss_changed = (
+        update.get("stop_loss") is not None
+        and update.get("stop_loss") != current.get("stop_loss")
+    )
+    take_profits_changed = (
+        bool(update.get("take_profits"))
+        and update.get("take_profits") != current.get("take_profits")
+    )
+    corrected["action"] = (
+        "modify_sl_tp"
+        if stop_loss_changed or take_profits_changed
+        else "status_only"
+    )
+    return corrected
+
+
 def mark_generation_submitted(assembly, intent_id, now) -> None:
     assembly.state = RouteAssemblyState.executing
     if assembly.opening_intent_id is None:

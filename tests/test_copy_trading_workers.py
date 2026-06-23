@@ -218,11 +218,17 @@ def test_management_action_uses_most_recent_matching_symbol():
     assert selected is recent_gold
 
 
-def test_management_action_without_symbol_uses_most_recent_trade():
+def test_management_action_without_symbol_is_ambiguous_with_multiple_trades():
     older = SimpleNamespace(signal_symbol="EURUSD", created_at=1)
     recent = SimpleNamespace(signal_symbol="GBPUSD", created_at=2)
 
-    assert _select_copied_trade([older, recent], {}) is recent
+    assert _select_copied_trade([older, recent], {}) is None
+
+
+def test_management_action_without_symbol_uses_only_available_trade():
+    trade = SimpleNamespace(signal_symbol="EURUSD", created_at=1)
+
+    assert _select_copied_trade([trade], {}) is trade
 
 
 @patch("app.domains.copy_trading.workers._activity")
