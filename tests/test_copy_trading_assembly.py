@@ -7,6 +7,7 @@ from app.domains.copy_trading.assembly import (
     choose_conversation,
     route_deadline,
 )
+from app.domains.copy_trading.generations import merge_generation_context
 
 
 NOW = datetime(2026, 6, 22, tzinfo=timezone.utc)
@@ -92,3 +93,39 @@ def test_each_route_keeps_its_own_assembly_deadline() -> None:
 
     assert short == NOW + timedelta(seconds=30)
     assert long - short == timedelta(seconds=60)
+
+
+def test_later_sl_enriches_incomplete_open_instead_of_replacing_action() -> None:
+    merged = merge_generation_context(
+        {
+            "action": "open_market",
+            "direction": "buy",
+            "symbol": "XAUUSD",
+        },
+        {
+            "action": "modify_sl_tp",
+            "stop_loss": "2315",
+        },
+        opening_submitted=False,
+    )
+
+    assert merged["action"] == "open_market"
+    assert merged["stop_loss"] == "2315"
+
+
+def test_later_sl_remains_management_action_after_open_submission() -> None:
+    merged = merge_generation_context(
+        {
+            "action": "open_market",
+            "direction": "buy",
+            "symbol": "XAUUSD",
+        },
+        {
+            "action": "modify_sl_tp",
+            "stop_loss": "2315",
+        },
+        opening_submitted=True,
+    )
+
+    assert merged["action"] == "modify_sl_tp"
+    assert merged["symbol"] == "XAUUSD"

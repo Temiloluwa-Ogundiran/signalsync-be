@@ -27,6 +27,10 @@ from app.domains.copy_trading.execution import (
     client_order_id_for_key,
     ensure_exposure_within_limit,
 )
+from app.domains.copy_trading.generations import (
+    OPEN_ACTIONS,
+    merge_generation_context,
+)
 from app.domains.copy_trading.reconciliation import (
     apply_broker_snapshot,
     broker_result_matches_intent,
@@ -427,8 +431,17 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     )
                     db.add(assembly)
                     db.flush()
-                merged = merge_context(assembly.context, parsed_update)
+                merged = merge_generation_context(
+                    assembly.context,
+                    parsed_update,
+                    opening_submitted=bool(assembly.opening_intent_id),
+                )
                 assembly.context = merged
+                if (
+                    assembly.opening_action is None
+                    and merged.get("action") in OPEN_ACTIONS
+                ):
+                    assembly.opening_action = merged["action"]
                 refs = list(assembly.message_references)
                 revision = 1 + max(
                     [
@@ -532,6 +545,11 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                             db.flush()
                     except IntegrityError:
                         continue
+                    if (
+                        signal.action.value in OPEN_ACTIONS
+                        and assembly.opening_intent_id is None
+                    ):
+                        assembly.opening_intent_id = intent.id
                     RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id), "account_id": str(route.target_account_id)}, idempotency_key=key))
                 assembly.state = RouteAssemblyState.executing
                 assembly.accepted_at = now
