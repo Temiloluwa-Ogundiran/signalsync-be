@@ -22,6 +22,53 @@ class HealthSummary:
     issues: list[str]
 
 
+@dataclass(frozen=True)
+class LaunchReadiness:
+    ready: bool
+    blockers: list[str]
+    warnings: list[str]
+    components: list[dict]
+    stream_lag: int
+    pending_events: int
+    dead_letters: int
+    oldest_uncertain_seconds: int
+    global_paused: bool
+
+
+def build_launch_readiness(
+    health: HealthSummary,
+    *,
+    dead_letter_count: int,
+    uncertain_intent_ages: list[int],
+    uncertain_max_age_seconds: int,
+    global_paused: bool,
+) -> LaunchReadiness:
+    blockers = []
+    warnings = []
+    if not health.ready:
+        blockers.append("runtime_health")
+    oldest_uncertain = max(uncertain_intent_ages or [0])
+    if oldest_uncertain > uncertain_max_age_seconds:
+        blockers.append("uncertain_intents")
+    elif uncertain_intent_ages:
+        warnings.append("broker_confirmation_pending")
+    if dead_letter_count:
+        blockers.append("dead_letters")
+    if global_paused:
+        warnings.append("global_pause_enabled")
+    return LaunchReadiness(
+        ready=not blockers,
+        blockers=blockers,
+        warnings=warnings,
+        components=health.components,
+        stream_lag=sum(item["stream_lag"] for item in health.components),
+        pending_events=sum(item["pending_count"] for item in health.components),
+        dead_letters=dead_letter_count,
+        oldest_uncertain_seconds=oldest_uncertain,
+        global_paused=global_paused,
+    )
+
+
 def aggregate_health(heartbeats, *, now: datetime | None = None, stale_after_seconds: int = 60) -> HealthSummary:
     now = now or datetime.now(timezone.utc)
     latest = {}

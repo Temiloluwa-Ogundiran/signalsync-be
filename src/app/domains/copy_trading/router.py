@@ -18,6 +18,7 @@ from app.domains.copy_trading.schemas import (
     CopyActivityResponse,
     CopyActivityPageResponse,
     CopyDeadLetterResponse,
+    CopyLaunchReadinessResponse,
     CopySystemHealthResponse,
     CopyRouteCreate,
     CopyRouteResponse,
@@ -36,8 +37,8 @@ from app.domains.copy_trading.schemas import (
 )
 from app.core.config import settings
 from app.domains.copy_trading import repository as repo
-from app.domains.copy_trading.models import CopyActivityLevel, CopyDeadLetter, CopyWorkerHealth, DeadLetterState, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState
-from app.domains.copy_trading.health import aggregate_health
+from app.domains.copy_trading.models import CopyActivityLevel, CopyDeadLetter, CopyWorkerHealth, DeadLetterState, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState, TradeIntent, TradeIntentState
+from app.domains.copy_trading.health import aggregate_health, build_launch_readiness
 from app.domains.copy_trading.telegram_auth import decode_auth_state, encode_auth_state
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
@@ -280,6 +281,51 @@ def list_activity(
 def copy_system_health(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     heartbeats = list(db.execute(select(CopyWorkerHealth)).scalars())
     return CopySystemHealthResponse.model_validate(aggregate_health(heartbeats).__dict__)
+
+
+@router.get("/launch-readiness", response_model=CopyLaunchReadinessResponse)
+def copy_launch_readiness(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    now = datetime.now(timezone.utc)
+    health = aggregate_health(
+        list(db.execute(select(CopyWorkerHealth)).scalars())
+    )
+    dead_letter_count = len(
+        list(
+            db.execute(
+                select(CopyDeadLetter.id).where(
+                    CopyDeadLetter.user_id == current_user.id,
+                    CopyDeadLetter.state == DeadLetterState.pending,
+                )
+            ).all()
+        )
+    )
+    uncertain_created_at = list(
+        db.execute(
+            select(TradeIntent.created_at).where(
+                TradeIntent.user_id == current_user.id,
+                TradeIntent.state.in_(
+                    [
+                        TradeIntentState.uncertain,
+                        TradeIntentState.reconciling,
+                    ]
+                ),
+            )
+        ).scalars()
+    )
+    readiness = build_launch_readiness(
+        health,
+        dead_letter_count=dead_letter_count,
+        uncertain_intent_ages=[
+            max(0, int((now - created_at).total_seconds()))
+            for created_at in uncertain_created_at
+        ],
+        uncertain_max_age_seconds=settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS,
+        global_paused=settings.COPY_TRADING_GLOBAL_PAUSED,
+    )
+    return CopyLaunchReadinessResponse.model_validate(readiness.__dict__)
 
 
 @router.get("/dead-letters", response_model=list[CopyDeadLetterResponse])

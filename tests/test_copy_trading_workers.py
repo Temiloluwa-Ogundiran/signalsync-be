@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 import app.models  # noqa: F401
+from app.core.config import settings
 from app.domains.copy_trading.models import (
     CopyActivityLevel,
     CopyRoute,
@@ -85,6 +86,40 @@ def test_paused_route_fails_intent_without_crashing(session_local):
     assert intent.last_error_code == "AUTOMATION_PAUSED"
     db.commit.assert_called_once()
     lock.release.assert_called_once()
+
+
+@patch.object(settings, "COPY_TRADING_GLOBAL_PAUSED", True)
+@patch("app.domains.copy_trading.workers.SessionLocal")
+def test_server_global_pause_blocks_broker_execution(session_local):
+    intent_id = uuid.uuid4()
+    intent = SimpleNamespace(
+        id=intent_id,
+        user_id=uuid.uuid4(),
+        route_id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        parsed_action_id=uuid.uuid4(),
+        state=TradeIntentState.created,
+        last_error_code=None,
+        broker_result={},
+    )
+    route = SimpleNamespace(state=CopyRouteState.active)
+    db = session_local.return_value.__enter__.return_value
+    db.execute.return_value.scalar_one_or_none.return_value = None
+    db.get.side_effect = lambda model, _identifier: {
+        TradeIntent: intent,
+        CopyRoute: route,
+        TradingAccount: SimpleNamespace(),
+        ParsedAction: SimpleNamespace(),
+    }.get(model)
+    lock = MagicMock()
+    lock.acquire.return_value = True
+    client = MagicMock()
+    client.lock.return_value = lock
+
+    execution_handler(event("intent.execute", {"intent_id": str(intent_id)}), client)
+
+    assert intent.state == TradeIntentState.failed
+    assert intent.last_error_code == "AUTOMATION_PAUSED"
 
 
 @patch("app.domains.copy_trading.workers.SessionLocal")

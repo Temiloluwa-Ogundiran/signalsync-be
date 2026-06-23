@@ -150,6 +150,7 @@ class Settings(BaseSettings):
 
     # Dedicated low-latency copy-trading runtime.
     COPY_TRADING_ENABLED: bool = False
+    COPY_TRADING_GLOBAL_PAUSED: bool = False
     COPY_TRADING_REDIS_URL: str = "redis://localhost:6379/4"
     COPY_TRADING_AI_MODEL: str = "gpt-5.4-nano"
     COPY_TRADING_LEARNING_MODEL: str = "gpt-5.4-mini"
@@ -157,6 +158,7 @@ class Settings(BaseSettings):
     COPY_TRADING_AI_MAX_RETRIES: int = 1
     COPY_TRADING_CONFIDENCE_THRESHOLD: float = 0.75
     COPY_TRADING_MARKET_FRESHNESS_SECONDS: int = 30
+    COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS: int = 60
     COPY_TRADING_CONSUMER_BLOCK_MS: int = 1000
     TELEGRAM_API_ID: int = 0
     TELEGRAM_API_HASH: str = ""

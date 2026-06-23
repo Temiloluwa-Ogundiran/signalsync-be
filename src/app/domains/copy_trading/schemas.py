@@ -187,6 +187,18 @@ class CopySystemHealthResponse(BaseModel):
     issues: list[str]
 
 
+class CopyLaunchReadinessResponse(BaseModel):
+    ready: bool
+    blockers: list[str]
+    warnings: list[str]
+    components: list[CopyHealthComponentResponse]
+    stream_lag: int
+    pending_events: int
+    dead_letters: int
+    oldest_uncertain_seconds: int
+    global_paused: bool
+
+
 class CopyDeadLetterResponse(BaseModel):
     id: uuid.UUID
     source_stream: str

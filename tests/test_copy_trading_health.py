@@ -1,7 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.domains.copy_trading.health import REQUIRED_WORKER_ROLES, aggregate_health
+from app.domains.copy_trading.health import (
+    REQUIRED_WORKER_ROLES,
+    aggregate_health,
+    build_launch_readiness,
+)
 
 
 NOW = datetime(2026, 6, 22, tzinfo=timezone.utc)
@@ -59,3 +63,52 @@ def test_missing_worker_is_reported_as_action_required() -> None:
 
 def test_channel_learning_worker_is_not_required_for_runtime_health() -> None:
     assert "copy-learning" not in REQUIRED_WORKER_ROLES
+
+
+def test_launch_readiness_blocks_old_uncertain_intent() -> None:
+    result = build_launch_readiness(
+        aggregate_health(
+            [heartbeat(role) for role in REQUIRED_WORKER_ROLES],
+            now=NOW,
+        ),
+        dead_letter_count=0,
+        uncertain_intent_ages=[121],
+        uncertain_max_age_seconds=60,
+        global_paused=True,
+    )
+
+    assert result.ready is False
+    assert "uncertain_intents" in result.blockers
+    assert result.oldest_uncertain_seconds == 121
+
+
+def test_launch_readiness_blocks_pending_dead_letters() -> None:
+    result = build_launch_readiness(
+        aggregate_health(
+            [heartbeat(role) for role in REQUIRED_WORKER_ROLES],
+            now=NOW,
+        ),
+        dead_letter_count=2,
+        uncertain_intent_ages=[],
+        uncertain_max_age_seconds=60,
+        global_paused=True,
+    )
+
+    assert result.ready is False
+    assert "dead_letters" in result.blockers
+
+
+def test_launch_readiness_can_be_ready_while_globally_paused() -> None:
+    result = build_launch_readiness(
+        aggregate_health(
+            [heartbeat(role) for role in REQUIRED_WORKER_ROLES],
+            now=NOW,
+        ),
+        dead_letter_count=0,
+        uncertain_intent_ages=[],
+        uncertain_max_age_seconds=60,
+        global_paused=True,
+    )
+
+    assert result.ready is True
+    assert result.global_paused is True

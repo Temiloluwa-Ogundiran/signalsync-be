@@ -333,6 +333,8 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
         return DeliveryResult.success()
     if event.event_type not in {"message.created", "message.edited"}:
         return DeliveryResult.success()
+    if settings.COPY_TRADING_GLOBAL_PAUSED:
+        return DeliveryResult.success()
     source_id = uuid.UUID(event.payload["source_id"])
     lock = client.lock(
         f"copy:source-lock:{source_id}", timeout=30, blocking_timeout=5
@@ -731,7 +733,8 @@ def execution_handler(event: CopyEvent, client) -> None:
                 )
             ).scalar_one_or_none()
             if (
-                route is None
+                settings.COPY_TRADING_GLOBAL_PAUSED
+                or route is None
                 or route.state != CopyRouteState.active
                 or (user_settings and user_settings.is_paused)
                 or (account_policy and account_policy.is_paused)
