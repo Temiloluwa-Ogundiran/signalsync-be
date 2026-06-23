@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     # Where the FE proxy routes ai/* requests. Empty => in-process (same app).
     AI_SERVICE_URL: str = ""
     RATE_LIMIT_AI: str = "12/minute"
-    AI_CREDITS_FREE: int = 50
+    AI_CREDITS_FREE: int = 500
     AI_CREDITS_ESSENTIAL: int = 500
     AI_CREDITS_PRO: int = 1000
 
