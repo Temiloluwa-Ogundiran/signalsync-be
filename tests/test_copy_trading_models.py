@@ -78,3 +78,25 @@ def test_trade_intents_and_copied_trades_store_broker_identity_and_state() -> No
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("client_order_id",) in unique_columns
+
+
+def test_route_assembly_tracks_opening_generation() -> None:
+    columns = {column.name for column in inspect(RouteSignalAssembly).columns}
+
+    assert {
+        "generation",
+        "opening_action",
+        "opening_intent_id",
+        "terminal_reason",
+        "completed_at",
+    } <= columns
+
+
+def test_route_assembly_generation_is_positive() -> None:
+    checks = {
+        constraint.name
+        for constraint in RouteSignalAssembly.__table__.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+
+    assert "ck_route_signal_assembly_generation_positive" in checks

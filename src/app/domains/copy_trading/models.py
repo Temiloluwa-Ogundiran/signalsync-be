@@ -460,6 +460,10 @@ class SignalConversation(Base):
 class RouteSignalAssembly(Base):
     __tablename__ = "route_signal_assemblies"
     __table_args__ = (
+        CheckConstraint(
+            "generation > 0",
+            name="ck_route_signal_assembly_generation_positive",
+        ),
         Index("ix_route_signal_assembly_route_state", "route_id", "state"),
         Index(
             "uq_route_signal_active_conversation",
@@ -476,8 +480,20 @@ class RouteSignalAssembly(Base):
     state: Mapped[RouteAssemblyState] = mapped_column(Enum(RouteAssemblyState, values_callable=enum_values, name="routeassemblystateenum"), nullable=False, default=RouteAssemblyState.assembling)
     context: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     message_references: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    generation: Mapped[int] = mapped_column(nullable=False, default=1)
+    opening_action: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    opening_intent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("trade_intents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    terminal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     assembly_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
