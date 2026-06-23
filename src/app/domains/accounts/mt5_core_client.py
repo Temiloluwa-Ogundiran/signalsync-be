@@ -93,16 +93,20 @@ class Mt5CoreClient:
         }
 
     def _new_client(self) -> httpx.AsyncClient:
-        """Create a fresh httpx client with keep-alive disabled.
+        """Create an httpx client with bounded connection reuse.
 
-        A new client is used per-request so that keep-alive connection
-        reuse across POST → GET boundaries cannot cause RemoteProtocolError
-        ("Server disconnected without sending a response").
+        Job polling performs several POST/GET calls in quick succession. A
+        small keep-alive pool avoids repeated TLS setup while _poll_job still
+        retries stale server disconnects.
         """
         return httpx.AsyncClient(
             headers=self._headers(),
             timeout=10.0,
-            limits=httpx.Limits(max_keepalive_connections=0),
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+                keepalive_expiry=10.0,
+            ),
         )
 
     @staticmethod
@@ -309,7 +313,7 @@ class Mt5CoreClient:
     async def _poll_job(self, client: httpx.AsyncClient, job_id: str) -> dict[str, Any]:
         """Poll the status of a job until succeeded or failed.
 
-        Each poll opens a fresh HTTP connection to avoid RemoteProtocolError
+        Stale keep-alive connections are treated as transient RemoteProtocolError
         that occurs when a keep-alive connection is closed by the server
         between polls.
         """

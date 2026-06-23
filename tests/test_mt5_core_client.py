@@ -1,5 +1,6 @@
 import pytest
 import httpx
+import anyio
 from datetime import datetime
 import app.domains.accounts.mt5_core_client as mt5_core_client_module
 from app.domains.accounts.mt5_core_client import (
@@ -18,6 +19,17 @@ def client() -> Mt5CoreClient:
         poll_timeout=2,
         poll_interval=0.1,
     )
+
+
+def test_mt5_core_client_reuses_bounded_keepalive_connections(client: Mt5CoreClient) -> None:
+    mt5_http_client = client._new_client()
+    try:
+        pool = mt5_http_client._transport._pool
+        assert pool._max_keepalive_connections == 5
+        assert pool._keepalive_expiry == 10.0
+    finally:
+        anyio.run(mt5_http_client.aclose)
+
 
 @pytest.mark.anyio
 async def test_verify_credentials_success(client: Mt5CoreClient, httpx_mock) -> None:
