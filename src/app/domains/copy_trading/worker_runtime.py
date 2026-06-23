@@ -274,25 +274,56 @@ class TelegramSessionRuntime:
 
     async def _finalize(self, auth_id: str, client) -> None:
         me = await client.get_me()
+        telegram_user_id = int(me.id)
+        display_name = " ".join(part for part in (getattr(me, "first_name", None), getattr(me, "last_name", None)) if part) or None
+        username = getattr(me, "username", None)
         from telethon.sessions import StringSession
 
         session_value = StringSession.save(client.session)
+        encrypted_session = self.cipher.encrypt(session_value)
+        now = datetime.now(timezone.utc)
+
+        # The live connection id may differ from auth_id: if this user already
+        # has a connection for this Telegram account (UNIQUE(user_id,
+        # telegram_user_id)), re-auth must adopt the fresh session into that
+        # existing row — it is the one telegram_sources/copy_routes reference.
+        # Committing the new row's telegram_user_id would otherwise violate the
+        # unique constraint and leave the connection stuck.
+        connection_id = auth_id
         with SessionLocal() as db:
             connection = db.get(TelegramConnection, uuid.UUID(auth_id))
             if connection is None:
                 await client.disconnect()
                 return
-            connection.telegram_user_id = int(me.id)
-            connection.display_name = " ".join(part for part in (getattr(me, "first_name", None), getattr(me, "last_name", None)) if part) or None
-            connection.username = getattr(me, "username", None)
-            connection.encrypted_session = self.cipher.encrypt(session_value)
-            connection.state = TelegramConnectionState.ready
-            connection.reauthentication_reason = None
-            connection.last_heartbeat_at = datetime.now(timezone.utc)
+
+            existing = db.execute(
+                select(TelegramConnection).where(
+                    TelegramConnection.user_id == connection.user_id,
+                    TelegramConnection.telegram_user_id == telegram_user_id,
+                    TelegramConnection.id != connection.id,
+                )
+            ).scalar_one_or_none()
+
+            target = existing or connection
+            target.telegram_user_id = telegram_user_id
+            target.display_name = display_name
+            target.username = username
+            target.encrypted_session = encrypted_session
+            target.state = TelegramConnectionState.ready
+            target.reauthentication_reason = None
+            target.last_heartbeat_at = now
+
+            if existing is not None:
+                # Drop the throwaway row created for this auth attempt so we
+                # don't leak orphan pending connections.
+                db.delete(connection)
+
             db.commit()
-        self._auth_update(auth_id, state="ready", message="Telegram connected")
-        await self._attach_updates(auth_id, client)
-        asyncio.create_task(self._refresh_dialog_cache(auth_id, client))
+            connection_id = str(target.id)
+
+        self._auth_update(auth_id, state="ready", message="Telegram connected", connection_id=connection_id)
+        await self._attach_updates(connection_id, client)
+        asyncio.create_task(self._refresh_dialog_cache(connection_id, client))
 
     async def _cache_dialogs(self, connection_id: str, client) -> list[dict]:
         dialogs = []
@@ -317,6 +348,16 @@ class TelegramSessionRuntime:
 
     async def _attach_updates(self, connection_id: str, client) -> None:
         from telethon import events
+
+        # Re-auth replaces the session for an already-attached connection. Drop
+        # the prior client first so we don't leak it (its old auth key is now
+        # revoked, which otherwise surfaces as AuthKeyUnregisteredError spam).
+        previous = self.clients.pop(f"connection:{connection_id}", None)
+        if previous is not None and previous is not client:
+            try:
+                await previous.disconnect()
+            except Exception:
+                logger.warning("Could not disconnect stale Telegram client connection_id=%s", connection_id, exc_info=True)
 
         async def publish_message(event_type: str, event) -> None:
             chat_id = int(event.chat_id)
@@ -442,7 +483,11 @@ class TelegramSessionRuntime:
             await self._finalize(auth_id, client)
         elif event.event_type == "auth.phone.password":
             client, _, _ = self.clients.get(auth_id) or await self._restore_auth_client(auth_id)
-            await client.sign_in(password=self.cipher.decrypt(event.payload["password_encrypted"]))
+            # On a retry the client may already be authorized — re-signing in
+            # with the (possibly already-cleared) password would raise
+            # InvalidToken. Only submit the password when still needed.
+            if not await client.is_user_authorized():
+                await client.sign_in(password=self.cipher.decrypt(event.payload["password_encrypted"]))
             event.payload["password_encrypted"] = ""
             await self._finalize(auth_id, client)
         elif event.event_type == "auth.qr.start":
