@@ -11,6 +11,8 @@ from app.domains.copy_trading.models import (
     CopyRouteState,
     ParsedAction,
     RouteAssemblyState,
+    SignalConversation,
+    SignalConversationState,
     TelegramSource,
     TelegramSourceType,
     TradeIntent,
@@ -24,6 +26,7 @@ from app.domains.copy_trading.generations import (
 from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.workers import (
     _handle_deleted_message,
+    _load_existing_conversation_for_correlation,
     _is_permanent_broker_error,
     _reconcile_intent,
     _reconciliation_accepts,
@@ -51,6 +54,27 @@ def session_with_get(values: dict[type, object]) -> tuple[MagicMock, MagicMock]:
     db = session_local.return_value.__enter__.return_value
     db.get.side_effect = lambda model, _identifier: values.get(model)
     return session_local, db
+
+
+def test_retried_signal_delivery_reuses_existing_conversation_by_correlation() -> None:
+    source_id = uuid.uuid4()
+    conversation = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_id=source_id,
+        correlation_id="duplicate-correlation",
+        state=SignalConversationState.active,
+    )
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = conversation
+
+    result = _load_existing_conversation_for_correlation(
+        db,
+        source_id=source_id,
+        correlation_id="duplicate-correlation",
+    )
+
+    assert result is conversation
+    db.execute.assert_called_once()
 
 
 @patch("app.domains.copy_trading.workers.SessionLocal")

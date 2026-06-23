@@ -82,6 +82,20 @@ def _is_permanent_broker_error(exc: Exception) -> bool:
     )
 
 
+def _load_existing_conversation_for_correlation(
+    db,
+    *,
+    source_id: uuid.UUID,
+    correlation_id: str,
+) -> SignalConversation | None:
+    return db.execute(
+        select(SignalConversation).where(
+            SignalConversation.source_id == source_id,
+            SignalConversation.correlation_id == correlation_id,
+        )
+    ).scalar_one_or_none()
+
+
 class AiAction(BaseModel):
     action: SignalAction
     symbol: str | None = None
@@ -403,16 +417,35 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                 )
                 return DeliveryResult.retry(type(exc).__name__.upper(), str(exc))
 
-            choice = choose_conversation(
-                reply_to_message_id=event.payload.get("reply_to_message_id"),
-                message_id=event.payload.get("message_id"),
-                is_edit=event.event_type == "message.edited",
-                symbol=parsed.symbol,
-                direction=parsed.direction,
-                candidates=candidates,
-                action=parsed.action.value,
+            existing_conversation = _load_existing_conversation_for_correlation(
+                db,
+                source_id=source_id,
+                correlation_id=event.correlation_id,
             )
-            if choice.ambiguous:
+            if existing_conversation is not None:
+                choice = ConversationCandidate(
+                    id=existing_conversation.id,
+                    reply_root_message_id=existing_conversation.reply_root_message_id,
+                    last_message_id=existing_conversation.last_message_id,
+                    symbol=existing_conversation.symbol,
+                    direction=existing_conversation.direction,
+                    updated_at=existing_conversation.updated_at,
+                    opening_submitted=existing_conversation.id in submitted_conversation_ids,
+                )
+                ambiguous = False
+            else:
+                selected_choice = choose_conversation(
+                    reply_to_message_id=event.payload.get("reply_to_message_id"),
+                    message_id=event.payload.get("message_id"),
+                    is_edit=event.event_type == "message.edited",
+                    symbol=parsed.symbol,
+                    direction=parsed.direction,
+                    candidates=candidates,
+                    action=parsed.action.value,
+                )
+                choice = selected_choice.selected
+                ambiguous = selected_choice.ambiguous
+            if ambiguous:
                 for route in routes:
                     _activity(
                         db,
@@ -428,8 +461,10 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                 return DeliveryResult.success()
 
             conversation = (
-                db.get(SignalConversation, choice.selected.id)
-                if choice.selected
+                existing_conversation
+                if existing_conversation is not None
+                else db.get(SignalConversation, choice.id)
+                if choice
                 else None
             )
             if conversation is None:
@@ -462,8 +497,8 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
             parsed_update = parsed.model_dump(mode="json")
             if (
                 event.event_type == "message.edited"
-                and choice.selected
-                and choice.selected.opening_submitted
+                and choice
+                and choice.opening_submitted
                 and parsed.action.value in OPEN_ACTIONS
             ):
                 parsed_update = corrective_action_for_submitted_edit(
