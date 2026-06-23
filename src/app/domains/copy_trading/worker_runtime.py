@@ -256,6 +256,10 @@ class TelegramSessionRuntime:
         self.qr_logins = {}
         self.cipher = SessionCipher(settings.ENCRYPTION_KEY)
         self.last_health_at = 0.0
+        # Connection ids with a dialog refresh already running — prevents
+        # overlapping iter_dialogs() walks (each is several GetDialogsRequest
+        # calls) from stacking up and tripping Telegram's flood limit.
+        self.dialog_refresh_inflight: set[str] = set()
 
     def _auth_update(self, auth_id: str, **values) -> None:
         with SessionLocal() as db:
@@ -325,6 +329,13 @@ class TelegramSessionRuntime:
         await self._attach_updates(connection_id, client)
         asyncio.create_task(self._refresh_dialog_cache(connection_id, client))
 
+    # How long a cached dialog list is considered fresh. Within this window a
+    # dialogs.refresh request serves the cache without re-walking iter_dialogs.
+    DIALOG_CACHE_TTL_SECONDS = 60
+
+    def _dialog_cache_is_fresh(self, connection_id: str) -> bool:
+        return bool(self.redis.get(f"copy:telegram:dialogs-fresh:{connection_id}"))
+
     async def _cache_dialogs(self, connection_id: str, client) -> list[dict]:
         dialogs = []
         async for dialog in client.iter_dialogs():
@@ -335,16 +346,44 @@ class TelegramSessionRuntime:
                 continue
             dialogs.append({"chat_id": int(dialog.id), "title": dialog.name or "Untitled", "username": getattr(entity, "username", None), "source_type": "channel" if is_channel else "group", "is_admin": bool(getattr(entity, "admin_rights", None) or getattr(entity, "creator", False))})
         self.redis.setex(f"copy:telegram:dialogs:{connection_id}", 86400, json.dumps(dialogs))
+        # Freshness marker drives the throttle in _refresh_dialog_cache; the
+        # dialog list itself lives much longer so we can always serve stale.
+        self.redis.setex(f"copy:telegram:dialogs-fresh:{connection_id}", self.DIALOG_CACHE_TTL_SECONDS, "1")
         return dialogs
 
-    async def _refresh_dialog_cache(self, connection_id: str, client) -> None:
+    async def _refresh_dialog_cache(self, connection_id: str, client, *, force: bool = False) -> None:
+        from telethon.errors import FloodWaitError
+
+        # Serve-cache throttle: skip the (expensive, flood-prone) walk when a
+        # recent refresh already populated the cache.
+        if not force and self._dialog_cache_is_fresh(connection_id):
+            return
+        # Coalesce: only one walk per connection at a time.
+        if connection_id in self.dialog_refresh_inflight:
+            return
+        self.dialog_refresh_inflight.add(connection_id)
         try:
             await self._cache_dialogs(connection_id, client)
+        except FloodWaitError as exc:
+            # Don't retry into the limit — mark fresh for the backoff window so
+            # callers serve stale cache instead of piling on more requests.
+            logger.warning(
+                "Telegram dialog refresh flood-limited connection_id=%s seconds=%s",
+                connection_id,
+                getattr(exc, "seconds", "?"),
+            )
+            self.redis.setex(
+                f"copy:telegram:dialogs-fresh:{connection_id}",
+                max(self.DIALOG_CACHE_TTL_SECONDS, int(getattr(exc, "seconds", 0) or 0)),
+                "1",
+            )
         except Exception:
             logger.exception(
                 "Could not refresh Telegram dialogs connection_id=%s",
                 connection_id,
             )
+        finally:
+            self.dialog_refresh_inflight.discard(connection_id)
 
     async def _attach_updates(self, connection_id: str, client) -> None:
         from telethon import events

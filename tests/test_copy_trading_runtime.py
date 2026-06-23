@@ -215,10 +215,20 @@ def test_telegram_worker_refreshes_dialogs_from_live_session():
     request_id = str(uuid.uuid4())
     runtime = object.__new__(TelegramSessionRuntime)
     runtime.redis = MagicMock()
-    runtime.redis.get.return_value = (
+    cached_dialogs = (
         '[{"chat_id":-1000,"title":"Cached group","username":null,'
         '"source_type":"group","is_admin":false}]'
     )
+
+    # dialogs key returns the cache; the freshness marker is absent so the
+    # throttle lets the background refresh run.
+    def _redis_get(key):
+        if key.startswith("copy:telegram:dialogs-fresh:"):
+            return None
+        return cached_dialogs
+
+    runtime.redis.get.side_effect = _redis_get
+    runtime.dialog_refresh_inflight = set()
     runtime.clients = {
         f"connection:{connection_id}": MagicMock(),
     }
