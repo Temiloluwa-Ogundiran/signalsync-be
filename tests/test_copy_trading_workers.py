@@ -23,6 +23,7 @@ from app.domains.copy_trading.generations import (
 from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.workers import (
     _handle_deleted_message,
+    _is_permanent_broker_error,
     _reconcile_intent,
     _reconciliation_accepts,
     _route_accepts_message,
@@ -30,6 +31,7 @@ from app.domains.copy_trading.workers import (
     execution_handler,
     expire_signal_threads,
 )
+from app.domains.accounts.mt5_core_client import Mt5CoreClientJobFailed
 from app.domains.accounts.models import TradingAccount
 
 
@@ -351,3 +353,14 @@ def test_permanent_opening_failure_terminates_generation() -> None:
     assert assembly.state == RouteAssemblyState.failed
     assert assembly.completed_at == now
     assert assembly.terminal_reason == "INVALID_VOLUME"
+
+
+def test_uncertain_post_submission_failure_is_not_permanent() -> None:
+    error = Mt5CoreClientJobFailed(
+        "transport lost",
+        submission_started=True,
+        uncertain=True,
+    )
+
+    assert _is_permanent_broker_error(error) is False
+    assert _is_permanent_broker_error(ValueError("invalid volume")) is True

@@ -73,6 +73,15 @@ from app.domains.users.models import User
 logger = logging.getLogger("copy-trading.signal")
 
 
+def _is_permanent_broker_error(exc: Exception) -> bool:
+    if bool(getattr(exc, "uncertain", False)):
+        return False
+    return isinstance(
+        exc,
+        (ValueError, Mt5CoreClientHttpError, Mt5CoreClientJobFailed),
+    )
+
+
 class AiAction(BaseModel):
     action: SignalAction
     symbol: str | None = None
@@ -782,7 +791,7 @@ def execution_handler(event: CopyEvent, client) -> None:
                 result = asyncio.run(_submit_mt5(path, order_payload))
             except Exception as exc:
                 intent = db.get(TradeIntent, intent_id)
-                permanent = isinstance(exc, (ValueError, Mt5CoreClientHttpError, Mt5CoreClientJobFailed))
+                permanent = _is_permanent_broker_error(exc)
                 intent.state = TradeIntentState.failed if permanent else TradeIntentState.uncertain
                 intent.last_error_code = exc.__class__.__name__
                 intent.broker_result = {"message": str(exc)}

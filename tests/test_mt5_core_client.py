@@ -83,6 +83,41 @@ async def test_verify_credentials_failed_job(client: Mt5CoreClient, httpx_mock) 
 
 
 @pytest.mark.anyio
+async def test_failed_order_job_preserves_uncertain_submission_details(
+    client: Mt5CoreClient,
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/orders",
+        json={"job_id": "job-order", "status": "queued"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/job-order",
+        json={
+            "status": "failed",
+            "error": "transport lost",
+            "error_details": {
+                "code": "JOB_EXECUTION_FAILED",
+                "message": "transport lost",
+                "submission_started": True,
+                "uncertain": True,
+            },
+        },
+    )
+
+    with pytest.raises(Mt5CoreClientJobFailed) as captured:
+        await client.submit_action(
+            path="/orders",
+            payload={"symbol": "EURUSD"},
+        )
+
+    assert captured.value.submission_started is True
+    assert captured.value.uncertain is True
+
+
+@pytest.mark.anyio
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_verify_credentials_retries_one_ipc_failure_then_succeeds(
     client: Mt5CoreClient,

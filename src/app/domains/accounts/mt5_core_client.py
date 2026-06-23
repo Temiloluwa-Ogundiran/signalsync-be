@@ -23,7 +23,19 @@ class Mt5CoreClientWorkerUnavailable(Mt5CoreClientError):
 
 class Mt5CoreClientJobFailed(Mt5CoreClientError):
     """Raised when enqueued job fails."""
-    pass
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        submission_started: bool = False,
+        uncertain: bool = False,
+        code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.submission_started = submission_started
+        self.uncertain = uncertain
+        self.code = code
 
 
 class Mt5CoreClientTransientJobFailed(Mt5CoreClientError):
@@ -322,9 +334,17 @@ class Mt5CoreClient:
                     return job_status_resp.get("result") or {}
                 elif status == "failed":
                     error = job_status_resp.get("error") or "Job failed"
+                    error_details = job_status_resp.get("error_details") or {}
                     if self._is_transient_job_error(error):
                         raise Mt5CoreClientTransientJobFailed(str(error))
-                    raise Mt5CoreClientJobFailed(str(error))
+                    raise Mt5CoreClientJobFailed(
+                        str(error),
+                        submission_started=bool(
+                            error_details.get("submission_started")
+                        ),
+                        uncertain=bool(error_details.get("uncertain")),
+                        code=error_details.get("code"),
+                    )
                 elif status == "queued":
                     if job_status_resp.get("worker_available") is False:
                         raise Mt5CoreClientWorkerUnavailable(
