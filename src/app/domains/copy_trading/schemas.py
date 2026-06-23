@@ -196,6 +196,7 @@ class CopyLaunchReadinessResponse(BaseModel):
     pending_events: int
     dead_letters: int
     oldest_uncertain_seconds: int
+    oldest_active_intent_seconds: int
     global_paused: bool
 
 

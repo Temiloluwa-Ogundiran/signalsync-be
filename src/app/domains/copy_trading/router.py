@@ -315,6 +315,20 @@ def copy_launch_readiness(
             )
         ).scalars()
     )
+    active_created_at = list(
+        db.execute(
+            select(TradeIntent.created_at).where(
+                TradeIntent.user_id == current_user.id,
+                TradeIntent.state.in_(
+                    [
+                        TradeIntentState.created,
+                        TradeIntentState.retryable,
+                        TradeIntentState.submitted,
+                    ]
+                ),
+            )
+        ).scalars()
+    )
     readiness = build_launch_readiness(
         health,
         dead_letter_count=dead_letter_count,
@@ -322,6 +336,11 @@ def copy_launch_readiness(
             max(0, int((now - created_at).total_seconds()))
             for created_at in uncertain_created_at
         ],
+        active_intent_ages=[
+            max(0, int((now - created_at).total_seconds()))
+            for created_at in active_created_at
+        ],
+        active_intent_max_age_seconds=settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS,
         uncertain_max_age_seconds=settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS,
         global_paused=settings.COPY_TRADING_GLOBAL_PAUSED,
     )

@@ -99,6 +99,17 @@ def main() -> int:
                 )
             )
         ).scalars().all()
+        active_times = db.execute(
+            select(TradeIntent.created_at).where(
+                TradeIntent.state.in_(
+                    [
+                        TradeIntentState.created,
+                        TradeIntentState.retryable,
+                        TradeIntentState.submitted,
+                    ]
+                )
+            )
+        ).scalars().all()
         readiness = build_launch_readiness(
             health,
             dead_letter_count=dead_letters,
@@ -106,6 +117,11 @@ def main() -> int:
                 max(0, int((now - created_at).total_seconds()))
                 for created_at in uncertain_times
             ],
+            active_intent_ages=[
+                max(0, int((now - created_at).total_seconds()))
+                for created_at in active_times
+            ],
+            active_intent_max_age_seconds=settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS,
             uncertain_max_age_seconds=settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS,
             global_paused=settings.COPY_TRADING_GLOBAL_PAUSED,
         )
@@ -124,6 +140,7 @@ def main() -> int:
         "workers": readiness.components,
         "dead_letters": readiness.dead_letters,
         "oldest_uncertain_seconds": readiness.oldest_uncertain_seconds,
+        "oldest_active_intent_seconds": readiness.oldest_active_intent_seconds,
         "synthetic": synthetic,
     }
     print(json.dumps(result, default=str, indent=2))

@@ -32,6 +32,7 @@ class LaunchReadiness:
     pending_events: int
     dead_letters: int
     oldest_uncertain_seconds: int
+    oldest_active_intent_seconds: int
     global_paused: bool
 
 
@@ -40,6 +41,8 @@ def build_launch_readiness(
     *,
     dead_letter_count: int,
     uncertain_intent_ages: list[int],
+    active_intent_ages: list[int],
+    active_intent_max_age_seconds: int,
     uncertain_max_age_seconds: int,
     global_paused: bool,
 ) -> LaunchReadiness:
@@ -54,6 +57,11 @@ def build_launch_readiness(
         warnings.append("broker_confirmation_pending")
     if dead_letter_count:
         blockers.append("dead_letters")
+    oldest_active_intent = max(active_intent_ages or [0])
+    if oldest_active_intent > active_intent_max_age_seconds:
+        blockers.append("active_intents")
+    elif active_intent_ages:
+        warnings.append("broker_action_pending")
     if global_paused:
         warnings.append("global_pause_enabled")
     return LaunchReadiness(
@@ -65,6 +73,7 @@ def build_launch_readiness(
         pending_events=sum(item["pending_count"] for item in health.components),
         dead_letters=dead_letter_count,
         oldest_uncertain_seconds=oldest_uncertain,
+        oldest_active_intent_seconds=oldest_active_intent,
         global_paused=global_paused,
     )
 

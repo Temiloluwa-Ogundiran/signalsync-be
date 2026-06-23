@@ -71,6 +71,8 @@ def test_launch_readiness_blocks_old_uncertain_intent() -> None:
         ),
         dead_letter_count=0,
         uncertain_intent_ages=[121],
+        active_intent_ages=[],
+        active_intent_max_age_seconds=60,
         uncertain_max_age_seconds=60,
         global_paused=True,
     )
@@ -88,12 +90,32 @@ def test_launch_readiness_blocks_pending_dead_letters() -> None:
         ),
         dead_letter_count=2,
         uncertain_intent_ages=[],
+        active_intent_ages=[],
+        active_intent_max_age_seconds=60,
         uncertain_max_age_seconds=60,
         global_paused=True,
     )
 
     assert result.ready is False
     assert "dead_letters" in result.blockers
+
+
+def test_launch_readiness_blocks_stuck_active_intent() -> None:
+    result = build_launch_readiness(
+        aggregate_health(
+            [heartbeat(role) for role in REQUIRED_WORKER_ROLES],
+            now=NOW,
+        ),
+        dead_letter_count=0,
+        uncertain_intent_ages=[],
+        active_intent_ages=[61],
+        active_intent_max_age_seconds=60,
+        uncertain_max_age_seconds=60,
+        global_paused=True,
+    )
+
+    assert result.ready is False
+    assert "active_intents" in result.blockers
 
 
 def test_launch_readiness_can_be_ready_while_globally_paused() -> None:
@@ -104,6 +126,8 @@ def test_launch_readiness_can_be_ready_while_globally_paused() -> None:
         ),
         dead_letter_count=0,
         uncertain_intent_ages=[],
+        active_intent_ages=[],
+        active_intent_max_age_seconds=60,
         uncertain_max_age_seconds=60,
         global_paused=True,
     )
