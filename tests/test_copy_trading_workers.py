@@ -9,10 +9,16 @@ from app.domains.copy_trading.models import (
     CopyRoute,
     CopyRouteState,
     ParsedAction,
+    RouteAssemblyState,
     TelegramSource,
     TelegramSourceType,
     TradeIntent,
     TradeIntentState,
+)
+from app.domains.copy_trading.generations import (
+    mark_generation_completed,
+    mark_generation_failed,
+    mark_generation_submitted,
 )
 from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.workers import (
@@ -249,6 +255,8 @@ def test_expired_incomplete_signal_is_marked_missed(
 
     assert count == 1
     assert assembly.state.value == "expired"
+    assert assembly.completed_at is not None
+    assert assembly.terminal_reason == "REQUIRED_DETAILS_TIMEOUT"
     record_activity.assert_called_once_with(
         db,
         route=route,
@@ -289,3 +297,51 @@ def test_reconciliation_confirms_open_from_fresh_broker_evidence():
     }
 
     assert _reconciliation_accepts(intent, data, None)
+
+
+def test_submitted_opening_generation_enters_executing_state() -> None:
+    intent_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    assembly = SimpleNamespace(
+        state=RouteAssemblyState.ready,
+        opening_intent_id=None,
+        accepted_at=None,
+        completed_at=None,
+        terminal_reason=None,
+    )
+
+    mark_generation_submitted(assembly, intent_id, now)
+
+    assert assembly.state == RouteAssemblyState.executing
+    assert assembly.opening_intent_id == intent_id
+    assert assembly.accepted_at == now
+
+
+def test_confirmed_opening_generation_becomes_completed() -> None:
+    now = datetime.now(timezone.utc)
+    assembly = SimpleNamespace(
+        state=RouteAssemblyState.executing,
+        completed_at=None,
+        terminal_reason="old",
+    )
+
+    mark_generation_completed(assembly, now)
+
+    assert assembly.state == RouteAssemblyState.completed
+    assert assembly.completed_at == now
+    assert assembly.terminal_reason is None
+
+
+def test_permanent_opening_failure_terminates_generation() -> None:
+    now = datetime.now(timezone.utc)
+    assembly = SimpleNamespace(
+        state=RouteAssemblyState.executing,
+        completed_at=None,
+        terminal_reason=None,
+    )
+
+    mark_generation_failed(assembly, "INVALID_VOLUME", now)
+
+    assert assembly.state == RouteAssemblyState.failed
+    assert assembly.completed_at == now
+    assert assembly.terminal_reason == "INVALID_VOLUME"

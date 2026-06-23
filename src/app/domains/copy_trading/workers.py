@@ -29,6 +29,10 @@ from app.domains.copy_trading.execution import (
 )
 from app.domains.copy_trading.generations import (
     OPEN_ACTIONS,
+    mark_generation_completed,
+    mark_generation_expired,
+    mark_generation_failed,
+    mark_generation_submitted,
     merge_generation_context,
 )
 from app.domains.copy_trading.reconciliation import (
@@ -149,6 +153,47 @@ def _select_copied_trade(
     return None
 
 
+def _assembly_for_action(db, parsed_action: ParsedAction | None):
+    if parsed_action is None:
+        return None
+    assembly_id = (parsed_action.validation_result or {}).get("assembly_id")
+    if not assembly_id:
+        return None
+    try:
+        return db.get(RouteSignalAssembly, uuid.UUID(str(assembly_id)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_opening_generation(
+    db,
+    *,
+    intent: TradeIntent,
+    parsed_action: ParsedAction | None,
+    failure_reason: str | None = None,
+) -> None:
+    if parsed_action is None or parsed_action.action_type not in OPEN_ACTIONS:
+        return
+    assembly = _assembly_for_action(db, parsed_action)
+    if assembly is None:
+        return
+    now = datetime.now(timezone.utc)
+    if failure_reason:
+        mark_generation_failed(assembly, failure_reason, now)
+        return
+    sibling_intents = list(
+        db.execute(
+            select(TradeIntent).where(
+                TradeIntent.parsed_action_id == intent.parsed_action_id
+            )
+        ).scalars()
+    )
+    if not sibling_intents:
+        sibling_intents = [intent]
+    if all(item.state == TradeIntentState.confirmed for item in sibling_intents):
+        mark_generation_completed(assembly, now)
+
+
 def expire_signal_threads(now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     with SessionLocal() as db:
@@ -174,7 +219,11 @@ def expire_signal_threads(now: datetime | None = None) -> int:
                     level=CopyActivityLevel.info,
                     details=assembly.context,
                 )
-            assembly.state = RouteAssemblyState.expired
+            mark_generation_expired(
+                assembly,
+                "REQUIRED_DETAILS_TIMEOUT",
+                now,
+            )
         conversation_ids = {item.conversation_id for item in expired_assemblies}
         for conversation_id in conversation_ids:
             still_active = db.execute(
@@ -545,14 +594,9 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                             db.flush()
                     except IntegrityError:
                         continue
-                    if (
-                        signal.action.value in OPEN_ACTIONS
-                        and assembly.opening_intent_id is None
-                    ):
-                        assembly.opening_intent_id = intent.id
+                    if signal.action.value in OPEN_ACTIONS:
+                        mark_generation_submitted(assembly, intent.id, now)
                     RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id), "account_id": str(route.target_account_id)}, idempotency_key=key))
-                assembly.state = RouteAssemblyState.executing
-                assembly.accepted_at = now
                 _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
             db.commit()
             return DeliveryResult.success()
@@ -707,6 +751,13 @@ def execution_handler(event: CopyEvent, client) -> None:
                 intent.state = TradeIntentState.failed if permanent else TradeIntentState.uncertain
                 intent.last_error_code = exc.__class__.__name__
                 intent.broker_result = {"message": str(exc)}
+                if permanent:
+                    _resolve_opening_generation(
+                        db,
+                        intent=intent,
+                        parsed_action=parsed_action,
+                        failure_reason=intent.last_error_code,
+                    )
                 _activity(db, route=route, correlation_id=event.correlation_id, action="broker.failed" if permanent else "broker.uncertain", title=f"Failed: {exc}" if permanent else "Confirming broker status", level=CopyActivityLevel.error if permanent else CopyActivityLevel.warning, details=payload)
                 db.commit()
                 user = db.get(User, route.user_id)
@@ -750,6 +801,11 @@ def execution_handler(event: CopyEvent, client) -> None:
                 copied.lifecycle_state = "closed" if action == SignalAction.full_close.value else "cancelled"
                 copied.current_volume = Decimal("0")
                 copied.broker_synced_at = datetime.now(timezone.utc)
+            _resolve_opening_generation(
+                db,
+                intent=intent,
+                parsed_action=parsed_action,
+            )
             _activity(db, route=route, correlation_id=event.correlation_id, action="broker.succeeded", title="Trade opened" if action.startswith("open") else "Broker action completed", level=CopyActivityLevel.success, details=payload)
             db.commit()
             user = db.get(User, route.user_id)
@@ -869,6 +925,17 @@ def _reconcile_intent(event: CopyEvent, client) -> None:
             intent.state = TradeIntentState.confirmed
             intent.broker_result = data
             intent.resolved_at = datetime.now(timezone.utc)
+            parsed_action_id = getattr(intent, "parsed_action_id", None)
+            parsed_action = (
+                db.get(ParsedAction, parsed_action_id)
+                if parsed_action_id
+                else None
+            )
+            _resolve_opening_generation(
+                db,
+                intent=intent,
+                parsed_action=parsed_action,
+            )
             _activity(
                 db,
                 route=route,
