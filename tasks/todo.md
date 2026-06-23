@@ -9,6 +9,7 @@
 - [x] Run full backend, MT5, and frontend verification.
 - [x] Deploy affected Railway services and run a safe end-to-end demo acceptance test.
 - [x] Record launch evidence, remaining blockers, and rollback steps.
+- [ ] Remove the obsolete Railway `copy-learning-worker` service after Railway destructive actions are re-authenticated.
 
 ## Review
 
@@ -17,6 +18,6 @@ Local verification completed for the copy-trading parser, workers, MT5 client, M
 Latest backend MT5 client hardening keeps a bounded HTTP keep-alive pool for POST/GET job polling while preserving transient retry handling for stale server disconnects.
 
 Remaining launch blockers:
-- Railway CLI authentication is expired locally, so final Railway variable/service inspection and obsolete worker/global pause verification must be done after `railway login`.
+- Active dev copy-trading services are online (`tradepartna-api`, `copy-signal-worker`, `copy-execution-worker`, `telegram-session-worker`), but the obsolete `copy-learning-worker` service still shows crashed. Deleting it is blocked by Railway with `Unauthorized. Please run railway login again.`
 - The local full backend suite requires a running Postgres test database at `localhost:5432/test` with `user/pass`; without that DB, 12 DB-backed journal tests fail at connection time. Non-DB backend tests reached 366 passed before those DB-only failures.
 - Rotate exposed demo/broker/API credentials and internal shared secrets before real production launch.
