@@ -17,6 +17,7 @@ COPY alembic ./alembic
 COPY src ./src
 COPY scripts/docker_start.py ./scripts/docker_start.py
 COPY scripts/copy_trading_launch_check.py ./scripts/copy_trading_launch_check.py
+COPY scripts/copy_trading_synthetic_signal.py ./scripts/copy_trading_synthetic_signal.py
 
 RUN uv sync --frozen --no-dev
 
