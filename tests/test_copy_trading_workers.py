@@ -23,6 +23,7 @@ from app.domains.copy_trading.generations import (
     mark_generation_failed,
     mark_generation_submitted,
 )
+from app.domains.copy_trading.delivery import DeliveryDisposition
 from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.workers import (
     _handle_deleted_message,
@@ -75,6 +76,18 @@ def test_retried_signal_delivery_reuses_existing_conversation_by_correlation() -
 
     assert result is conversation
     db.execute.assert_called_once()
+
+
+@patch("app.domains.copy_trading.workers.SessionLocal")
+def test_execution_retries_when_intent_is_not_committed_yet(session_local):
+    intent_id = uuid.uuid4()
+    db = session_local.return_value.__enter__.return_value
+    db.get.return_value = None
+
+    result = execution_handler(event("intent.execute", {"intent_id": str(intent_id)}), MagicMock())
+
+    assert result.disposition == DeliveryDisposition.retry
+    assert result.error_code == "INTENT_NOT_VISIBLE"
 
 
 @patch("app.domains.copy_trading.workers.SessionLocal")

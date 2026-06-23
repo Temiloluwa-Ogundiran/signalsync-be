@@ -720,7 +720,7 @@ async def _broker_symbol(db, route: CopyRoute, account: TradingAccount, credenti
     return selected.name
 
 
-def execution_handler(event: CopyEvent, client) -> None:
+def execution_handler(event: CopyEvent, client) -> DeliveryResult | None:
     if event.event_type == "emergency.execute":
         asyncio.run(_execute_emergency(event, client))
         return
@@ -732,7 +732,12 @@ def execution_handler(event: CopyEvent, client) -> None:
     intent_id = uuid.UUID(event.payload["intent_id"])
     with SessionLocal() as db:
         intent = db.get(TradeIntent, intent_id)
-        if intent is None or intent.state not in {TradeIntentState.created, TradeIntentState.retryable}:
+        if intent is None:
+            return DeliveryResult.retry(
+                "INTENT_NOT_VISIBLE",
+                "Trade intent is not committed yet.",
+            )
+        if intent.state not in {TradeIntentState.created, TradeIntentState.retryable}:
             return
         route = db.get(CopyRoute, intent.route_id)
         account = db.get(TradingAccount, intent.account_id)
