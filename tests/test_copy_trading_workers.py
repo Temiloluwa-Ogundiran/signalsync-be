@@ -29,6 +29,8 @@ from app.domains.copy_trading.workers import (
     _handle_deleted_message,
     _load_existing_conversation_for_correlation,
     _is_permanent_broker_error,
+    _mt5_order_side,
+    _safe_activity_title,
     _reconcile_intent,
     _reconciliation_accepts,
     _route_accepts_message,
@@ -88,6 +90,18 @@ def test_execution_retries_when_intent_is_not_committed_yet(session_local):
 
     assert result.disposition == DeliveryDisposition.retry
     assert result.error_code == "INTENT_NOT_VISIBLE"
+
+
+def test_mt5_order_side_is_lowercase_for_api_validation() -> None:
+    assert _mt5_order_side("BUY") == "buy"
+    assert _mt5_order_side("sell") == "sell"
+
+
+def test_activity_title_is_truncated_to_database_limit() -> None:
+    title = _safe_activity_title("Failed: " + ("x" * 500))
+
+    assert title.startswith("Failed: ")
+    assert len(title) <= 200
 
 
 @patch("app.domains.copy_trading.workers.SessionLocal")

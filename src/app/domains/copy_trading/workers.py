@@ -126,6 +126,16 @@ def _parse_message(text: str, context: dict) -> AiAction:
     ])
 
 
+def _safe_activity_title(title: str) -> str:
+    if len(title) <= 200:
+        return title
+    return f"{title[:197]}..."
+
+
+def _mt5_order_side(direction: str) -> str:
+    return direction.strip().lower()
+
+
 def _activity(
     db,
     *,
@@ -142,7 +152,7 @@ def _activity(
         if raw_message
         else None
     )
-    db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=route.source_id, account_id=route.target_account_id, correlation_id=correlation_id, action=action, title=title, level=level, parsed_details=details, broker_details={}, encrypted_raw_message=encrypted_raw_message))
+    db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=route.source_id, account_id=route.target_account_id, correlation_id=correlation_id, action=action, title=_safe_activity_title(title), level=level, parsed_details=details, broker_details={}, encrypted_raw_message=encrypted_raw_message))
 
 
 def _route_accepts_message(
@@ -806,7 +816,8 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult | None:
             )
             copied = _select_copied_trade(copied_trades, payload)
             if action in {SignalAction.open_market.value, SignalAction.additional_tp.value}:
-                order_payload.update({"side": payload["direction"], "order_type": payload["direction"]})
+                order_side = _mt5_order_side(payload["direction"])
+                order_payload.update({"side": order_side, "order_type": order_side})
                 path = "/orders"
             elif action == SignalAction.place_pending.value:
                 order_payload.update({"order_type": payload.get("order_type"), "price": payload.get("entry")})
