@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 import app.models  # noqa: F401
+import pytest
 from app.core.config import settings
 from app.domains.copy_trading.models import (
     CopyActivityLevel,
@@ -30,6 +31,7 @@ from app.domains.copy_trading.workers import (
     _load_existing_conversation_for_correlation,
     _is_permanent_broker_error,
     _mt5_order_side,
+    _mt5_pending_order_type,
     _safe_activity_title,
     _reconcile_intent,
     _reconciliation_accepts,
@@ -95,6 +97,27 @@ def test_execution_retries_when_intent_is_not_committed_yet(session_local):
 def test_mt5_order_side_is_lowercase_for_api_validation() -> None:
     assert _mt5_order_side("BUY") == "buy"
     assert _mt5_order_side("sell") == "sell"
+
+
+@pytest.mark.parametrize(
+    ("direction", "order_type", "expected"),
+    [
+        ("buy", "limit", "buy_limit"),
+        ("sell", "limit", "sell_limit"),
+        ("buy", "stop", "buy_stop"),
+        ("sell", "stop", "sell_stop"),
+        ("buy", "buy_stop_limit", "buy_stop_limit"),
+    ],
+)
+def test_pending_order_type_is_qualified_for_mt5_api(
+    direction, order_type, expected
+) -> None:
+    assert _mt5_pending_order_type(direction, order_type) == expected
+
+
+def test_pending_order_type_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="Unsupported pending order type"):
+        _mt5_pending_order_type("buy", "market-if-touched")
 
 
 def test_activity_title_is_truncated_to_database_limit() -> None:

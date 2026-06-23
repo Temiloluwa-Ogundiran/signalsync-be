@@ -15,8 +15,11 @@ from app.domains.copy_trading.execution import (
     calculate_signal_volume,
     catalog_fingerprint,
     ensure_exposure_within_limit,
+    intent_legs_for_action,
     is_trade_ready,
+    signal_volume_for_action,
 )
+from app.domains.copy_trading.engine import SignalAction
 from app.domains.copy_trading.models import TelegramSourceState
 from app.domains.copy_trading.schemas import CopyRouteCreate
 from app.domains.copy_trading.service import create_route
@@ -63,6 +66,49 @@ def test_existing_exposure_and_new_signal_must_fit_account_limit() -> None:
             signal_volume=Decimal("0.20"),
             maximum=Decimal("0.50"),
         )
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        SignalAction.modify_sl_tp,
+        SignalAction.break_even,
+        SignalAction.partial_close,
+        SignalAction.full_close,
+        SignalAction.cancel_pending,
+        SignalAction.status_only,
+    ],
+)
+def test_management_actions_do_not_consume_new_exposure(action) -> None:
+    assert signal_volume_for_action(
+        action=action,
+        fixed_lot=Decimal("0.10"),
+        take_profit_count=4,
+        take_profit_mode="all",
+        distribution="fixed_each",
+    ) == Decimal("0")
+
+
+def test_additional_take_profit_counts_as_new_exposure() -> None:
+    assert signal_volume_for_action(
+        action=SignalAction.additional_tp,
+        fixed_lot=Decimal("0.10"),
+        take_profit_count=1,
+        take_profit_mode="all",
+        distribution="fixed_each",
+    ) == Decimal("0.10")
+
+
+def test_management_action_creates_exactly_one_intent_even_with_multiple_tps() -> None:
+    legs = intent_legs_for_action(
+        action=SignalAction.modify_sl_tp,
+        fixed_lot=Decimal("0.10"),
+        take_profits=[Decimal("1.10"), Decimal("1.20")],
+        mode="all",
+        distribution="fixed_each",
+    )
+
+    assert legs == [None]
 
 
 def test_symbol_catalog_fingerprint_changes_with_trade_metadata() -> None:

@@ -2,6 +2,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from decimal import Decimal
 
+import pytest
+
 from app.core.config import settings
 from app.domains.copy_trading.engine import (
     ParsedSignal,
@@ -23,12 +25,22 @@ def test_parser_uses_configured_bounded_timeout_and_retry(model_class):
         confidence=0.95,
     )
 
-    parsed = _parse_message("BUY XAUUSD", {})
+    parsed = _parse_message("Maybe buy gold if it rejects the zone", {})
 
     assert parsed.symbol == "XAUUSD"
     assert model_class.call_args.kwargs["timeout"] == settings.COPY_TRADING_AI_TIMEOUT_SECONDS
     assert model_class.call_args.kwargs["max_retries"] == settings.COPY_TRADING_AI_MAX_RETRIES
     assert settings.COPY_TRADING_AI_TIMEOUT_SECONDS > 0.7
+
+
+@patch("langchain_openai.ChatOpenAI")
+def test_parser_skips_remote_ai_for_explicit_signal(model_class):
+    parsed = _parse_message("BUY XAUUSD SL 2310 TP 2350", {})
+
+    assert parsed.action == SignalAction.open_market
+    assert parsed.stop_loss == Decimal("2310")
+    assert parsed.take_profits == [Decimal("2350")]
+    model_class.assert_not_called()
 
 
 @patch("app.domains.copy_trading.workers.SessionCipher")
@@ -93,3 +105,49 @@ def test_low_confidence_does_not_override_missing_required_fields() -> None:
 
     assert result.accepted is False
     assert result.reason == "Signal is waiting for required trade details."
+
+
+def test_pending_order_always_requires_entry_price() -> None:
+    signal = ParsedSignal(
+        action=SignalAction.place_pending,
+        symbol="XAUUSD",
+        direction="buy",
+        confidence=1,
+    )
+
+    result = validate_signal(
+        signal,
+        RouteExecutionPolicy(minimum_fields="direction_symbol"),
+    )
+
+    assert result.accepted is False
+    assert result.reason == "Pending order is waiting for an entry price."
+
+
+def test_additional_tp_requires_complete_new_leg() -> None:
+    signal = ParsedSignal(
+        action=SignalAction.additional_tp,
+        symbol="XAUUSD",
+        direction="buy",
+        confidence=1,
+    )
+
+    result = validate_signal(signal, RouteExecutionPolicy())
+
+    assert result.accepted is False
+    assert result.reason == "Additional take profit is waiting for a target price."
+
+
+@pytest.mark.parametrize("fraction", [Decimal("0"), Decimal("1.01"), Decimal("-0.1")])
+def test_partial_close_fraction_must_be_safe(fraction) -> None:
+    signal = ParsedSignal(
+        action=SignalAction.partial_close,
+        symbol="XAUUSD",
+        close_fraction=fraction,
+        confidence=1,
+    )
+
+    result = validate_signal(signal, RouteExecutionPolicy())
+
+    assert result.accepted is False
+    assert result.reason == "Partial close must be greater than 0% and at most 100%."

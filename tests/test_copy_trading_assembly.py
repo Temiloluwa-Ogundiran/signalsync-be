@@ -175,6 +175,39 @@ def test_management_update_can_reuse_a_submitted_conversation() -> None:
     assert result.selected == submitted
 
 
+def test_opening_message_claims_only_unresolved_symbol_less_conversation() -> None:
+    unresolved = candidate(symbol=None, direction=None, root=10)
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        symbol="XAUUSD",
+        direction="buy",
+        candidates=[unresolved],
+        action="open_market",
+    )
+
+    assert result.selected == unresolved
+    assert result.ambiguous is False
+
+
+def test_opening_message_does_not_guess_between_symbol_less_conversations() -> None:
+    unresolved = [
+        candidate(symbol=None, direction=None, root=10),
+        candidate(symbol=None, direction=None, root=11),
+    ]
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        symbol="XAUUSD",
+        direction="buy",
+        candidates=unresolved,
+        action="open_market",
+    )
+
+    assert result.selected is None
+    assert result.ambiguous is True
+
+
 def test_edit_reuses_its_submitted_conversation() -> None:
     submitted = candidate(
         symbol="XAUUSD",

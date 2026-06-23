@@ -5,7 +5,6 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -13,7 +12,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.accounts.models import TradingAccount
 from app.domains.accounts.mt5_core_client import Mt5CoreClient, Mt5CoreClientHttpError, Mt5CoreClientJobFailed
-from app.domains.copy_trading.engine import ParsedSignal, RouteExecutionPolicy, SignalAction, build_tp_legs, validate_signal
+from app.domains.copy_trading.engine import ParsedSignal, RouteExecutionPolicy, SignalAction, validate_signal
 from app.domains.copy_trading.assembly import (
     ConversationCandidate,
     choose_conversation,
@@ -22,10 +21,11 @@ from app.domains.copy_trading.assembly import (
 )
 from app.domains.copy_trading.delivery import DeliveryResult
 from app.domains.copy_trading.execution import (
-    calculate_signal_volume,
     catalog_fingerprint,
     client_order_id_for_key,
     ensure_exposure_within_limit,
+    intent_legs_for_action,
+    signal_volume_for_action,
 )
 from app.domains.copy_trading.generations import (
     OPEN_ACTIONS,
@@ -62,6 +62,7 @@ from app.domains.copy_trading.models import (
     TradeIntent,
     TradeIntentState,
 )
+from app.domains.copy_trading.parser import AiAction, deterministic_parse
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading.symbols import BrokerSymbol, normalize_symbol, resolve_symbol
@@ -96,21 +97,10 @@ def _load_existing_conversation_for_correlation(
     ).scalar_one_or_none()
 
 
-class AiAction(BaseModel):
-    action: SignalAction
-    symbol: str | None = None
-    direction: str | None = None
-    order_type: str | None = None
-    entry: Decimal | None = None
-    entry_high: Decimal | None = None
-    stop_loss: Decimal | None = None
-    take_profits: list[Decimal] = Field(default_factory=list)
-    close_fraction: Decimal | None = None
-    explicit_reference: str | None = None
-    confidence: float = Field(ge=0, le=1)
-
-
 def _parse_message(text: str, context: dict) -> AiAction:
+    deterministic = deterministic_parse(text)
+    if deterministic is not None:
+        return deterministic
     from langchain_openai import ChatOpenAI
 
     model = ChatOpenAI(
@@ -134,6 +124,28 @@ def _safe_activity_title(title: str) -> str:
 
 def _mt5_order_side(direction: str) -> str:
     return direction.strip().lower()
+
+
+def _mt5_pending_order_type(direction: str, order_type: str | None) -> str:
+    normalized_direction = _mt5_order_side(direction)
+    normalized_type = (order_type or "").strip().lower()
+    supported = {
+        "buy_limit",
+        "sell_limit",
+        "buy_stop",
+        "sell_stop",
+        "buy_stop_limit",
+        "sell_stop_limit",
+    }
+    if normalized_type in supported:
+        return normalized_type
+    if normalized_direction in {"buy", "sell"} and normalized_type in {
+        "limit",
+        "stop",
+        "stop_limit",
+    }:
+        return f"{normalized_direction}_{normalized_type}"
+    raise ValueError(f"Unsupported pending order type: {order_type}")
 
 
 def _activity(
@@ -646,36 +658,50 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     ),
                     Decimal("0"),
                 )
-                signal_volume = calculate_signal_volume(
+                signal_volume = signal_volume_for_action(
+                    action=signal.action,
                     fixed_lot=route.fixed_lot,
                     take_profit_count=len(signal.take_profits),
                     take_profit_mode=route.take_profit_mode.value,
                     distribution=route.lot_distribution.value,
                 )
-                try:
-                    ensure_exposure_within_limit(
-                        current_exposure=current_exposure,
-                        signal_volume=signal_volume,
-                        maximum=policy_row.max_lot,
-                    )
-                except ValueError as exc:
-                    assembly.state = RouteAssemblyState.skipped
-                    _activity(
-                        db,
-                        route=route,
-                        correlation_id=conversation.correlation_id,
-                        action="signal.skipped",
-                        title=str(exc),
-                        level=CopyActivityLevel.warning,
-                        details=merged,
-                        raw_message=event.payload.get("text"),
-                    )
-                    continue
-                legs = build_tp_legs(fixed_lot=route.fixed_lot, take_profits=signal.take_profits, mode=route.take_profit_mode.value, distribution=route.lot_distribution.value) or [None]
+                if signal_volume > 0:
+                    try:
+                        ensure_exposure_within_limit(
+                            current_exposure=current_exposure,
+                            signal_volume=signal_volume,
+                            maximum=policy_row.max_lot,
+                        )
+                    except ValueError as exc:
+                        assembly.state = RouteAssemblyState.skipped
+                        _activity(
+                            db,
+                            route=route,
+                            correlation_id=conversation.correlation_id,
+                            action="signal.skipped",
+                            title=str(exc),
+                            level=CopyActivityLevel.warning,
+                            details=merged,
+                            raw_message=event.payload.get("text"),
+                        )
+                        continue
+                legs = intent_legs_for_action(
+                    action=signal.action,
+                    fixed_lot=route.fixed_lot,
+                    take_profits=signal.take_profits,
+                    mode=route.take_profit_mode.value,
+                    distribution=route.lot_distribution.value,
+                )
                 for index, leg in enumerate(legs):
                     intent_payload = dict(merged)
                     intent_payload["volume"] = str(leg.lot if leg else route.fixed_lot)
-                    intent_payload["take_profit"] = str(leg.take_profit) if leg else None
+                    intent_payload["take_profit"] = (
+                        str(leg.take_profit)
+                        if leg
+                        else str(signal.take_profits[-1])
+                        if signal.take_profits
+                        else None
+                    )
                     intent_payload["conversation_id"] = str(conversation.id)
                     key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{revision}:{route.id}:{signal.action.value}:{index}"
                     intent = TradeIntent(user_id=route.user_id, route_id=route.id, account_id=route.target_account_id, parsed_action_id=action.id, idempotency_key=key, client_order_id=client_order_id_for_key(key), state=TradeIntentState.created, request_payload=intent_payload)
@@ -820,7 +846,13 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult | None:
                 order_payload.update({"side": order_side, "order_type": order_side})
                 path = "/orders"
             elif action == SignalAction.place_pending.value:
-                order_payload.update({"order_type": payload.get("order_type"), "price": payload.get("entry")})
+                order_payload.update({
+                    "order_type": _mt5_pending_order_type(
+                        payload["direction"],
+                        payload.get("order_type"),
+                    ),
+                    "price": payload.get("entry"),
+                })
                 path = "/orders"
             elif action in {SignalAction.modify_sl_tp.value, SignalAction.break_even.value} and copied and copied.broker_position_id:
                 order_payload = {**credentials, "sl": payload.get("stop_loss") or payload.get("entry"), "tp": payload.get("take_profit")}

@@ -84,6 +84,19 @@ def choose_conversation(
             return ConversationChoice(exact[0])
         if len(exact) > 1:
             return ConversationChoice(None, ambiguous=True)
+        unresolved = [
+            item
+            for item in matchable
+            if normalize_symbol(item.symbol) is None
+            and (
+                normalized_direction is None
+                or normalize_direction(item.direction) in {None, normalized_direction}
+            )
+        ]
+        if len(unresolved) == 1:
+            return ConversationChoice(unresolved[0])
+        if len(unresolved) > 1:
+            return ConversationChoice(None, ambiguous=True)
         return ConversationChoice(None)
 
     # Action-only updates may safely use an implicit conversation only when

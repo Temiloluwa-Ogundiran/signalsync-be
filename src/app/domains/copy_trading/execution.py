@@ -8,6 +8,18 @@ from app.domains.accounts.models import (
     TradingAccountConnectionState,
     TradingPlatform,
 )
+from app.domains.copy_trading.engine import (
+    SignalAction,
+    TakeProfitLeg,
+    build_tp_legs,
+)
+
+
+OPENING_ACTIONS = {
+    SignalAction.open_market,
+    SignalAction.place_pending,
+    SignalAction.additional_tp,
+}
 
 
 def client_order_id_for_key(idempotency_key: str) -> str:
@@ -39,6 +51,42 @@ def calculate_signal_volume(
     if distribution == "split_total":
         return fixed_lot
     return fixed_lot * Decimal(selected_count)
+
+
+def signal_volume_for_action(
+    *,
+    action: SignalAction,
+    fixed_lot: Decimal,
+    take_profit_count: int,
+    take_profit_mode: str,
+    distribution: str,
+) -> Decimal:
+    if action not in OPENING_ACTIONS:
+        return Decimal("0")
+    return calculate_signal_volume(
+        fixed_lot=fixed_lot,
+        take_profit_count=take_profit_count,
+        take_profit_mode=take_profit_mode,
+        distribution=distribution,
+    )
+
+
+def intent_legs_for_action(
+    *,
+    action: SignalAction,
+    fixed_lot: Decimal,
+    take_profits: list[Decimal],
+    mode: str,
+    distribution: str,
+) -> list[TakeProfitLeg | None]:
+    if action not in OPENING_ACTIONS:
+        return [None]
+    return build_tp_legs(
+        fixed_lot=fixed_lot,
+        take_profits=take_profits,
+        mode=mode,
+        distribution=distribution,
+    ) or [None]
 
 
 def ensure_exposure_within_limit(

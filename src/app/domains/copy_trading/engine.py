@@ -69,6 +69,28 @@ def validate_signal(signal: ParsedSignal, policy: RouteExecutionPolicy) -> Valid
             "Status updates do not perform broker actions.",
             advisory,
         )
+    if signal.action == SignalAction.place_pending and signal.entry is None:
+        return ValidationResult(
+            False,
+            "Pending order is waiting for an entry price.",
+            advisory,
+        )
+    if signal.action == SignalAction.additional_tp and not signal.take_profits:
+        return ValidationResult(
+            False,
+            "Additional take profit is waiting for a target price.",
+            advisory,
+        )
+    if (
+        signal.action == SignalAction.partial_close
+        and signal.close_fraction is not None
+        and not (Decimal("0") < signal.close_fraction <= Decimal("1"))
+    ):
+        return ValidationResult(
+            False,
+            "Partial close must be greater than 0% and at most 100%.",
+            advisory,
+        )
     if signal.action == SignalAction.open_market and signal.age_seconds > policy.market_freshness_seconds:
         return ValidationResult(False, "Signal is too old for immediate entry.", advisory)
     if signal.action == SignalAction.place_pending and not policy.pending_orders_enabled:
@@ -88,6 +110,12 @@ def validate_signal(signal: ParsedSignal, policy: RouteExecutionPolicy) -> Valid
             advisory,
         )
     if signal.action in {SignalAction.open_market, SignalAction.place_pending}:
+        if signal.direction not in {"buy", "sell"}:
+            return ValidationResult(
+                False,
+                "Signal is waiting for a buy or sell direction.",
+                advisory,
+            )
         required = {
             "direction_symbol": (signal.direction, signal.symbol),
             "direction_symbol_entry": (signal.direction, signal.symbol, signal.entry),

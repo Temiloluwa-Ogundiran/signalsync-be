@@ -22,6 +22,12 @@ def merge_generation_context(
     merged = merge_context(current, update)
     current_action = current.get("action")
     update_action = update.get("action")
+    if not opening_submitted and update.get("take_profits"):
+        merged["take_profits"] = list(
+            dict.fromkeys(
+                [*(current.get("take_profits") or []), *update["take_profits"]]
+            )
+        )
     if (
         not opening_submitted
         and current_action in OPEN_ACTIONS
