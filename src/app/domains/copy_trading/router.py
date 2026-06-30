@@ -40,7 +40,7 @@ from app.domains.copy_trading.schemas import (
 from app.core.config import settings
 from app.domains.copy_trading import repository as repo
 from app.domains.copy_trading.models import CopyActivityLevel, CopyDeadLetter, CopyWorkerHealth, DeadLetterState, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState, TradeIntent, TradeIntentState
-from app.domains.copy_trading.health import aggregate_health, build_launch_readiness
+from app.domains.copy_trading.health import add_metaapi_health, aggregate_health, build_launch_readiness
 from app.domains.copy_trading.telegram_auth import decode_auth_state, encode_auth_state
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
@@ -376,7 +376,13 @@ def list_activity(
 @router.get("/health", response_model=CopySystemHealthResponse)
 def copy_system_health(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     heartbeats = list(db.execute(select(CopyWorkerHealth)).scalars())
-    return CopySystemHealthResponse.model_validate(aggregate_health(heartbeats).__dict__)
+    health = add_metaapi_health(
+        aggregate_health(heartbeats),
+        copy_trading_enabled=settings.COPY_TRADING_ENABLED,
+        metaapi_enabled=settings.COPY_TRADING_METAAPI_ENABLED,
+        token_configured=bool(settings.METAAPI_TOKEN),
+    )
+    return CopySystemHealthResponse.model_validate(health.__dict__)
 
 
 @router.get("/launch-readiness", response_model=CopyLaunchReadinessResponse)
@@ -385,8 +391,11 @@ def copy_launch_readiness(
     current_user: User = Depends(get_current_user),
 ):
     now = datetime.now(timezone.utc)
-    health = aggregate_health(
-        list(db.execute(select(CopyWorkerHealth)).scalars())
+    health = add_metaapi_health(
+        aggregate_health(list(db.execute(select(CopyWorkerHealth)).scalars())),
+        copy_trading_enabled=settings.COPY_TRADING_ENABLED,
+        metaapi_enabled=settings.COPY_TRADING_METAAPI_ENABLED,
+        token_configured=bool(settings.METAAPI_TOKEN),
     )
     dead_letter_count = len(
         list(

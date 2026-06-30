@@ -1,91 +1,51 @@
 # Copy Trading Operations
 
+Copy trading executes only through direct MetaApi streaming connections. The self-hosted MT5 service is reserved for journal connection and synchronization.
+
 ## Deployment Order
 
-1. Deploy the API image and run `alembic upgrade head` once.
-2. Deploy the MT5 worker with exact `client_order_id` reconciliation support.
-3. Redeploy the Telegram session, signal, and execution workers.
-4. Confirm `/api/v1/copy-trading/health` reports every required role.
-5. Deploy the frontend after the backend health and paginated activity contracts are live.
+1. Set `METAAPI_TOKEN`, `METAAPI_REGION`, and `METAAPI_ACCOUNT_TYPE` on the API and copy-execution worker.
+2. Deploy the migration and API with `COPY_TRADING_METAAPI_ENABLED=false`.
+3. Deploy Telegram, signal, and execution workers and confirm all worker heartbeats.
+4. Enable `COPY_TRADING_METAAPI_ENABLED=true`, provision demo copy connections, and wait for `ready`.
+5. Deploy the frontend, run acceptance, then remove the global pause.
 
-Do not deploy the execution worker before the MT5 worker. The backend intentionally leaves unknown broker submissions uncertain instead of submitting them twice.
+Required health roles are `telegram-session`, `copy-signal`, `copy-execution`, and `copy-provisioning`. Health must also report MetaApi configured.
 
-## Required Worker Roles
+## Connection Incidents
 
-The health endpoint expects fresh heartbeats from:
+- `invalid_credentials`: verify the MT5 login, exact broker server, and trader password.
+- `server_not_found`: use the exact server shown in the MT5 login window.
+- `trading_disabled`: a trader password is required; investor access cannot copy trades.
+- `synchronization_failed`: inspect MetaApi deployment, broker connectivity, and WebSocket synchronization.
+- `broker_disconnected`: pause only routes attached to the affected connection and reconnect it.
 
-- `telegram-session`
-- `copy-signal`
-- `copy-execution`
+One unhealthy connection must not stop unrelated connections.
 
-A heartbeat older than 60 seconds is stale. A missing role produces `action_required`; a stale or degraded role produces `degraded`.
+## Uncertain Intents
 
-## Failed Event Recovery
+A timeout after submission remains `uncertain`. Never submit a replacement manually. Reconciliation searches synchronized orders, positions, and deals by the persisted MetaApi `clientId` and broker IDs. Confirm matching broker state; otherwise leave the intent uncertain until synchronized absence is proven.
 
-Transient events remain pending in Redis and are reclaimed by the worker. After the retry limit, the event is stored in `copy_dead_letters` before Redis acknowledgement.
+## Failed Events
 
-1. Resolve the dependency failure shown in `error_code` and `error_message`.
-2. Use `GET /api/v1/copy-trading/dead-letters` to locate the user-owned event.
-3. Use `POST /api/v1/copy-trading/dead-letters/{id}/replay` once.
-4. Follow the original `correlation_id` in Copy Activity.
-
-Replay creates a new idempotency key. Broker opens remain protected by the original stable `client_order_id`.
-
-## Uncertain Broker Intents
-
-An open order that times out after submission is marked uncertain. Never manually retry it first.
-
-1. Query the MT5 reconciliation endpoint with the exact `client_order_id`.
-2. Search positions, active orders, order history, and deals for the compact `cpid:` comment.
-3. If found, allow reconciliation to confirm the intent and copied trade.
-4. If MT5 explicitly reports that submission never started, the event may be retried.
-5. Escalate unresolved uncertain intents instead of creating a replacement order.
-
-## MT5 AutoTrading
-
-If a synthetic or live copy trade fails with `retcode=10027` or `AutoTrading disabled by client`, the app-side pipeline is working but the MT5 terminal is refusing automated orders.
-
-1. Open the affected MT5 worker terminal through VNC.
-2. Enable Algo Trading / AutoTrading in the terminal.
-3. Confirm the toolbar indicator is enabled for that terminal session.
-4. Publish one synthetic signal to the dedicated test route.
-5. Run `python scripts/copy_trading_launch_check.py` and confirm the synthetic result has one client order ID and one copied trade.
-
-Do not unpause global copy trading until the synthetic flow succeeds after AutoTrading is enabled.
-
-## Signal Channels
-
-Every connected text channel or group is eligible for copying immediately, including empty channels. Historical learning does not gate activation. Each new message is parsed at runtime, while image-only messages are skipped and recorded without pausing or disconnecting the channel.
-
-## Continuous Reconciliation
-
-The execution worker refreshes copied positions and pending orders every 30 seconds. It updates current volume, stop loss, take profit, broker state, and synchronization time. Partial closes always use current broker volume.
-
-Alert when any of these persist:
-
-- execution heartbeat older than 60 seconds
-- Redis pending count increasing for five minutes
-- stream lag increasing for five minutes
-- dead letters not replayed or resolved
-- uncertain intents older than two reconciliation cycles
+Transient Redis events remain pending and are reclaimed. After the delivery limit they enter `copy_dead_letters`. Resolve the dependency, replay once through `/api/v1/copy-trading/dead-letters/{id}/replay`, and follow the original correlation ID in Copy Activity.
 
 ## Rollback
 
-1. Pause Copy Trading globally before rolling back workers.
-2. Roll back the frontend first.
-3. Roll back signal and execution workers.
-4. Roll back MT5 only after no new-version execution worker remains.
-5. Keep the additive database migration in place. Its tables and columns are backward compatible and preserve audit data.
+1. Enable the global copy pause.
+2. Disable `COPY_TRADING_METAAPI_ENABLED`.
+3. Stop copy execution workers after in-flight intents reconcile.
+4. Roll back the frontend and API while retaining the additive migration and audit records.
 
-Do not downgrade the database while copied trades, route assemblies, dead letters, or uncertain intents created by this release exist.
+There is no fallback from copy trading to the self-hosted MT5 service. Journaling remains online throughout rollback.
 
-## Acceptance Checklist
+## Acceptance
 
-- All three worker roles report `healthy`.
-- Stream lag and pending counts are stable.
-- No unexpected pending dead letters exist.
-- A test source creates one correlation ID and one stable client order ID.
-- A simulated timeout after broker acceptance results in one MT5 order.
-- A later stop-loss update changes the same copied position.
-- A partial close reduces `current_volume` without changing `original_volume`.
-- Activity server filters and cursor pagination return the expected event chain.
+- Ten consecutive copy connections reach `ready` without false failures.
+- Twenty market open/close cycles produce no duplicates or leaked positions.
+- Pending create/cancel, SL/TP, break-even, partial close, full close, and emergency actions succeed.
+- Alternate symbols resolve from synchronized MetaApi specifications.
+- A forced WebSocket reconnect and ambiguous submission reconcile correctly.
+- Copy logs contain no self-hosted MT5 requests.
+- Report MetaApi acknowledgement and terminal confirmation p50/p95 separately.
+- Leave no demo positions or pending orders open.

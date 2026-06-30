@@ -222,6 +222,7 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
             ).scalar_one_or_none()
             if (
                 settings.COPY_TRADING_GLOBAL_PAUSED
+                or not settings.COPY_TRADING_METAAPI_ENABLED
                 or route is None
                 or route.state != CopyRouteState.active
                 or connection is None

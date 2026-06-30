@@ -55,7 +55,7 @@ def test_provisioning_uses_cloud_g2_high_reliability_and_persisted_transaction()
         "server": "Broker-MT5-Demo",
         "platform": "mt5",
         "magic": 0,
-        "manualTrades": True,
+        "manualTrades": False,
         "type": "cloud-g2",
         "region": "london",
         "reliability": "high",

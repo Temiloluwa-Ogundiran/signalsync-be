@@ -11,6 +11,7 @@ REQUIRED_WORKER_ROLES = (
     "telegram-session",
     "copy-signal",
     "copy-execution",
+    "copy-provisioning",
 )
 
 
@@ -34,6 +35,39 @@ class LaunchReadiness:
     oldest_uncertain_seconds: int
     oldest_active_intent_seconds: int
     global_paused: bool
+
+
+def add_metaapi_health(
+    health: HealthSummary,
+    *,
+    copy_trading_enabled: bool,
+    metaapi_enabled: bool,
+    token_configured: bool,
+) -> HealthSummary:
+    required = copy_trading_enabled
+    configured = metaapi_enabled and token_configured
+    status = "healthy" if configured else "missing" if required else "disabled"
+    component = {
+        "role": "metaapi",
+        "status": status,
+        "heartbeat_at": None,
+        "stream_lag": 0,
+        "pending_count": 0,
+        "last_error": None if configured else "MetaApi copy execution is not configured.",
+    }
+    if not required or configured:
+        return HealthSummary(
+            status=health.status,
+            ready=health.ready,
+            components=[*health.components, component],
+            issues=health.issues,
+        )
+    return HealthSummary(
+        status="action_required",
+        ready=False,
+        components=[*health.components, component],
+        issues=[*health.issues, "MetaApi copy execution is not configured."],
+    )
 
 
 def build_launch_readiness(

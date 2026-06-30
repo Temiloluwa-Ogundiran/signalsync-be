@@ -5,6 +5,7 @@ from app.domains.copy_trading.health import (
     REQUIRED_WORKER_ROLES,
     aggregate_health,
     build_launch_readiness,
+    add_metaapi_health,
 )
 
 
@@ -29,6 +30,7 @@ def test_all_required_workers_must_be_fresh() -> None:
             heartbeat("telegram-session"),
             heartbeat("copy-signal"),
             heartbeat("copy-execution"),
+            heartbeat("copy-provisioning"),
         ],
         now=NOW,
     )
@@ -43,6 +45,7 @@ def test_stale_execution_worker_makes_health_degraded() -> None:
             heartbeat("telegram-session"),
             heartbeat("copy-signal"),
             heartbeat("copy-execution", age=91),
+            heartbeat("copy-provisioning"),
         ],
         now=NOW,
     )
@@ -56,11 +59,29 @@ def test_missing_worker_is_reported_as_action_required() -> None:
     result = aggregate_health([], now=NOW)
 
     assert result.status == "action_required"
-    assert len(result.issues) == 3
+    assert len(result.issues) == len(REQUIRED_WORKER_ROLES)
 
 
 def test_channel_learning_worker_is_not_required_for_runtime_health() -> None:
     assert "copy-learning" not in REQUIRED_WORKER_ROLES
+
+
+def test_metaapi_configuration_is_required_when_copy_trading_is_enabled() -> None:
+    health = aggregate_health(
+        [heartbeat(role) for role in REQUIRED_WORKER_ROLES], now=NOW
+    )
+
+    result = add_metaapi_health(
+        health,
+        copy_trading_enabled=True,
+        metaapi_enabled=True,
+        token_configured=False,
+    )
+
+    assert result.ready is False
+    assert result.status == "action_required"
+    assert result.components[-1]["role"] == "metaapi"
+    assert result.components[-1]["status"] == "missing"
 
 
 def test_launch_readiness_blocks_old_uncertain_intent() -> None:

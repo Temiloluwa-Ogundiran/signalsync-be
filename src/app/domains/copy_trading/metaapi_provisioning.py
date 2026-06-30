@@ -105,7 +105,7 @@ class MetaApiProvisioningService:
                         "server": connection.broker_server,
                         "platform": connection.platform,
                         "magic": 0,
-                        "manualTrades": True,
+                        "manualTrades": False,
                         "type": self._account_type,
                         "region": self._region,
                         "reliability": "high",

@@ -11,7 +11,7 @@ from sqlalchemy import func, select, text
 import app.models  # noqa: F401
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.domains.copy_trading.health import aggregate_health, build_launch_readiness
+from app.domains.copy_trading.health import add_metaapi_health, aggregate_health, build_launch_readiness
 from app.domains.copy_trading.models import (
     CopiedTrade,
     CopyActivityEvent,
@@ -44,12 +44,12 @@ def synthetic_status(db) -> tuple[bool, dict]:
     if not activities:
         return False, {"correlation_id": correlation_id, "activity_events": 0}
     route_ids = {event.route_id for event in activities if event.route_id}
-    account_ids = {event.account_id for event in activities if event.account_id}
+    connection_ids = {event.connection_id for event in activities if event.connection_id}
     first_seen = min(event.created_at for event in activities)
     intents = db.execute(
         select(TradeIntent).where(
             TradeIntent.route_id.in_(route_ids),
-            TradeIntent.account_id.in_(account_ids),
+            TradeIntent.connection_id.in_(connection_ids),
             TradeIntent.created_at >= first_seen,
         )
     ).scalars().all()
@@ -86,7 +86,12 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     with SessionLocal() as db:
         migration_ok, migrations = migration_status(db)
-        health = aggregate_health(db.execute(select(CopyWorkerHealth)).scalars().all())
+        health = add_metaapi_health(
+            aggregate_health(db.execute(select(CopyWorkerHealth)).scalars().all()),
+            copy_trading_enabled=settings.COPY_TRADING_ENABLED,
+            metaapi_enabled=settings.COPY_TRADING_METAAPI_ENABLED,
+            token_configured=bool(settings.METAAPI_TOKEN),
+        )
         dead_letters = db.execute(
             select(func.count(CopyDeadLetter.id)).where(
                 CopyDeadLetter.state == DeadLetterState.pending
