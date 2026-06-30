@@ -8,6 +8,7 @@ from app.domains.copy_trading.metaapi_provisioning import (
     MetaApiProvisioningService,
     classify_provisioning_error,
 )
+from app.domains.copy_trading.metaapi_jobs import validate_terminal_account
 from app.domains.copy_trading.models import CopyTradingConnectionState
 from tests.fakes.fake_metaapi import FakeMetaApi, FakeMetaApiAccount, FakeProvisioningClient
 
@@ -130,3 +131,32 @@ def test_cleanup_is_idempotent_and_removes_credentials() -> None:
     assert account.remove_calls == 1
     assert target.encrypted_trader_password is None
     assert target.state == CopyTradingConnectionState.deleted
+
+
+def test_terminal_identity_and_trader_permission_are_required_for_readiness() -> None:
+    target = connection()
+    target.broker_login = "12345678"
+    target.broker_server = "Broker-MT5-Demo"
+
+    assert validate_terminal_account(
+        target,
+        {
+            "login": 12345678,
+            "server": "Broker-MT5-Demo",
+            "tradeAllowed": True,
+            "investorMode": False,
+        },
+    ) is None
+    assert validate_terminal_account(
+        target,
+        {
+            "login": 12345678,
+            "server": "Broker-MT5-Demo",
+            "tradeAllowed": False,
+            "investorMode": True,
+        },
+    ) == (
+        CopyTradingConnectionState.trading_disabled,
+        "trading_disabled",
+        "Trader access is required for copy trading.",
+    )

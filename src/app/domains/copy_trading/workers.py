@@ -10,8 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.domains.accounts.models import TradingAccount
-from app.domains.accounts.mt5_core_client import Mt5CoreClient, Mt5CoreClientHttpError, Mt5CoreClientJobFailed
+from app.domains.copy_trading.client_ids import metaapi_client_id
 from app.domains.copy_trading.engine import ParsedSignal, RouteExecutionPolicy, SignalAction, validate_signal
 from app.domains.copy_trading.assembly import (
     ConversationCandidate,
@@ -21,8 +20,6 @@ from app.domains.copy_trading.assembly import (
 )
 from app.domains.copy_trading.delivery import DeliveryResult
 from app.domains.copy_trading.execution import (
-    catalog_fingerprint,
-    client_order_id_for_key,
     ensure_exposure_within_limit,
     intent_legs_for_action,
     signal_volume_for_action,
@@ -56,7 +53,6 @@ from app.domains.copy_trading.models import (
     SignalConversationState,
     SignalThread,
     SignalThreadState,
-    SymbolMapping,
     TelegramSource,
     TelegramSourceType,
     TradeIntent,
@@ -65,22 +61,10 @@ from app.domains.copy_trading.models import (
 from app.domains.copy_trading.parser import AiAction, deterministic_parse
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
-from app.domains.copy_trading.symbols import BrokerSymbol, normalize_symbol, resolve_symbol
-from app.shared.utils.encryption import decrypt_secret
-from app.shared.utils.email import send_copy_trading_email
-from app.domains.users.models import User
+from app.domains.copy_trading.symbols import normalize_symbol
 
 
 logger = logging.getLogger("copy-trading.signal")
-
-
-def _is_permanent_broker_error(exc: Exception) -> bool:
-    if bool(getattr(exc, "uncertain", False)):
-        return False
-    return isinstance(
-        exc,
-        (ValueError, Mt5CoreClientHttpError, Mt5CoreClientJobFailed),
-    )
 
 
 def _load_existing_conversation_for_correlation(
@@ -122,32 +106,6 @@ def _safe_activity_title(title: str) -> str:
     return f"{title[:197]}..."
 
 
-def _mt5_order_side(direction: str) -> str:
-    return direction.strip().lower()
-
-
-def _mt5_pending_order_type(direction: str, order_type: str | None) -> str:
-    normalized_direction = _mt5_order_side(direction)
-    normalized_type = (order_type or "").strip().lower()
-    supported = {
-        "buy_limit",
-        "sell_limit",
-        "buy_stop",
-        "sell_stop",
-        "buy_stop_limit",
-        "sell_stop_limit",
-    }
-    if normalized_type in supported:
-        return normalized_type
-    if normalized_direction in {"buy", "sell"} and normalized_type in {
-        "limit",
-        "stop",
-        "stop_limit",
-    }:
-        return f"{normalized_direction}_{normalized_type}"
-    raise ValueError(f"Unsupported pending order type: {order_type}")
-
-
 def _activity(
     db,
     *,
@@ -164,7 +122,7 @@ def _activity(
         if raw_message
         else None
     )
-    db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=route.source_id, account_id=route.target_account_id, correlation_id=correlation_id, action=action, title=_safe_activity_title(title), level=level, parsed_details=details, broker_details={}, encrypted_raw_message=encrypted_raw_message))
+    db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=route.source_id, connection_id=route.target_connection_id, correlation_id=correlation_id, action=action, title=_safe_activity_title(title), level=level, parsed_details=details, broker_details={}, encrypted_raw_message=encrypted_raw_message))
 
 
 def _route_accepts_message(
@@ -549,7 +507,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
 
             for route in routes:
                 user_settings = db.get(CopyTradingUserSettings, route.user_id)
-                policy_row = db.execute(select(CopyAccountPolicy).where(CopyAccountPolicy.account_id == route.target_account_id)).scalar_one_or_none()
+                policy_row = db.execute(select(CopyAccountPolicy).where(CopyAccountPolicy.connection_id == route.target_connection_id)).scalar_one_or_none()
                 if (user_settings and user_settings.is_paused) or (policy_row and policy_row.is_paused):
                     continue
                 assembly = db.execute(
@@ -646,7 +604,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                         select(CopiedTrade)
                         .join(CopyRoute, CopyRoute.id == CopiedTrade.route_id)
                         .where(
-                            CopyRoute.target_account_id == route.target_account_id,
+                            CopyRoute.target_connection_id == route.target_connection_id,
                             CopiedTrade.lifecycle_state.in_(["open", "pending"]),
                         )
                     ).scalars()
@@ -704,7 +662,8 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     )
                     intent_payload["conversation_id"] = str(conversation.id)
                     key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{revision}:{route.id}:{signal.action.value}:{index}"
-                    intent = TradeIntent(user_id=route.user_id, route_id=route.id, account_id=route.target_account_id, parsed_action_id=action.id, idempotency_key=key, client_order_id=client_order_id_for_key(key), state=TradeIntentState.created, request_payload=intent_payload)
+                    intent_id = uuid.uuid4()
+                    intent = TradeIntent(id=intent_id, user_id=route.user_id, route_id=route.id, connection_id=route.target_connection_id, parsed_action_id=action.id, idempotency_key=key, client_order_id=metaapi_client_id(route_id=route.id, intent_id=intent_id), state=TradeIntentState.created, request_payload=intent_payload)
                     try:
                         with db.begin_nested():
                             db.add(intent)
@@ -713,7 +672,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                         continue
                     if signal.action.value in OPEN_ACTIONS:
                         mark_generation_submitted(assembly, intent.id, now)
-                    RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id), "account_id": str(route.target_account_id)}, idempotency_key=key))
+                    RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id), "connection_id": str(route.target_connection_id)}, idempotency_key=key))
                 _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
             db.commit()
             return DeliveryResult.success()
@@ -721,414 +680,49 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
         lock.release()
 
 
-async def _submit_mt5(path: str, payload: dict) -> dict:
-    client = Mt5CoreClient(poll_timeout=20, poll_interval=0.1)
-    return await client.submit_action(path=path, payload=payload)
-
-
-async def _broker_symbol(db, route: CopyRoute, account: TradingAccount, credentials: dict, signal_symbol: str, redis_client=None) -> str:
-    normalized = normalize_symbol(signal_symbol)
-    saved = db.execute(select(SymbolMapping).where(SymbolMapping.route_id == route.id, SymbolMapping.account_id == account.id, SymbolMapping.normalized_signal_symbol == normalized)).scalar_one_or_none()
-    cache_key = f"copy:symbol-catalog:{account.id}"
-    cached_catalog = redis_client.get(cache_key) if redis_client else None
-    if cached_catalog:
-        catalog = json.loads(cached_catalog)
-    else:
-        catalog_result = await _submit_mt5("/symbols", credentials)
-        catalog = catalog_result.get("data", catalog_result).get("symbols", [])
-        if redis_client:
-            redis_client.setex(cache_key, 300, json.dumps(catalog, default=str))
-    version = catalog_fingerprint(catalog)
-    catalog_by_name = {str(item.get("name")): item for item in catalog}
-    saved_item = catalog_by_name.get(saved.broker_symbol) if saved else None
-    if saved and saved.catalog_version == version and saved_item and int(saved_item.get("trade_mode", 0) or 0) not in {0, 3}:
-        return saved.broker_symbol
-    candidates = [BrokerSymbol(name=item["name"], contract_size=Decimal(str(item.get("contract_size", 0))), spread=int(item.get("spread", 0)), trade_mode=int(item.get("trade_mode", 0)), visible=bool(item.get("visible", False))) for item in catalog]
-    selected = resolve_symbol(signal_symbol, candidates)
-    evidence = {"contract_size": str(selected.contract_size), "spread": selected.spread, "visible": selected.visible}
-    if saved:
-        saved.broker_symbol = selected.name
-        saved.selection_evidence = evidence
-        saved.catalog_version = version
-    else:
-        db.add(SymbolMapping(route_id=route.id, account_id=account.id, normalized_signal_symbol=normalized, broker_symbol=selected.name, selection_evidence=evidence, catalog_version=version))
-    db.flush()
-    return selected.name
-
-
-def execution_handler(event: CopyEvent, client) -> DeliveryResult | None:
-    if event.event_type == "emergency.execute":
-        asyncio.run(_execute_emergency(event, client))
-        return
-    if event.event_type == "intent.reconcile":
-        _reconcile_intent(event, client)
-        return
-    if event.event_type != "intent.execute":
-        return
-    intent_id = uuid.UUID(event.payload["intent_id"])
-    with SessionLocal() as db:
-        intent = db.get(TradeIntent, intent_id)
-        if intent is None:
-            return DeliveryResult.retry(
-                "INTENT_NOT_VISIBLE",
-                "Trade intent is not committed yet.",
-            )
-        if intent.state not in {TradeIntentState.created, TradeIntentState.retryable}:
-            return
-        route = db.get(CopyRoute, intent.route_id)
-        account = db.get(TradingAccount, intent.account_id)
-        parsed_action = db.get(ParsedAction, intent.parsed_action_id)
-        lock = client.lock(f"copy:account-lock:{intent.account_id}", timeout=30, blocking_timeout=10)
-        if not lock.acquire(blocking=True):
-            retry_count = int(intent.broker_result.get("lock_retries", 0)) + 1
-            intent.broker_result = {
-                **intent.broker_result,
-                "lock_retries": retry_count,
-            }
-            if retry_count <= 3:
-                intent.state = TradeIntentState.retryable
-                RedisStreamBus(client).publish(
-                    CopyEvent.new(
-                        stream=StreamName.execution_intents,
-                        event_type="intent.execute",
-                        correlation_id=event.correlation_id,
-                        payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)},
-                        idempotency_key=f"lock-retry:{intent.id}:{retry_count}",
-                    )
-                )
-            else:
-                intent.state = TradeIntentState.failed
-                intent.last_error_code = "ACCOUNT_BUSY"
-            db.commit()
-            return
-        try:
-            user_settings = db.get(CopyTradingUserSettings, intent.user_id)
-            account_policy = db.execute(
-                select(CopyAccountPolicy).where(
-                    CopyAccountPolicy.account_id == intent.account_id
-                )
-            ).scalar_one_or_none()
-            if (
-                settings.COPY_TRADING_GLOBAL_PAUSED
-                or route is None
-                or route.state != CopyRouteState.active
-                or (user_settings and user_settings.is_paused)
-                or (account_policy and account_policy.is_paused)
-            ):
-                intent.state = TradeIntentState.failed
-                intent.last_error_code = "AUTOMATION_PAUSED"
-                db.commit()
-                return
-            if account is None or not account.encrypted_trader_password:
-                intent.state = TradeIntentState.failed
-                intent.last_error_code = "TRADER_CREDENTIALS_REQUIRED"
-                db.commit()
-                return
-            password_value = account.encrypted_trader_password
-            credentials = {"login": account.broker_login, "password": decrypt_secret(password_value), "server": account.broker_server}
-            payload = intent.request_payload
-            action = payload["action"]
-            broker_symbol = asyncio.run(_broker_symbol(db, route, account, credentials, payload.get("symbol"), client)) if payload.get("symbol") else None
-            order_payload = {**credentials, "symbol": broker_symbol, "volume": float(payload.get("volume", route.fixed_lot)), "sl": payload.get("stop_loss"), "tp": payload.get("take_profit"), "magic": route.magic_number, "comment": f"cp:{str(route.id)[:8]}", "client_order_id": intent.client_order_id}
-            copied_trades = list(
-                db.execute(
-                    select(CopiedTrade)
-                    .where(
-                        CopiedTrade.route_id == route.id,
-                        CopiedTrade.lifecycle_state.in_(["open", "pending"]),
-                    )
-                    .order_by(CopiedTrade.created_at.desc())
-                ).scalars()
-            )
-            copied = _select_copied_trade(copied_trades, payload)
-            if action in {SignalAction.open_market.value, SignalAction.additional_tp.value}:
-                order_side = _mt5_order_side(payload["direction"])
-                order_payload.update({"side": order_side, "order_type": order_side})
-                path = "/orders"
-            elif action == SignalAction.place_pending.value:
-                order_payload.update({
-                    "order_type": _mt5_pending_order_type(
-                        payload["direction"],
-                        payload.get("order_type"),
-                    ),
-                    "price": payload.get("entry"),
-                })
-                path = "/orders"
-            elif action in {SignalAction.modify_sl_tp.value, SignalAction.break_even.value} and copied and copied.broker_position_id:
-                order_payload = {**credentials, "sl": payload.get("stop_loss") or payload.get("entry"), "tp": payload.get("take_profit")}
-                path = f"/positions/{copied.broker_position_id}/sl-tp"
-            elif action in {SignalAction.partial_close.value, SignalAction.full_close.value} and copied and copied.broker_position_id:
-                order_payload = {**credentials, "magic": route.magic_number, "comment": f"cp:{str(route.id)[:8]}"}
-                if action == SignalAction.partial_close.value:
-                    fraction = Decimal(str(payload.get("close_fraction") or "0.5"))
-                    current_volume = Decimal(str(copied.current_volume or copied.original_volume or route.fixed_lot))
-                    order_payload["volume"] = float(current_volume * fraction)
-                path = f"/positions/{copied.broker_position_id}/close"
-            elif action == SignalAction.cancel_pending.value and copied and copied.broker_order_id:
-                order_payload = credentials
-                path = f"/orders/{copied.broker_order_id}/cancel"
-            else:
-                raise ValueError(f"Management action {action} requires a matched copied trade.")
-            intent.state = TradeIntentState.submitted
-            intent.submitted_at = datetime.now(timezone.utc)
-            intent.attempt_count += 1
-            db.commit()
-            try:
-                result = asyncio.run(_submit_mt5(path, order_payload))
-            except Exception as exc:
-                intent = db.get(TradeIntent, intent_id)
-                permanent = _is_permanent_broker_error(exc)
-                intent.state = TradeIntentState.failed if permanent else TradeIntentState.uncertain
-                intent.last_error_code = exc.__class__.__name__
-                intent.broker_result = {"message": str(exc)}
-                if permanent:
-                    _resolve_opening_generation(
-                        db,
-                        intent=intent,
-                        parsed_action=parsed_action,
-                        failure_reason=intent.last_error_code,
-                    )
-                _activity(db, route=route, correlation_id=event.correlation_id, action="broker.failed" if permanent else "broker.uncertain", title=f"Failed: {exc}" if permanent else "Confirming broker status", level=CopyActivityLevel.error if permanent else CopyActivityLevel.warning, details=payload)
-                db.commit()
-                user = db.get(User, route.user_id)
-                if user and route.notify_failure:
-                    try:
-                        send_copy_trading_email(user.email, subject="Copy trade failed", details={**payload, "reason": str(exc)})
-                    except Exception:
-                        logger.exception("Copy-trading failure email could not be sent user_id=%s intent_id=%s", user.id, intent.id)
-                if not permanent:
-                    RedisStreamBus(client).publish(
-                        CopyEvent.new(
-                            stream=StreamName.execution_intents,
-                            event_type="intent.reconcile",
-                            correlation_id=event.correlation_id,
-                            payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)},
-                            idempotency_key=(
-                                f"reconcile:{intent.id}:"
-                                f"{intent.attempt_count}"
-                            ),
-                        )
-                    )
-                return
-            intent = db.get(TradeIntent, intent_id)
-            intent.state = TradeIntentState.confirmed
-            intent.broker_result = result
-            intent.resolved_at = datetime.now(timezone.utc)
-            broker_order = result.get("order", result) if isinstance(result, dict) else {}
-            if action in {SignalAction.open_market.value, SignalAction.place_pending.value, SignalAction.additional_tp.value}:
-                submitted_volume = Decimal(str(payload.get("volume", route.fixed_lot)))
-                db.add(CopiedTrade(route_id=route.id, thread_id=parsed_action.thread_id, intent_id=intent.id, magic_number=route.magic_number, route_comment=f"cp:{str(route.id)[:8]}", signal_symbol=str(payload.get("symbol")), broker_symbol=str(broker_symbol), broker_order_id=str(broker_order.get("order")) if broker_order.get("order") else None, broker_deal_id=str(broker_order.get("deal")) if broker_order.get("deal") else None, broker_position_id=str(broker_order.get("position") or broker_order.get("order")) if broker_order.get("position") or broker_order.get("order") else None, lifecycle_state="pending" if action == SignalAction.place_pending.value else "open", original_volume=submitted_volume, current_volume=submitted_volume, stop_loss=Decimal(str(payload["stop_loss"])) if payload.get("stop_loss") is not None else None, take_profit=Decimal(str(payload["take_profit"])) if payload.get("take_profit") is not None else None, broker_synced_at=datetime.now(timezone.utc)))
-            elif copied and action == SignalAction.partial_close.value:
-                copied.current_volume = max(Decimal("0"), Decimal(str(copied.current_volume or copied.original_volume or 0)) - Decimal(str(order_payload["volume"])))
-                copied.broker_synced_at = datetime.now(timezone.utc)
-            elif copied and action in {SignalAction.modify_sl_tp.value, SignalAction.break_even.value}:
-                if order_payload.get("sl") is not None:
-                    copied.stop_loss = Decimal(str(order_payload["sl"]))
-                if order_payload.get("tp") is not None:
-                    copied.take_profit = Decimal(str(order_payload["tp"]))
-                copied.broker_synced_at = datetime.now(timezone.utc)
-            elif copied and action in {SignalAction.full_close.value, SignalAction.cancel_pending.value}:
-                copied.lifecycle_state = "closed" if action == SignalAction.full_close.value else "cancelled"
-                copied.current_volume = Decimal("0")
-                copied.broker_synced_at = datetime.now(timezone.utc)
-            _resolve_opening_generation(
-                db,
-                intent=intent,
-                parsed_action=parsed_action,
-            )
-            _activity(db, route=route, correlation_id=event.correlation_id, action="broker.succeeded", title="Trade opened" if action.startswith("open") else "Broker action completed", level=CopyActivityLevel.success, details=payload)
-            db.commit()
-            user = db.get(User, route.user_id)
-            if user and route.notify_success:
-                try:
-                    send_copy_trading_email(user.email, subject="Copy trade completed", details={**payload, "broker_result": result})
-                except Exception:
-                    logger.exception("Copy-trading success email could not be sent user_id=%s intent_id=%s", user.id, intent.id)
-        finally:
-            lock.release()
-
-
-def publish_unresolved_intents(client) -> None:
-    with SessionLocal() as db:
-        intents = list(db.execute(select(TradeIntent).where(TradeIntent.state.in_([TradeIntentState.uncertain, TradeIntentState.reconciling]))).scalars())
-        for intent in intents:
-            bucket = int(datetime.now(timezone.utc).timestamp() // 30)
-            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.reconcile", correlation_id=str(uuid.uuid4()), payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)}, idempotency_key=f"reconcile-sweep:{intent.id}:{intent.attempt_count}:{bucket}"))
-
-
-def reconcile_copied_trades() -> int:
-    observed_at = datetime.now(timezone.utc)
-    updated = 0
-    with SessionLocal() as db:
-        rows = list(
-            db.execute(
-                select(CopiedTrade, CopyRoute, TradingAccount)
-                .join(CopyRoute, CopyRoute.id == CopiedTrade.route_id)
-                .join(TradingAccount, TradingAccount.id == CopyRoute.target_account_id)
-                .where(CopiedTrade.lifecycle_state.in_(["open", "pending"]))
-            ).all()
-        )
-        grouped: dict[tuple[uuid.UUID, uuid.UUID], list[CopiedTrade]] = {}
-        route_accounts: dict[tuple[uuid.UUID, uuid.UUID], tuple[CopyRoute, TradingAccount]] = {}
-        for trade, route, account in rows:
-            key = (route.id, account.id)
-            grouped.setdefault(key, []).append(trade)
-            route_accounts[key] = (route, account)
-        for key, trades in grouped.items():
-            route, account = route_accounts[key]
-            if not account.encrypted_trader_password:
-                continue
-            credentials = {
-                "login": account.broker_login,
-                "password": decrypt_secret(account.encrypted_trader_password),
-                "server": account.broker_server,
-                "magic": route.magic_number,
-                "comment": "",
-            }
-            try:
-                result = asyncio.run(_submit_mt5("/account/reconcile", credentials))
-            except Exception:
-                logger.exception("Copied-trade reconciliation failed route_id=%s", route.id)
-                continue
-            data = result.get("data", result)
-            for trade in trades:
-                source_intent = db.get(TradeIntent, trade.intent_id)
-                if apply_broker_snapshot(
-                    trade,
-                    positions=data.get("positions") or [],
-                    orders=data.get("orders") or [],
-                    observed_at=observed_at,
-                    client_order_id=source_intent.client_order_id if source_intent else None,
-                ):
-                    updated += 1
-        if rows:
-            db.commit()
-    return updated
-
-
-def _reconcile_intent(event: CopyEvent, client) -> None:
-    intent_id = uuid.UUID(event.payload["intent_id"])
-    with SessionLocal() as db:
-        intent = db.get(TradeIntent, intent_id)
-        if intent is None or intent.state not in {TradeIntentState.uncertain, TradeIntentState.reconciling}:
-            return
-        route = db.get(CopyRoute, intent.route_id)
-        account = db.get(TradingAccount, intent.account_id)
-        if route is None or account is None:
-            intent.state = TradeIntentState.failed
-            intent.last_error_code = "ROUTE_OR_ACCOUNT_MISSING"
-            db.commit()
-            return
-        intent.state = TradeIntentState.reconciling
-        db.commit()
-        credentials = {
-            "login": account.broker_login,
-            "password": decrypt_secret(account.encrypted_trader_password),
-            "server": account.broker_server,
-            "magic": route.magic_number,
-            "comment": f"cp:{str(route.id)[:8]}",
-            "client_order_id": getattr(intent, "client_order_id", None),
-        }
-        try:
-            result = asyncio.run(_submit_mt5("/account/reconcile", credentials))
-        except Exception as exc:
-            intent = db.get(TradeIntent, intent_id)
-            intent.state = TradeIntentState.uncertain
-            intent.broker_result = {"message": str(exc)}
-            db.commit()
-            return
-        data = result.get("data", result)
-        copied_trades = list(
-            db.execute(
-                select(CopiedTrade)
-                .where(
-                    CopiedTrade.route_id == route.id,
-                    CopiedTrade.lifecycle_state.in_(["open", "pending"]),
-                )
-                .order_by(CopiedTrade.created_at.desc())
-            ).scalars()
-        )
-        copied = _select_copied_trade(copied_trades, intent.request_payload)
-        accepted = _reconciliation_accepts(intent, data, copied)
-        intent = db.get(TradeIntent, intent_id)
-        if accepted:
-            intent.state = TradeIntentState.confirmed
-            intent.broker_result = data
-            intent.resolved_at = datetime.now(timezone.utc)
-            parsed_action_id = getattr(intent, "parsed_action_id", None)
-            parsed_action = (
-                db.get(ParsedAction, parsed_action_id)
-                if parsed_action_id
-                else None
-            )
-            _resolve_opening_generation(
-                db,
-                intent=intent,
-                parsed_action=parsed_action,
-            )
-            _activity(
-                db,
-                route=route,
-                correlation_id=event.correlation_id,
-                action="broker.reconciled",
-                title="Broker action confirmed",
-                level=CopyActivityLevel.success,
-                details=intent.request_payload,
-            )
-        elif should_retry_after_reconcile(intent, submission_started=bool(intent.submitted_at)):
-            intent.state = TradeIntentState.retryable
-            RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=event.correlation_id, payload={"intent_id": str(intent.id), "account_id": str(intent.account_id)}, idempotency_key=f"retry:{intent.id}:{intent.attempt_count}"))
-        else:
-            intent.state = TradeIntentState.uncertain
-            _activity(db, route=route, correlation_id=event.correlation_id, action="broker.uncertain", title="Broker confirmation still pending", level=CopyActivityLevel.warning, details=intent.request_payload)
-        db.commit()
-
-
 def _handle_deleted_message(event: CopyEvent) -> None:
     with SessionLocal() as db:
-        conversations = list(db.execute(select(SignalConversation).where(SignalConversation.source_id == uuid.UUID(event.payload["source_id"]))).scalars())
+        conversations = list(
+            db.execute(
+                select(SignalConversation).where(
+                    SignalConversation.source_id == uuid.UUID(event.payload["source_id"])
+                )
+            ).scalars()
+        )
         for conversation in conversations:
-            assemblies = list(db.execute(select(RouteSignalAssembly).where(RouteSignalAssembly.conversation_id == conversation.id)).scalars())
+            assemblies = list(
+                db.execute(
+                    select(RouteSignalAssembly).where(
+                        RouteSignalAssembly.conversation_id == conversation.id
+                    )
+                ).scalars()
+            )
             for assembly in assemblies:
-                if not any(ref.get("message_id") == event.payload["message_id"] for ref in assembly.message_references):
+                if not any(
+                    ref.get("message_id") == event.payload["message_id"]
+                    for ref in assembly.message_references
+                ):
                     continue
                 route = db.get(CopyRoute, assembly.route_id)
                 if route is None:
                     continue
-                if assembly.state in {RouteAssemblyState.assembling, RouteAssemblyState.ready}:
+                if assembly.state in {
+                    RouteAssemblyState.assembling,
+                    RouteAssemblyState.ready,
+                }:
                     assembly.state = RouteAssemblyState.expired
-                    _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.deleted", title="Signal removed before execution", level=CopyActivityLevel.warning, details={})
+                    action = "signal.deleted"
+                    title = "Signal removed before execution"
                 else:
-                    _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.deleted_after_execution", title="Source deleted an executed signal", level=CopyActivityLevel.warning, details={})
-        db.commit()
-
-
-async def _execute_emergency(event: CopyEvent, client) -> None:
-    payload = event.payload
-    with SessionLocal() as db:
-        query = select(CopiedTrade, CopyRoute, TradingAccount).join(CopyRoute, CopyRoute.id == CopiedTrade.route_id).join(TradingAccount, TradingAccount.id == CopyRoute.target_account_id).where(CopyRoute.user_id == uuid.UUID(payload["user_id"]), CopiedTrade.lifecycle_state.in_(["open", "pending"]))
-        scope = payload["scope"]
-        scope_id = payload.get("scope_id")
-        if scope == "account": query = query.where(CopyRoute.target_account_id == uuid.UUID(scope_id))
-        elif scope == "source": query = query.where(CopyRoute.source_id == uuid.UUID(scope_id))
-        elif scope == "route": query = query.where(CopyRoute.id == uuid.UUID(scope_id))
-        rows = list(db.execute(query).all())
-        for copied, route, account in rows:
-            lock = client.lock(f"copy:account-lock:{account.id}", timeout=30, blocking_timeout=10)
-            if not lock.acquire(blocking=True):
-                _activity(db, route=route, correlation_id=event.correlation_id, action="emergency.failed", title="Emergency action delayed because the account is busy", level=CopyActivityLevel.error, details=payload)
-                continue
-            credentials = {"login": account.broker_login, "password": decrypt_secret(account.encrypted_trader_password), "server": account.broker_server}
-            try:
-                if payload["action"] in {"close_positions", "both"} and copied.lifecycle_state == "open" and copied.broker_position_id:
-                    await _submit_mt5(f"/positions/{copied.broker_position_id}/close", credentials)
-                    copied.lifecycle_state = "closed"
-                if payload["action"] in {"cancel_pending", "both"} and copied.lifecycle_state == "pending" and copied.broker_order_id:
-                    await _submit_mt5(f"/orders/{copied.broker_order_id}/cancel", credentials)
-                    copied.lifecycle_state = "cancelled"
-                _activity(db, route=route, correlation_id=event.correlation_id, action="emergency.succeeded", title="Emergency action completed", level=CopyActivityLevel.success, details=payload)
-            except Exception as exc:
-                _activity(db, route=route, correlation_id=event.correlation_id, action="emergency.failed", title="Emergency action failed", level=CopyActivityLevel.error, details={**payload, "reason": str(exc)})
-            finally:
-                lock.release()
+                    action = "signal.deleted_after_execution"
+                    title = "Source deleted an executed signal"
+                _activity(
+                    db,
+                    route=route,
+                    correlation_id=conversation.correlation_id,
+                    action=action,
+                    title=title,
+                    level=CopyActivityLevel.warning,
+                    details={},
+                )
         db.commit()

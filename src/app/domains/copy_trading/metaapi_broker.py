@@ -47,6 +47,20 @@ class MetaApiBroker:
             None,
         )
 
+    def find_deal(self, *, client_id: str, deal_id: str | None = None):
+        history_storage = getattr(self.connection, "history_storage", None)
+        deals = getattr(history_storage, "deals", []) if history_storage else []
+        return next(
+            (
+                item
+                for item in deals
+                if (deal_id and str(item.get("id")) == str(deal_id))
+                or item.get("clientId") == client_id
+                or item.get("client_id") == client_id
+            ),
+            None,
+        )
+
     async def market_order(
         self,
         *,

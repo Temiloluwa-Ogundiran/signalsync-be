@@ -166,6 +166,9 @@ class MetaApiRuntime:
         self._submit(self._manager.evict_idle())
         return self._submit(self._manager.acquire(account_id))
 
+    def run(self, coroutine):
+        return self._submit(coroutine)
+
     def close_account(self, account_id: str) -> None:
         if self._manager is not None:
             self._submit(self._manager.close_account(account_id))

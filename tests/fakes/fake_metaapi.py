@@ -57,6 +57,9 @@ class FakeStreamingConnection:
     async def close(self) -> None:
         self.close_calls += 1
 
+    async def create_market_buy_order(self, *_args, **_kwargs) -> dict:
+        return {"orderId": "order-1"}
+
 
 class FakeStreamingAccount:
     def __init__(self, account_id: str) -> None:

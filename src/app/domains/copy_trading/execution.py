@@ -3,11 +3,6 @@ import base64
 import json
 from decimal import Decimal
 
-from app.domains.accounts.models import (
-    ImportMethod,
-    TradingAccountConnectionState,
-    TradingPlatform,
-)
 from app.domains.copy_trading.engine import (
     SignalAction,
     TakeProfitLeg,
@@ -25,17 +20,6 @@ OPENING_ACTIONS = {
 def client_order_id_for_key(idempotency_key: str) -> str:
     digest = hashlib.sha256(idempotency_key.encode("utf-8")).digest()
     return base64.b32encode(digest).decode("ascii").rstrip("=")[:20]
-
-
-def is_trade_ready(account) -> bool:
-    return bool(
-        account
-        and account.platform == TradingPlatform.mt5
-        and account.import_method == ImportMethod.auto_sync
-        and account.connection_state == TradingAccountConnectionState.ready
-        and not account.is_archived
-        and account.encrypted_trader_password
-    )
 
 
 def calculate_signal_volume(

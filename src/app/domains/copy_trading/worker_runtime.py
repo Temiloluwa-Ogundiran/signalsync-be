@@ -69,7 +69,7 @@ class StreamWorker:
     def run(self) -> None:
         self.bus.ensure_group(self.stream, self.group)
         if self.group == "copy-execution":
-            from app.domains.copy_trading.workers import publish_unresolved_intents
+            from app.domains.copy_trading.metaapi_execution import publish_unresolved_intents
             publish_unresolved_intents(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
@@ -120,7 +120,7 @@ class StreamWorker:
             if expired_count:
                 logger.info("Expired incomplete signal threads count=%s", expired_count)
         else:
-            from app.domains.copy_trading.workers import (
+            from app.domains.copy_trading.metaapi_execution import (
                 publish_unresolved_intents,
                 reconcile_copied_trades,
             )
@@ -407,7 +407,7 @@ class TelegramSessionRuntime:
                     outcome = image_message_outcome(count)
                     routes = list(db.execute(select(CopyRoute).where(CopyRoute.source_id == source.id)).scalars())
                     for route in routes:
-                        db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=source.id, account_id=route.target_account_id, correlation_id=str(uuid.uuid4()), action="source.image_message", level=CopyActivityLevel.warning, title="Image signal skipped", body=outcome.message, parsed_details={"recent_image_only_count": count}, broker_details={}))
+                        db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=source.id, connection_id=route.target_connection_id, correlation_id=str(uuid.uuid4()), action="source.image_message", level=CopyActivityLevel.warning, title="Image signal skipped", body=outcome.message, parsed_details={"recent_image_only_count": count}, broker_details={}))
                     db.commit()
                     return
                 source_id = str(source.id)
@@ -646,7 +646,8 @@ def run_process(role: str) -> None:
     if role == "telegram-session":
         asyncio.run(TelegramSessionRuntime().run())
     else:
-        from app.domains.copy_trading.workers import execution_handler, signal_handler
+        from app.domains.copy_trading.metaapi_execution import execution_handler
+        from app.domains.copy_trading.workers import signal_handler
         provisioning_worker = None
         if role == "copy-execution":
             from app.domains.copy_trading.metaapi_jobs import provisioning_handler

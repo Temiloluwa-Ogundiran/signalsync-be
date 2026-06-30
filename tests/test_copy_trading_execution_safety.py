@@ -6,39 +6,27 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from app.domains.accounts.models import (
-    ImportMethod,
-    TradingAccountConnectionState,
-    TradingPlatform,
-)
 from app.domains.copy_trading.execution import (
     calculate_signal_volume,
     catalog_fingerprint,
     ensure_exposure_within_limit,
     intent_legs_for_action,
-    is_trade_ready,
     signal_volume_for_action,
 )
 from app.domains.copy_trading.engine import SignalAction
-from app.domains.copy_trading.models import TelegramSourceState
+from app.domains.copy_trading.models import (
+    CopyTradingConnectionState,
+    TelegramSourceState,
+)
 from app.domains.copy_trading.schemas import CopyRouteCreate
 from app.domains.copy_trading.service import create_route
 
 
-def account(*, trader_password: str | None) -> SimpleNamespace:
+def connection(*, state: CopyTradingConnectionState) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),
-        platform=TradingPlatform.mt5,
-        import_method=ImportMethod.auto_sync,
-        connection_state=TradingAccountConnectionState.ready,
-        is_archived=False,
-        encrypted_trader_password=trader_password,
+        state=state,
     )
-
-
-def test_investor_only_account_is_sync_ready_but_not_trade_ready() -> None:
-    assert is_trade_ready(account(trader_password=None)) is False
-    assert is_trade_ready(account(trader_password="encrypted")) is True
 
 
 def test_fixed_each_counts_every_take_profit_leg() -> None:
@@ -120,14 +108,13 @@ def test_symbol_catalog_fingerprint_changes_with_trade_metadata() -> None:
     assert catalog_fingerprint(symbols) != first
 
 
-@patch("app.domains.copy_trading.service.account_repo.get_account_by_id_for_user")
 @patch("app.domains.copy_trading.service.repo")
-def test_route_creation_rejects_investor_only_account(repo, get_account) -> None:
+def test_route_creation_rejects_unready_copy_connection(repo) -> None:
     user = MagicMock(id=uuid.uuid4())
     source = MagicMock(id=uuid.uuid4(), state=TelegramSourceState.ready)
-    target = account(trader_password=None)
+    target = connection(state=CopyTradingConnectionState.synchronizing)
     repo.get_source_for_user.return_value = source
-    get_account.return_value = target
+    repo.get_copy_connection_for_user.return_value = target
 
     with pytest.raises(HTTPException) as error:
         create_route(
@@ -135,10 +122,10 @@ def test_route_creation_rejects_investor_only_account(repo, get_account) -> None
             current_user=user,
             payload=CopyRouteCreate(
                 source_id=source.id,
-                target_account_id=target.id,
+                target_connection_id=target.id,
                 fixed_lot=Decimal("0.10"),
             ),
         )
 
     assert error.value.status_code == 409
-    assert error.value.detail == "Trader access is required for automatic copying."
+    assert error.value.detail == "The copy account connection must be ready."

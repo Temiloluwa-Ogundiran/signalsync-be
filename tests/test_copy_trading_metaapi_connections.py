@@ -84,8 +84,10 @@ def test_process_runtime_keeps_connection_on_one_owned_event_loop() -> None:
 
     first = runtime.acquire("account-1")
     second = runtime.acquire("account-1")
+    result = runtime.run(first.create_market_buy_order("EURUSD", 0.1))
     runtime.shutdown()
 
     assert first is second
     assert api.get_account_calls == 1
     assert first.close_calls == 1
+    assert result["orderId"] == "order-1"

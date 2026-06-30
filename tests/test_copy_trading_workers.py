@@ -10,6 +10,7 @@ from app.domains.copy_trading.models import (
     CopyActivityLevel,
     CopyRoute,
     CopyRouteState,
+    CopyTradingConnection,
     ParsedAction,
     RouteAssemblyState,
     SignalConversation,
@@ -29,19 +30,13 @@ from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.workers import (
     _handle_deleted_message,
     _load_existing_conversation_for_correlation,
-    _is_permanent_broker_error,
-    _mt5_order_side,
-    _mt5_pending_order_type,
     _safe_activity_title,
-    _reconcile_intent,
     _reconciliation_accepts,
     _route_accepts_message,
     _select_copied_trade,
-    execution_handler,
     expire_signal_threads,
 )
-from app.domains.accounts.mt5_core_client import Mt5CoreClientJobFailed
-from app.domains.accounts.models import TradingAccount
+from app.domains.copy_trading.metaapi_execution import execution_handler
 
 
 def event(event_type: str, payload: dict) -> CopyEvent:
@@ -82,7 +77,7 @@ def test_retried_signal_delivery_reuses_existing_conversation_by_correlation() -
     db.execute.assert_called_once()
 
 
-@patch("app.domains.copy_trading.workers.SessionLocal")
+@patch("app.domains.copy_trading.metaapi_execution.SessionLocal")
 def test_execution_retries_when_intent_is_not_committed_yet(session_local):
     intent_id = uuid.uuid4()
     db = session_local.return_value.__enter__.return_value
@@ -94,32 +89,6 @@ def test_execution_retries_when_intent_is_not_committed_yet(session_local):
     assert result.error_code == "INTENT_NOT_VISIBLE"
 
 
-def test_mt5_order_side_is_lowercase_for_api_validation() -> None:
-    assert _mt5_order_side("BUY") == "buy"
-    assert _mt5_order_side("sell") == "sell"
-
-
-@pytest.mark.parametrize(
-    ("direction", "order_type", "expected"),
-    [
-        ("buy", "limit", "buy_limit"),
-        ("sell", "limit", "sell_limit"),
-        ("buy", "stop", "buy_stop"),
-        ("sell", "stop", "sell_stop"),
-        ("buy", "buy_stop_limit", "buy_stop_limit"),
-    ],
-)
-def test_pending_order_type_is_qualified_for_mt5_api(
-    direction, order_type, expected
-) -> None:
-    assert _mt5_pending_order_type(direction, order_type) == expected
-
-
-def test_pending_order_type_rejects_unknown_value() -> None:
-    with pytest.raises(ValueError, match="Unsupported pending order type"):
-        _mt5_pending_order_type("buy", "market-if-touched")
-
-
 def test_activity_title_is_truncated_to_database_limit() -> None:
     title = _safe_activity_title("Failed: " + ("x" * 500))
 
@@ -127,14 +96,14 @@ def test_activity_title_is_truncated_to_database_limit() -> None:
     assert len(title) <= 200
 
 
-@patch("app.domains.copy_trading.workers.SessionLocal")
+@patch("app.domains.copy_trading.metaapi_execution.SessionLocal")
 def test_paused_route_fails_intent_without_crashing(session_local):
     intent_id = uuid.uuid4()
     intent = SimpleNamespace(
         id=intent_id,
         user_id=uuid.uuid4(),
         route_id=uuid.uuid4(),
-        account_id=uuid.uuid4(),
+        connection_id=uuid.uuid4(),
         parsed_action_id=uuid.uuid4(),
         state=TradeIntentState.created,
         last_error_code=None,
@@ -146,7 +115,7 @@ def test_paused_route_fails_intent_without_crashing(session_local):
     db.get.side_effect = lambda model, _identifier: {
         TradeIntent: intent,
         CopyRoute: route,
-        TradingAccount: SimpleNamespace(),
+        CopyTradingConnection: SimpleNamespace(),
         ParsedAction: SimpleNamespace(),
     }.get(model)
     lock = MagicMock()
@@ -163,14 +132,14 @@ def test_paused_route_fails_intent_without_crashing(session_local):
 
 
 @patch.object(settings, "COPY_TRADING_GLOBAL_PAUSED", True)
-@patch("app.domains.copy_trading.workers.SessionLocal")
+@patch("app.domains.copy_trading.metaapi_execution.SessionLocal")
 def test_server_global_pause_blocks_broker_execution(session_local):
     intent_id = uuid.uuid4()
     intent = SimpleNamespace(
         id=intent_id,
         user_id=uuid.uuid4(),
         route_id=uuid.uuid4(),
-        account_id=uuid.uuid4(),
+        connection_id=uuid.uuid4(),
         parsed_action_id=uuid.uuid4(),
         state=TradeIntentState.created,
         last_error_code=None,
@@ -182,7 +151,7 @@ def test_server_global_pause_blocks_broker_execution(session_local):
     db.get.side_effect = lambda model, _identifier: {
         TradeIntent: intent,
         CopyRoute: route,
-        TradingAccount: SimpleNamespace(),
+        CopyTradingConnection: SimpleNamespace(),
         ParsedAction: SimpleNamespace(),
     }.get(model)
     lock = MagicMock()
@@ -215,67 +184,6 @@ def test_deleted_message_handler_does_not_run_broker_reconciliation(session_loca
     )
 
     db.commit.assert_called_once()
-
-
-@patch("app.domains.copy_trading.workers.RedisStreamBus")
-@patch("app.domains.copy_trading.workers._submit_mt5")
-@patch("app.domains.copy_trading.workers.decrypt_secret", return_value="secret")
-@patch("app.domains.copy_trading.workers.SessionLocal")
-def test_reconcile_confirms_uncertain_intent(
-    session_local,
-    _decrypt,
-    submit_mt5,
-    bus_class,
-):
-    intent_id = uuid.uuid4()
-    intent = SimpleNamespace(
-        id=intent_id,
-        route_id=uuid.uuid4(),
-        account_id=uuid.uuid4(),
-        state=TradeIntentState.uncertain,
-        request_payload={"action": "open_market", "symbol": "EURUSD"},
-        broker_result={},
-        resolved_at=None,
-        attempt_count=1,
-    )
-    route = SimpleNamespace(
-        id=intent.route_id,
-        user_id=uuid.uuid4(),
-        source_id=uuid.uuid4(),
-        target_account_id=intent.account_id,
-        magic_number=9001,
-    )
-    account = SimpleNamespace(
-        broker_login="123",
-        broker_server="Broker-Server",
-        encrypted_trader_password="encrypted",
-        encrypted_investor_password=None,
-    )
-    db = session_local.return_value.__enter__.return_value
-    db.get.side_effect = lambda model, _identifier: {
-        TradeIntent: intent,
-        CopyRoute: route,
-        TradingAccount: account,
-    }.get(model)
-    submit_mt5.return_value = {
-        "data": {
-            "positions": [{"ticket": 77, "magic": 9001}],
-            "orders": [],
-            "history_orders": [],
-            "deals": [],
-        }
-    }
-
-    _reconcile_intent(
-        event("intent.reconcile", {"intent_id": str(intent_id)}),
-        MagicMock(),
-    )
-
-    assert intent.state == TradeIntentState.confirmed
-    assert intent.broker_result["positions"][0]["ticket"] == 77
-    assert intent.resolved_at is not None
-    submit_mt5.assert_called_once()
-    bus_class.return_value.publish.assert_not_called()
 
 
 def test_group_messages_default_to_admin_authors_only():
@@ -462,14 +370,3 @@ def test_permanent_opening_failure_terminates_generation() -> None:
     assert assembly.state == RouteAssemblyState.failed
     assert assembly.completed_at == now
     assert assembly.terminal_reason == "INVALID_VOLUME"
-
-
-def test_uncertain_post_submission_failure_is_not_permanent() -> None:
-    error = Mt5CoreClientJobFailed(
-        "transport lost",
-        submission_started=True,
-        uncertain=True,
-    )
-
-    assert _is_permanent_broker_error(error) is False
-    assert _is_permanent_broker_error(ValueError("invalid volume")) is True

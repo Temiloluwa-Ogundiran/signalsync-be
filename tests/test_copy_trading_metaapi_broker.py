@@ -27,6 +27,9 @@ class FakeConnection:
             positions=[{"id": "position-1", "clientId": "client-id"}],
             orders=[{"id": "order-1", "clientId": "client-id"}],
         )
+        self.history_storage = SimpleNamespace(
+            deals=[{"id": "deal-1", "clientId": "client-id"}]
+        )
 
     def __getattr__(self, name):
         async def call(*args, **kwargs):
@@ -103,4 +106,5 @@ def test_broker_exposes_synchronized_terminal_truth() -> None:
 
     assert broker.find_order(client_id="client-id")["id"] == "order-1"
     assert broker.find_position(client_id="client-id")["id"] == "position-1"
+    assert broker.find_deal(client_id="client-id")["id"] == "deal-1"
     assert broker.symbols()[0].name == "XAUUSDm"

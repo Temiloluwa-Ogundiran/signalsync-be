@@ -54,7 +54,7 @@ def test_signal_activity_encrypts_and_retains_the_source_message(
         id="route-id",
         user_id="user-id",
         source_id="source-id",
-        target_account_id="account-id",
+        target_connection_id="connection-id",
     )
 
     _activity(
