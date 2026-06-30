@@ -50,6 +50,12 @@ def _drop_constraints_for_column(table: str, column: str, kind: str) -> None:
             op.drop_constraint(constraint["name"], table, type_=kind)
 
 
+def _drop_index_if_exists(table: str, name: str) -> None:
+    inspector = sa.inspect(op.get_bind())
+    if any(index.get("name") == name for index in inspector.get_indexes(table)):
+        op.drop_index(name, table_name=table)
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     connection_state.create(bind, checkfirst=True)
@@ -91,7 +97,7 @@ def upgrade() -> None:
     )
 
     _drop_constraints_for_column("copy_routes", "target_account_id", "unique")
-    op.drop_index("ix_copy_routes_target_account_id", table_name="copy_routes")
+    _drop_index_if_exists("copy_routes", "ix_copy_routes_target_account_id")
     op.alter_column("copy_routes", "target_account_id", new_column_name="legacy_target_account_id")
     op.add_column("copy_routes", sa.Column("target_connection_id", postgresql.UUID(as_uuid=True), nullable=True))
     op.create_foreign_key(
@@ -108,7 +114,7 @@ def upgrade() -> None:
     )
 
     _drop_constraints_for_column("copy_account_policies", "account_id", "unique")
-    op.drop_index("ix_copy_account_policies_account_id", table_name="copy_account_policies")
+    _drop_index_if_exists("copy_account_policies", "ix_copy_account_policies_account_id")
     op.alter_column("copy_account_policies", "account_id", new_column_name="legacy_account_id")
     op.add_column("copy_account_policies", sa.Column("connection_id", postgresql.UUID(as_uuid=True), nullable=True))
     op.create_foreign_key(
@@ -135,8 +141,8 @@ def upgrade() -> None:
         ondelete="SET NULL",
     )
 
-    op.drop_index("ix_trade_intent_account_state", table_name="trade_intents")
-    op.drop_index("ix_trade_intents_account_id", table_name="trade_intents")
+    _drop_index_if_exists("trade_intents", "ix_trade_intent_account_state")
+    _drop_index_if_exists("trade_intents", "ix_trade_intents_account_id")
     op.alter_column("trade_intents", "account_id", new_column_name="legacy_account_id")
     op.add_column("trade_intents", sa.Column("connection_id", postgresql.UUID(as_uuid=True), nullable=True))
     op.create_foreign_key(
@@ -165,7 +171,7 @@ def upgrade() -> None:
     op.execute("DELETE FROM symbol_mappings")
     _drop_constraints_for_column("symbol_mappings", "account_id", "unique")
     _drop_constraints_for_column("symbol_mappings", "account_id", "foreignkey")
-    op.drop_index("ix_symbol_mappings_account_id", table_name="symbol_mappings")
+    _drop_index_if_exists("symbol_mappings", "ix_symbol_mappings_account_id")
     op.drop_column("symbol_mappings", "account_id")
     op.add_column("symbol_mappings", sa.Column("connection_id", postgresql.UUID(as_uuid=True), nullable=False))
     op.create_foreign_key(
