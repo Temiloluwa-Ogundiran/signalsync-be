@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timezone
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -8,11 +9,15 @@ from app.domains.copy_trading.metaapi_client import (
     MetaApiProvisioningHttpClient,
     build_metaapi,
 )
+from app.domains.copy_trading.metaapi_connections import get_metaapi_runtime
 from app.domains.copy_trading.metaapi_provisioning import (
     MetaApiProvisioningError,
     MetaApiProvisioningService,
 )
-from app.domains.copy_trading.models import CopyTradingConnection
+from app.domains.copy_trading.models import (
+    CopyTradingConnection,
+    CopyTradingConnectionState,
+)
 from app.shared.utils.encryption import decrypt_secret
 
 
@@ -46,6 +51,10 @@ async def _run_job(connection: CopyTradingConnection, *, delete: bool, db) -> bo
         )
     finally:
         await control.close()
+        close = getattr(api, "close", None)
+        if close is not None:
+            close()
+            await asyncio.sleep(0)
 
 
 def provisioning_handler(event, _redis_client) -> DeliveryResult:
@@ -59,6 +68,9 @@ def provisioning_handler(event, _redis_client) -> DeliveryResult:
         if connection is None:
             return DeliveryResult.success()
         try:
+            runtime = get_metaapi_runtime()
+            if event.event_type == "connection.delete" and connection.metaapi_account_id:
+                runtime.close_account(connection.metaapi_account_id)
             completed = asyncio.run(
                 _run_job(
                     connection,
@@ -75,4 +87,11 @@ def provisioning_handler(event, _redis_client) -> DeliveryResult:
                 "PROVISIONING_ACCEPTED",
                 "MetaApi is still provisioning the account.",
             )
+        if event.event_type != "connection.delete" and connection.metaapi_account_id:
+            runtime.acquire(connection.metaapi_account_id)
+            connection.state = CopyTradingConnectionState.ready
+            connection.last_health_at = datetime.now(timezone.utc)
+            connection.last_error_code = None
+            connection.last_error_message = None
+            db.commit()
         return DeliveryResult.success()

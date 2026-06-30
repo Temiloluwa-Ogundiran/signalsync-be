@@ -39,6 +39,48 @@ class FakeMetaApi:
         return self.account
 
 
+class FakeStreamingConnection:
+    def __init__(self) -> None:
+        self.connect_calls = 0
+        self.wait_synchronized_calls = 0
+        self.close_calls = 0
+        self.terminal_state = SimpleNamespace(
+            specifications=[], positions=[], orders=[]
+        )
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+
+    async def wait_synchronized(self, _options: dict) -> None:
+        self.wait_synchronized_calls += 1
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class FakeStreamingAccount:
+    def __init__(self, account_id: str) -> None:
+        self.id = account_id
+        self.created_connections: list[FakeStreamingConnection] = []
+
+    def get_streaming_connection(self) -> FakeStreamingConnection:
+        connection = FakeStreamingConnection()
+        self.created_connections.append(connection)
+        return connection
+
+
+class FakeStreamingApi:
+    def __init__(self, account: FakeStreamingAccount) -> None:
+        self.account = account
+        self.get_account_calls = 0
+        self.metatrader_account_api = SimpleNamespace(get_account=self.get_account)
+
+    async def get_account(self, account_id: str) -> FakeStreamingAccount:
+        assert account_id == self.account.id
+        self.get_account_calls += 1
+        return self.account
+
+
 class FakeProvisioningClient:
     def __init__(self, responses: list[dict | None]) -> None:
         self.responses = list(responses)

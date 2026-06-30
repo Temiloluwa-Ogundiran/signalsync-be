@@ -647,6 +647,7 @@ def run_process(role: str) -> None:
         asyncio.run(TelegramSessionRuntime().run())
     else:
         from app.domains.copy_trading.workers import execution_handler, signal_handler
+        provisioning_worker = None
         if role == "copy-execution":
             from app.domains.copy_trading.metaapi_jobs import provisioning_handler
 
@@ -664,4 +665,23 @@ def run_process(role: str) -> None:
             "copy-signal": (StreamName.telegram_messages, "copy-signal", signal_handler),
             "copy-execution": (StreamName.execution_intents, "copy-execution", execution_handler),
         }[role]
-        StreamWorker(stream=stream, group=group, handler=handler).run()
+        worker = StreamWorker(stream=stream, group=group, handler=handler)
+
+        def stop_workers(*_args) -> None:
+            worker.running = False
+            if provisioning_worker is not None:
+                provisioning_worker.running = False
+
+        signal.signal(signal.SIGTERM, stop_workers)
+        signal.signal(signal.SIGINT, stop_workers)
+        try:
+            worker.run()
+        finally:
+            worker.executor.shutdown(wait=True)
+            if provisioning_worker is not None:
+                provisioning_worker.executor.shutdown(wait=True)
+                from app.domains.copy_trading.metaapi_connections import (
+                    shutdown_metaapi_runtime,
+                )
+
+                shutdown_metaapi_runtime()
