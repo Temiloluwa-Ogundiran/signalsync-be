@@ -39,6 +39,7 @@ def test_metaapi_copy_migration_pauses_routes_and_adds_connection_ownership() ->
         "target_connection_id",
         "connection_id",
         "legacy_account_id",
+        "is_paused",
     ):
         assert column in migration
 

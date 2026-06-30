@@ -71,6 +71,7 @@ def upgrade() -> None:
         sa.Column("metaapi_account_id", sa.String(length=100), nullable=True),
         sa.Column("provisioning_transaction_id", sa.String(length=100), nullable=False),
         sa.Column("state", connection_state, server_default="submitted", nullable=False),
+        sa.Column("is_paused", sa.Boolean(), server_default=sa.false(), nullable=False),
         sa.Column("last_error_code", sa.String(length=100), nullable=True),
         sa.Column("last_error_message", sa.Text(), nullable=True),
         sa.Column("symbol_catalog_fingerprint", sa.String(length=64), nullable=True),
