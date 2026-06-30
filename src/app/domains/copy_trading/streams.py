@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 
 class StreamName(str, Enum):
+    metaapi_provisioning = "copy:metaapi:provisioning"
     telegram_commands = "copy:telegram:commands"
     telegram_messages = "copy:telegram:messages"
     signal_actions = "copy:signal:actions"

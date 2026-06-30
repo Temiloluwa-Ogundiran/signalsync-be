@@ -159,4 +159,4 @@ def test_activity_endpoint_accepts_server_side_filters() -> None:
     ]["get"]
     parameters = {item["name"] for item in operation["parameters"]}
 
-    assert {"cursor", "level", "source_id", "account_id", "search"} <= parameters
+    assert {"cursor", "level", "source_id", "connection_id", "search"} <= parameters

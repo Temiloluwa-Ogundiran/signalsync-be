@@ -6,14 +6,7 @@ from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.domains.accounts import repository as account_repo
-from app.domains.accounts.models import (
-    ImportMethod,
-    TradingAccountConnectionState,
-    TradingPlatform,
-)
 from app.domains.copy_trading import repository as repo
-from app.domains.copy_trading.execution import is_trade_ready
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -21,6 +14,8 @@ from app.domains.copy_trading.models import (
     CopyRoute,
     CopyRouteState,
     CopyTradingUserSettings,
+    CopyTradingConnection,
+    CopyTradingConnectionState,
     TelegramSourceState,
 )
 from app.domains.copy_trading.schemas import (
@@ -28,9 +23,96 @@ from app.domains.copy_trading.schemas import (
     CopyRouteCreate,
     CopyRouteUpdate,
     CopyTradingSettingsUpdate,
+    CopyTradingConnectionCreate,
     UNSAFE_MINIMUM_FIELDS,
 )
 from app.domains.users.models import User
+from app.shared.utils.encryption import encrypt_secret
+
+
+def _owned_copy_connection(
+    db: Session, *, current_user: User, connection_id: uuid.UUID
+) -> CopyTradingConnection:
+    connection = repo.get_copy_connection_for_user(
+        db, connection_id=connection_id, user_id=current_user.id
+    )
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Copy account connection not found.",
+        )
+    return connection
+
+
+def create_copy_connection(
+    db: Session, *, current_user: User, payload: CopyTradingConnectionCreate
+) -> CopyTradingConnection:
+    connection = CopyTradingConnection(
+        user_id=current_user.id,
+        display_name=payload.display_name.strip(),
+        broker_login=payload.broker_login,
+        broker_server=payload.broker_server.strip(),
+        platform=payload.platform,
+        encrypted_trader_password=encrypt_secret(
+            payload.trader_password.get_secret_value()
+        ),
+        provisioning_transaction_id=uuid.uuid4().hex,
+        state=CopyTradingConnectionState.submitted,
+    )
+    repo.create_copy_connection(db, connection=connection)
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def list_copy_connections(
+    db: Session, *, current_user: User
+) -> list[CopyTradingConnection]:
+    return repo.list_copy_connections_for_user(db, user_id=current_user.id)
+
+
+def get_copy_connection(
+    db: Session, *, current_user: User, connection_id: uuid.UUID
+) -> CopyTradingConnection:
+    return _owned_copy_connection(
+        db, current_user=current_user, connection_id=connection_id
+    )
+
+
+def retry_copy_connection(
+    db: Session, *, current_user: User, connection_id: uuid.UUID
+) -> CopyTradingConnection:
+    connection = _owned_copy_connection(
+        db, current_user=current_user, connection_id=connection_id
+    )
+    if connection.state in {
+        CopyTradingConnectionState.deleting,
+        CopyTradingConnectionState.deleted,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Deleted copy account connections cannot be retried.",
+        )
+    connection.last_error_code = None
+    connection.last_error_message = None
+    connection.state = CopyTradingConnectionState.provisioning
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def delete_copy_connection(
+    db: Session, *, current_user: User, connection_id: uuid.UUID
+) -> CopyTradingConnection:
+    connection = _owned_copy_connection(
+        db, current_user=current_user, connection_id=connection_id
+    )
+    if connection.state != CopyTradingConnectionState.deleted:
+        repo.pause_routes_for_connection(db, connection_id=connection.id)
+        connection.state = CopyTradingConnectionState.deleting
+        db.commit()
+        db.refresh(connection)
+    return connection
 
 
 def magic_number_for_route(route_id: uuid.UUID) -> int:
@@ -46,27 +128,18 @@ def _owned_route(
     return route
 
 
-def _owned_ready_mt5_account(db: Session, *, current_user: User, account_id: uuid.UUID):
-    account = account_repo.get_account_by_id_for_user(db, account_id, current_user.id)
-    if account is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found.")
-    if not is_trade_ready(account):
-        if (
-            account.platform == TradingPlatform.mt5
-            and account.import_method == ImportMethod.auto_sync
-            and account.connection_state == TradingAccountConnectionState.ready
-            and not account.is_archived
-            and not account.encrypted_trader_password
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Trader access is required for automatic copying.",
-            )
+def _owned_ready_copy_connection(
+    db: Session, *, current_user: User, connection_id: uuid.UUID
+) -> CopyTradingConnection:
+    connection = _owned_copy_connection(
+        db, current_user=current_user, connection_id=connection_id
+    )
+    if connection.state != CopyTradingConnectionState.ready:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="The target MT5 account must be connected and ready.",
+            detail="The copy account connection must be ready.",
         )
-    return account
+    return connection
 
 
 def record_activity(
@@ -79,7 +152,7 @@ def record_activity(
     correlation_id: str,
     route_id: Optional[uuid.UUID] = None,
     source_id: Optional[uuid.UUID] = None,
-    account_id: Optional[uuid.UUID] = None,
+    connection_id: Optional[uuid.UUID] = None,
     body: Optional[str] = None,
     parsed_details: Optional[dict] = None,
     broker_details: Optional[dict] = None,
@@ -89,7 +162,7 @@ def record_activity(
         user_id=user_id,
         route_id=route_id,
         source_id=source_id,
-        account_id=account_id,
+        connection_id=connection_id,
         correlation_id=correlation_id,
         action=action,
         level=level,
@@ -135,18 +208,18 @@ def update_account_policy(
     db: Session,
     *,
     current_user: User,
-    account_id: uuid.UUID,
+    connection_id: uuid.UUID,
     payload: CopyAccountPolicyUpdate,
 ) -> CopyAccountPolicy:
-    _owned_ready_mt5_account(db, current_user=current_user, account_id=account_id)
+    _owned_ready_copy_connection(db, current_user=current_user, connection_id=connection_id)
     policy = repo.get_or_create_account_policy(
-        db, account_id=account_id, user_id=current_user.id
+        db, connection_id=connection_id, user_id=current_user.id
     )
     changes = payload.model_dump(exclude_unset=True)
     proposed_cap = changes.get("max_lot")
     if proposed_cap is not None:
-        largest_route_lot = repo.max_fixed_lot_for_account(
-            db, user_id=current_user.id, account_id=account_id
+        largest_route_lot = repo.max_fixed_lot_for_connection(
+            db, user_id=current_user.id, connection_id=connection_id
         )
         if largest_route_lot is not None and Decimal(proposed_cap) < Decimal(largest_route_lot):
             raise HTTPException(
@@ -161,7 +234,7 @@ def update_account_policy(
     record_activity(
         db,
         user_id=current_user.id,
-        account_id=account_id,
+        connection_id=connection_id,
         correlation_id=str(uuid.uuid4()),
         action="account_policy.updated",
         title="Copy trading account settings updated",
@@ -188,14 +261,14 @@ def create_route(
     )
     if source is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Telegram source not found.")
-    account = _owned_ready_mt5_account(
-        db, current_user=current_user, account_id=payload.target_account_id
+    connection = _owned_ready_copy_connection(
+        db, current_user=current_user, connection_id=payload.target_connection_id
     )
-    existing = repo.get_route_by_source_and_account(
+    existing = repo.get_route_by_source_and_connection(
         db,
         user_id=current_user.id,
         source_id=source.id,
-        account_id=account.id,
+        connection_id=connection.id,
     )
     if existing is not None:
         raise HTTPException(
@@ -203,9 +276,9 @@ def create_route(
             detail="A copy route already exists for this source and account.",
         )
     policy = repo.get_account_policy(
-        db, account_id=account.id, user_id=current_user.id
+        db, connection_id=connection.id, user_id=current_user.id
     ) or repo.get_or_create_account_policy(
-        db, account_id=account.id, user_id=current_user.id
+        db, connection_id=connection.id, user_id=current_user.id
     )
     if payload.fixed_lot > policy.max_lot:
         raise HTTPException(
@@ -233,7 +306,7 @@ def create_route(
         user_id=current_user.id,
         route_id=route.id,
         source_id=route.source_id,
-        account_id=route.target_account_id,
+        connection_id=route.target_connection_id,
         correlation_id=str(uuid.uuid4()),
         action="route.created",
         title="Copy route created",
@@ -256,7 +329,7 @@ def update_route(
     unsafe_confirmed = changes.pop("unsafe_minimum_confirmed", None)
     merged = {
         "source_id": route.source_id,
-        "target_account_id": route.target_account_id,
+        "target_connection_id": route.target_connection_id,
         "fixed_lot": route.fixed_lot,
         "take_profit_mode": route.take_profit_mode,
         "lot_distribution": route.lot_distribution,
@@ -279,7 +352,7 @@ def update_route(
         merged["unsafe_minimum_confirmed"] = unsafe_confirmed
     validated = CopyRouteCreate.model_validate(merged)
     policy = repo.get_or_create_account_policy(
-        db, account_id=route.target_account_id, user_id=current_user.id
+        db, connection_id=route.target_connection_id, user_id=current_user.id
     )
     if validated.fixed_lot > policy.max_lot:
         raise HTTPException(
@@ -301,7 +374,7 @@ def update_route(
         user_id=current_user.id,
         route_id=route.id,
         source_id=route.source_id,
-        account_id=route.target_account_id,
+        connection_id=route.target_connection_id,
         correlation_id=str(uuid.uuid4()),
         action="route.updated",
         title="Copy route settings updated",
@@ -324,7 +397,7 @@ def pause_route(
             user_id=current_user.id,
             route_id=route.id,
             source_id=route.source_id,
-            account_id=route.target_account_id,
+            connection_id=route.target_connection_id,
             correlation_id=str(uuid.uuid4()),
             action="route.paused",
             title="Copying paused",
@@ -341,7 +414,7 @@ def resume_route(
     route = _owned_route(db, current_user=current_user, route_id=route_id)
     user_settings = repo.get_or_create_user_settings(db, user_id=current_user.id)
     policy = repo.get_account_policy(
-        db, account_id=route.target_account_id, user_id=current_user.id
+        db, connection_id=route.target_connection_id, user_id=current_user.id
     )
     if user_settings.is_paused or (policy is not None and policy.is_paused):
         raise HTTPException(
@@ -356,7 +429,7 @@ def resume_route(
             user_id=current_user.id,
             route_id=route.id,
             source_id=route.source_id,
-            account_id=route.target_account_id,
+            connection_id=route.target_connection_id,
             correlation_id=str(uuid.uuid4()),
             action="route.resumed",
             title="Copying resumed",
@@ -370,7 +443,9 @@ def resume_route(
 def activate_route(db: Session, *, current_user: User, route_id: uuid.UUID) -> CopyRoute:
     route = _owned_route(db, current_user=current_user, route_id=route_id)
     source = repo.get_source_for_user(db, source_id=route.source_id, user_id=current_user.id)
-    _owned_ready_mt5_account(db, current_user=current_user, account_id=route.target_account_id)
+    if route.target_connection_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Link a ready copy account before activating this route.")
+    _owned_ready_copy_connection(db, current_user=current_user, connection_id=route.target_connection_id)
     if source is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -378,7 +453,7 @@ def activate_route(db: Session, *, current_user: User, route_id: uuid.UUID) -> C
         )
     route.state = CopyRouteState.active
     source.state = TelegramSourceState.active
-    record_activity(db, user_id=current_user.id, route_id=route.id, source_id=route.source_id, account_id=route.target_account_id, correlation_id=str(uuid.uuid4()), action="route.activated", title="Automatic copying started", level=CopyActivityLevel.success)
+    record_activity(db, user_id=current_user.id, route_id=route.id, source_id=route.source_id, connection_id=route.target_connection_id, correlation_id=str(uuid.uuid4()), action="route.activated", title="Automatic copying started", level=CopyActivityLevel.success)
     db.commit()
     db.refresh(route)
     return route
@@ -398,7 +473,7 @@ def delete_route(
         user_id=current_user.id,
         route_id=route.id,
         source_id=route.source_id,
-        account_id=route.target_account_id,
+        connection_id=route.target_connection_id,
         correlation_id=str(uuid.uuid4()),
         action="route.deleted",
         title="Copy route deleted",
@@ -416,9 +491,9 @@ def list_activity(
     before: Optional[datetime],
     level: CopyActivityLevel | None = None,
     source_id: uuid.UUID | None = None,
-    account_id: uuid.UUID | None = None,
+    connection_id: uuid.UUID | None = None,
     search: str | None = None,
 ) -> list[CopyActivityEvent]:
     return repo.list_activity_for_user(
-        db, user_id=current_user.id, limit=limit, before=before, level=level, source_id=source_id, account_id=account_id, search=search
+        db, user_id=current_user.id, limit=limit, before=before, level=level, source_id=source_id, connection_id=connection_id, search=search
     )

@@ -4,6 +4,7 @@ import logging
 import signal
 import socket
 import time
+import threading
 import uuid
 import base64
 import io
@@ -646,6 +647,19 @@ def run_process(role: str) -> None:
         asyncio.run(TelegramSessionRuntime().run())
     else:
         from app.domains.copy_trading.workers import execution_handler, signal_handler
+        if role == "copy-execution":
+            from app.domains.copy_trading.metaapi_jobs import provisioning_handler
+
+            provisioning_worker = StreamWorker(
+                stream=StreamName.metaapi_provisioning,
+                group="copy-provisioning",
+                handler=provisioning_handler,
+            )
+            threading.Thread(
+                target=provisioning_worker.run,
+                name="copy-provisioning",
+                daemon=True,
+            ).start()
         stream, group, handler = {
             "copy-signal": (StreamName.telegram_messages, "copy-signal", signal_handler),
             "copy-execution": (StreamName.execution_intents, "copy-execution", execution_handler),

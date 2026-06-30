@@ -25,6 +25,8 @@ from app.domains.copy_trading.schemas import (
     CopyRouteUpdate,
     CopyTradingSettingsResponse,
     CopyTradingSettingsUpdate,
+    CopyTradingConnectionCreate,
+    CopyTradingConnectionResponse,
     EmergencyActionRequest,
     TelegramAuthResponse,
     TelegramCodeSubmit,
@@ -55,6 +57,100 @@ def _redis_client():
 
 def _publish_command(event_type: str, correlation_id: str, payload: dict, key: str) -> None:
     RedisStreamBus(_redis_client()).publish(CopyEvent.new(stream=StreamName.telegram_commands, event_type=event_type, correlation_id=correlation_id, payload=payload, idempotency_key=key))
+
+
+def _publish_metaapi_command(connection, *, event_type: str) -> None:
+    RedisStreamBus(_redis_client()).publish(
+        CopyEvent.new(
+            stream=StreamName.metaapi_provisioning,
+            event_type=event_type,
+            correlation_id=str(connection.id),
+            payload={"connection_id": str(connection.id)},
+            idempotency_key=(
+                f"{event_type}:{connection.id}:{connection.provisioning_transaction_id}"
+            ),
+        )
+    )
+
+
+@router.get(
+    "/connections", response_model=list[CopyTradingConnectionResponse]
+)
+def list_copy_connections(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[CopyTradingConnectionResponse]:
+    return [
+        CopyTradingConnectionResponse.model_validate(item)
+        for item in service.list_copy_connections(db, current_user=current_user)
+    ]
+
+
+@router.post(
+    "/connections",
+    response_model=CopyTradingConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_copy_connection(
+    payload: CopyTradingConnectionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopyTradingConnectionResponse:
+    connection = service.create_copy_connection(
+        db, current_user=current_user, payload=payload
+    )
+    _publish_metaapi_command(connection, event_type="connection.provision")
+    return CopyTradingConnectionResponse.model_validate(connection)
+
+
+@router.get(
+    "/connections/{connection_id}", response_model=CopyTradingConnectionResponse
+)
+def get_copy_connection(
+    connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopyTradingConnectionResponse:
+    return CopyTradingConnectionResponse.model_validate(
+        service.get_copy_connection(
+            db, current_user=current_user, connection_id=connection_id
+        )
+    )
+
+
+@router.post(
+    "/connections/{connection_id}/retry",
+    response_model=CopyTradingConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_copy_connection(
+    connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopyTradingConnectionResponse:
+    connection = service.retry_copy_connection(
+        db, current_user=current_user, connection_id=connection_id
+    )
+    _publish_metaapi_command(connection, event_type="connection.provision")
+    return CopyTradingConnectionResponse.model_validate(connection)
+
+
+@router.delete(
+    "/connections/{connection_id}",
+    response_model=CopyTradingConnectionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def delete_copy_connection(
+    connection_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopyTradingConnectionResponse:
+    connection = service.delete_copy_connection(
+        db, current_user=current_user, connection_id=connection_id
+    )
+    if connection.state.value != "deleted":
+        _publish_metaapi_command(connection, event_type="connection.delete")
+    return CopyTradingConnectionResponse.model_validate(connection)
 
 
 def _require_telegram_configuration() -> None:
@@ -155,10 +251,10 @@ def list_account_policies(
 
 
 @router.patch(
-    "/account-policies/{account_id}", response_model=CopyAccountPolicyResponse
+    "/account-policies/{connection_id}", response_model=CopyAccountPolicyResponse
 )
 def update_account_policy(
-    account_id: uuid.UUID,
+    connection_id: uuid.UUID,
     payload: CopyAccountPolicyUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -166,7 +262,7 @@ def update_account_policy(
     policy = service.update_account_policy(
         db,
         current_user=current_user,
-        account_id=account_id,
+        connection_id=connection_id,
         payload=payload,
     )
     return CopyAccountPolicyResponse.model_validate(policy)
@@ -252,7 +348,7 @@ def list_activity(
     cursor: Optional[str] = None,
     level: Optional[CopyActivityLevel] = None,
     source_id: Optional[uuid.UUID] = None,
-    account_id: Optional[uuid.UUID] = None,
+    connection_id: Optional[uuid.UUID] = None,
     search: Optional[str] = Query(default=None, max_length=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -268,7 +364,7 @@ def list_activity(
         before=before,
         level=level,
         source_id=source_id,
-        account_id=account_id,
+        connection_id=connection_id,
         search=search,
     )
     has_more = len(events) > limit

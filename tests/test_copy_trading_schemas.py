@@ -15,7 +15,7 @@ def test_split_total_requires_all_take_profits() -> None:
     with pytest.raises(ValidationError, match="Split lot is available only"):
         CopyRouteCreate(
             source_id=SOURCE_ID,
-            target_account_id=ACCOUNT_ID,
+            target_connection_id=ACCOUNT_ID,
             fixed_lot=Decimal("0.10"),
             take_profit_mode=TakeProfitMode.lowest,
             lot_distribution=LotDistribution.split_total,
@@ -26,7 +26,7 @@ def test_unsafe_minimum_requires_confirmation() -> None:
     with pytest.raises(ValidationError, match="confirmation"):
         CopyRouteCreate(
             source_id=SOURCE_ID,
-            target_account_id=ACCOUNT_ID,
+            target_connection_id=ACCOUNT_ID,
             fixed_lot=Decimal("0.10"),
             minimum_fields=MinimumFields.direction_symbol,
             unsafe_minimum_confirmed=False,

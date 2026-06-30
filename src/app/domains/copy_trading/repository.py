@@ -6,17 +6,57 @@ from typing import Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.domains.accounts.models import TradingAccount
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
     CopyActivityLevel,
     CopyRoute,
+    CopyRouteState,
     CopyTradingUserSettings,
+    CopyTradingConnection,
     TelegramSource,
     TelegramConnection,
     ChannelProfile,
 )
+
+
+def create_copy_connection(
+    db: Session, *, connection: CopyTradingConnection
+) -> CopyTradingConnection:
+    db.add(connection)
+    db.flush()
+    return connection
+
+
+def get_copy_connection_for_user(
+    db: Session, *, connection_id: uuid.UUID, user_id: uuid.UUID
+) -> Optional[CopyTradingConnection]:
+    stmt = select(CopyTradingConnection).where(
+        CopyTradingConnection.id == connection_id,
+        CopyTradingConnection.user_id == user_id,
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def list_copy_connections_for_user(
+    db: Session, *, user_id: uuid.UUID
+) -> list[CopyTradingConnection]:
+    stmt = (
+        select(CopyTradingConnection)
+        .where(CopyTradingConnection.user_id == user_id)
+        .order_by(CopyTradingConnection.created_at.desc())
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def pause_routes_for_connection(db: Session, *, connection_id: uuid.UUID) -> None:
+    routes = db.execute(
+        select(CopyRoute).where(CopyRoute.target_connection_id == connection_id)
+    ).scalars()
+    for route in routes:
+        if route.state != CopyRouteState.paused:
+            route.paused_from_state = route.state
+            route.state = CopyRouteState.paused
 
 
 def get_or_create_user_settings(
@@ -41,21 +81,21 @@ def get_source_for_user(
 
 
 def get_account_policy(
-    db: Session, *, account_id: uuid.UUID, user_id: uuid.UUID
+    db: Session, *, connection_id: uuid.UUID, user_id: uuid.UUID
 ) -> Optional[CopyAccountPolicy]:
     stmt = select(CopyAccountPolicy).where(
-        CopyAccountPolicy.account_id == account_id,
+        CopyAccountPolicy.connection_id == connection_id,
         CopyAccountPolicy.user_id == user_id,
     )
     return db.execute(stmt).scalar_one_or_none()
 
 
 def get_or_create_account_policy(
-    db: Session, *, account_id: uuid.UUID, user_id: uuid.UUID
+    db: Session, *, connection_id: uuid.UUID, user_id: uuid.UUID
 ) -> CopyAccountPolicy:
-    policy = get_account_policy(db, account_id=account_id, user_id=user_id)
+    policy = get_account_policy(db, connection_id=connection_id, user_id=user_id)
     if policy is None:
-        policy = CopyAccountPolicy(account_id=account_id, user_id=user_id)
+        policy = CopyAccountPolicy(connection_id=connection_id, user_id=user_id)
         db.add(policy)
         db.flush()
     return policy
@@ -66,10 +106,10 @@ def list_account_policies(
 ) -> list[CopyAccountPolicy]:
     stmt = (
         select(CopyAccountPolicy)
-        .join(TradingAccount, TradingAccount.id == CopyAccountPolicy.account_id)
+        .join(CopyTradingConnection, CopyTradingConnection.id == CopyAccountPolicy.connection_id)
         .where(
             CopyAccountPolicy.user_id == user_id,
-            TradingAccount.user_id == user_id,
+            CopyTradingConnection.user_id == user_id,
         )
         .order_by(CopyAccountPolicy.created_at.desc())
     )
@@ -92,17 +132,17 @@ def get_route_for_user(
     return db.execute(stmt).scalar_one_or_none()
 
 
-def get_route_by_source_and_account(
+def get_route_by_source_and_connection(
     db: Session,
     *,
     user_id: uuid.UUID,
     source_id: uuid.UUID,
-    account_id: uuid.UUID,
+    connection_id: uuid.UUID,
 ) -> Optional[CopyRoute]:
     stmt = select(CopyRoute).where(
         CopyRoute.user_id == user_id,
         CopyRoute.source_id == source_id,
-        CopyRoute.target_account_id == account_id,
+        CopyRoute.target_connection_id == connection_id,
     )
     return db.execute(stmt).scalar_one_or_none()
 
@@ -116,12 +156,12 @@ def list_routes_for_user(db: Session, *, user_id: uuid.UUID) -> list[CopyRoute]:
     return list(db.execute(stmt).scalars().all())
 
 
-def max_fixed_lot_for_account(
-    db: Session, *, user_id: uuid.UUID, account_id: uuid.UUID
+def max_fixed_lot_for_connection(
+    db: Session, *, user_id: uuid.UUID, connection_id: uuid.UUID
 ) -> Optional[Decimal]:
     stmt = select(func.max(CopyRoute.fixed_lot)).where(
         CopyRoute.user_id == user_id,
-        CopyRoute.target_account_id == account_id,
+        CopyRoute.target_connection_id == connection_id,
     )
     return db.execute(stmt).scalar_one_or_none()
 
@@ -140,7 +180,7 @@ def list_activity_for_user(
     before: Optional[datetime],
     level: CopyActivityLevel | None = None,
     source_id: uuid.UUID | None = None,
-    account_id: uuid.UUID | None = None,
+    connection_id: uuid.UUID | None = None,
     search: str | None = None,
 ) -> list[CopyActivityEvent]:
     stmt = select(CopyActivityEvent).where(CopyActivityEvent.user_id == user_id)
@@ -150,8 +190,8 @@ def list_activity_for_user(
         stmt = stmt.where(CopyActivityEvent.level == level)
     if source_id is not None:
         stmt = stmt.where(CopyActivityEvent.source_id == source_id)
-    if account_id is not None:
-        stmt = stmt.where(CopyActivityEvent.account_id == account_id)
+    if connection_id is not None:
+        stmt = stmt.where(CopyActivityEvent.connection_id == connection_id)
     if search:
         term = f"%{search.strip()}%"
         stmt = stmt.where(or_(CopyActivityEvent.title.ilike(term), CopyActivityEvent.body.ilike(term)))

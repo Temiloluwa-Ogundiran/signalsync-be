@@ -3,11 +3,12 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.domains.copy_trading.models import (
     CopyActivityLevel,
     CopyRouteState,
+    CopyTradingConnectionState,
     LotDistribution,
     MinimumFields,
     TakeProfitMode,
@@ -26,9 +27,36 @@ UNSAFE_MINIMUM_FIELDS = {
 }
 
 
+class CopyTradingConnectionCreate(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+    broker_login: str = Field(pattern=r"^\d+$", max_length=64)
+    broker_server: str = Field(min_length=1, max_length=160)
+    trader_password: SecretStr = Field(min_length=1, max_length=256)
+    platform: str = Field(default="mt5", pattern=r"^mt5$")
+
+
+class CopyTradingConnectionResponse(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    display_name: str
+    broker_login: str
+    broker_server: str
+    platform: str
+    metaapi_account_id: Optional[str]
+    state: CopyTradingConnectionState
+    last_error_code: Optional[str]
+    last_error_message: Optional[str]
+    symbol_catalog_refreshed_at: Optional[datetime]
+    last_health_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class CopyRouteCreate(BaseModel):
     source_id: uuid.UUID
-    target_account_id: uuid.UUID
+    target_connection_id: uuid.UUID
     fixed_lot: Decimal = Field(gt=0, max_digits=12, decimal_places=4)
     take_profit_mode: TakeProfitMode = TakeProfitMode.all
     lot_distribution: LotDistribution = LotDistribution.fixed_each
@@ -112,7 +140,7 @@ class CopyAccountPolicyUpdate(BaseModel):
 
 class CopyAccountPolicyResponse(BaseModel):
     id: uuid.UUID
-    account_id: uuid.UUID
+    connection_id: uuid.UUID
     max_lot: Decimal
     is_paused: bool
     created_at: datetime
@@ -124,7 +152,7 @@ class CopyAccountPolicyResponse(BaseModel):
 class CopyRouteResponse(BaseModel):
     id: uuid.UUID
     source_id: uuid.UUID
-    target_account_id: uuid.UUID
+    target_connection_id: Optional[uuid.UUID]
     magic_number: int
     state: CopyRouteState
     fixed_lot: Decimal
@@ -153,7 +181,7 @@ class CopyActivityResponse(BaseModel):
     id: uuid.UUID
     route_id: Optional[uuid.UUID]
     source_id: Optional[uuid.UUID]
-    account_id: Optional[uuid.UUID]
+    connection_id: Optional[uuid.UUID]
     correlation_id: str
     action: str
     level: CopyActivityLevel
