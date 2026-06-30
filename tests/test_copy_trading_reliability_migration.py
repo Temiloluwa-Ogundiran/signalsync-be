@@ -9,11 +9,16 @@ MIGRATION = "a0b1c2d3e4f5_harden_copy_trading_runtime.py"
 GENERATION_MIGRATION = "d0e1f2a3b4c5_add_copy_execution_generations.py"
 
 
-def test_reliability_revision_is_the_single_head() -> None:
+def test_reliability_revision_remains_in_the_single_head_lineage() -> None:
     root = Path(__file__).resolve().parents[1]
     script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
 
-    assert script.get_heads() == [REVISION]
+    assert len(script.get_heads()) == 1
+    lineage = {
+        revision.revision
+        for revision in script.walk_revisions("base", script.get_current_head())
+    }
+    assert REVISION in lineage
     assert script.get_revision(REVISION).down_revision == "c9d8e7f6a5b4"
 
 

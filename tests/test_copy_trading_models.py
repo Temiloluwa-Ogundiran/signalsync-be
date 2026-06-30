@@ -5,6 +5,7 @@ from app.domains.copy_trading.models import (
     CopyActivityEvent,
     CopyRoute,
     CopyRouteState,
+    CopyTradingConnection,
     CopyTradingUserSettings,
     CopyDeadLetter,
     CopyWorkerHealth,
@@ -21,6 +22,7 @@ from app.domains.copy_trading.models import (
 def test_copy_trading_tables_and_route_defaults_are_declared() -> None:
     assert {
         CopyTradingUserSettings.__tablename__,
+        CopyTradingConnection.__tablename__,
         TelegramConnection.__tablename__,
         TelegramSource.__tablename__,
         CopyAccountPolicy.__tablename__,
@@ -28,6 +30,7 @@ def test_copy_trading_tables_and_route_defaults_are_declared() -> None:
         CopyActivityEvent.__tablename__,
     } == {
         "copy_trading_user_settings",
+        "copy_trading_connections",
         "telegram_connections",
         "telegram_sources",
         "copy_account_policies",
@@ -36,7 +39,7 @@ def test_copy_trading_tables_and_route_defaults_are_declared() -> None:
     }
 
     columns = {column.name for column in inspect(CopyRoute).columns}
-    assert {"user_id", "source_id", "target_account_id", "magic_number"} <= columns
+    assert {"user_id", "source_id", "target_connection_id", "magic_number"} <= columns
     assert {"fixed_lot", "take_profit_mode", "lot_distribution"} <= columns
     assert CopyRouteState.draft.value == "draft"
     assert CopyRouteState.paused.value == "paused"

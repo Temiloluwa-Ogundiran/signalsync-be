@@ -64,6 +64,23 @@ class CopyRouteState(str, enum.Enum):
     needs_attention = "needs_attention"
 
 
+class CopyTradingConnectionState(str, enum.Enum):
+    submitted = "submitted"
+    provisioning = "provisioning"
+    deploying = "deploying"
+    connecting = "connecting"
+    synchronizing = "synchronizing"
+    ready = "ready"
+    invalid_credentials = "invalid_credentials"
+    server_not_found = "server_not_found"
+    provisioning_failed = "provisioning_failed"
+    broker_disconnected = "broker_disconnected"
+    synchronization_failed = "synchronization_failed"
+    trading_disabled = "trading_disabled"
+    deleting = "deleting"
+    deleted = "deleted"
+
+
 class TakeProfitMode(str, enum.Enum):
     all = "all"
     lowest = "lowest"
@@ -166,6 +183,47 @@ class CopyTradingUserSettings(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
+
+
+class CopyTradingConnection(Base):
+    __tablename__ = "copy_trading_connections"
+    __table_args__ = (
+        UniqueConstraint("metaapi_account_id"),
+        UniqueConstraint("provisioning_transaction_id"),
+        UniqueConstraint("user_id", "broker_login", "broker_server"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    broker_login: Mapped[str] = mapped_column(String(64), nullable=False)
+    broker_server: Mapped[str] = mapped_column(String(160), nullable=False)
+    platform: Mapped[str] = mapped_column(String(8), nullable=False, default="mt5")
+    encrypted_trader_password: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metaapi_account_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    provisioning_transaction_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    state: Mapped[CopyTradingConnectionState] = mapped_column(
+        Enum(
+            CopyTradingConnectionState,
+            values_callable=enum_values,
+            name="copytradingconnectionstateenum",
+        ),
+        nullable=False,
+        default=CopyTradingConnectionState.submitted,
+    )
+    last_error_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    last_error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    symbol_catalog_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    symbol_catalog_refreshed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_health_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
     is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -244,7 +302,7 @@ class TelegramSource(Base):
 class CopyAccountPolicy(Base):
     __tablename__ = "copy_account_policies"
     __table_args__ = (
-        UniqueConstraint("user_id", "account_id"),
+        UniqueConstraint("user_id", "connection_id"),
         CheckConstraint("max_lot > 0", name="ck_copy_account_policy_max_lot_positive"),
     )
 
@@ -252,11 +310,14 @@ class CopyAccountPolicy(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    account_id: Mapped[uuid.UUID] = mapped_column(
+    connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("trading_accounts.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("copy_trading_connections.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
+    )
+    legacy_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("trading_accounts.id", ondelete="CASCADE"), nullable=True
     )
     max_lot: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, default=Decimal("100.0000")
@@ -271,7 +332,7 @@ class CopyAccountPolicy(Base):
 class CopyRoute(Base):
     __tablename__ = "copy_routes"
     __table_args__ = (
-        UniqueConstraint("user_id", "source_id", "target_account_id"),
+        UniqueConstraint("user_id", "source_id", "target_connection_id"),
         UniqueConstraint("magic_number"),
         CheckConstraint("fixed_lot > 0", name="ck_copy_route_fixed_lot_positive"),
         CheckConstraint(
@@ -288,11 +349,14 @@ class CopyRoute(Base):
     source_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("telegram_sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    target_account_id: Mapped[uuid.UUID] = mapped_column(
+    target_connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("trading_accounts.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("copy_trading_connections.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
+    )
+    legacy_target_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("trading_accounts.id", ondelete="SET NULL"), nullable=True
     )
     magic_number: Mapped[int] = mapped_column(BigInteger, nullable=False)
     state: Mapped[CopyRouteState] = mapped_column(
@@ -357,7 +421,12 @@ class CopyActivityEvent(Base):
     source_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("telegram_sources.id", ondelete="SET NULL"), nullable=True
     )
-    account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("copy_trading_connections.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    legacy_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("trading_accounts.id", ondelete="SET NULL"), nullable=True
     )
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -521,13 +590,14 @@ class TradeIntent(Base):
     __table_args__ = (
         UniqueConstraint("idempotency_key"),
         UniqueConstraint("client_order_id", name="uq_trade_intent_client_order_id"),
-        Index("ix_trade_intent_account_state", "account_id", "state"),
+        Index("ix_trade_intent_connection_state", "connection_id", "state"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     route_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_routes.id", ondelete="CASCADE"), nullable=False, index=True)
-    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trading_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_trading_connections.id", ondelete="SET NULL"), nullable=True, index=True)
+    legacy_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("trading_accounts.id", ondelete="SET NULL"), nullable=True, index=True)
     parsed_action_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("parsed_actions.id", ondelete="CASCADE"), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     client_order_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -550,6 +620,7 @@ class CopiedTrade(Base):
     route_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_routes.id", ondelete="CASCADE"), nullable=False, index=True)
     thread_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("signal_threads.id", ondelete="CASCADE"), nullable=False, index=True)
     intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trade_intents.id", ondelete="CASCADE"), nullable=False, unique=True)
+    connection_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_trading_connections.id", ondelete="SET NULL"), nullable=True, index=True)
     magic_number: Mapped[int] = mapped_column(BigInteger, nullable=False)
     route_comment: Mapped[str] = mapped_column(String(31), nullable=False)
     signal_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -570,11 +641,11 @@ class CopiedTrade(Base):
 
 class SymbolMapping(Base):
     __tablename__ = "symbol_mappings"
-    __table_args__ = (UniqueConstraint("route_id", "account_id", "normalized_signal_symbol"),)
+    __table_args__ = (UniqueConstraint("route_id", "connection_id", "normalized_signal_symbol"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     route_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_routes.id", ondelete="CASCADE"), nullable=False, index=True)
-    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trading_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    connection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_trading_connections.id", ondelete="CASCADE"), nullable=False, index=True)
     normalized_signal_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
     broker_symbol: Mapped[str] = mapped_column(String(64), nullable=False)
     selection_evidence: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

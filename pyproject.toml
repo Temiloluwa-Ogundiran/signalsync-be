@@ -42,6 +42,7 @@ dependencies = [
     "telethon>=1.40.0",
     "qrcode[pil]>=8.2",
     "anyio>=4.0.0",
+    "metaapi-cloud-sdk==29.1.1",
 ]
 
 [dependency-groups]
