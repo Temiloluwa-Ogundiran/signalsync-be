@@ -7,6 +7,7 @@ from alembic.script import ScriptDirectory
 
 
 MIGRATION_NAME = "e1f2a3b4c5d6_add_metaapi_copy_connections.py"
+PAUSE_FLAG_MIGRATION_NAME = "f2a3b4c5d6e7_add_copy_connection_pause_flag.py"
 
 
 def _load_migration_module():
@@ -22,10 +23,10 @@ def test_metaapi_copy_revision_is_the_only_head() -> None:
     root = Path(__file__).resolve().parents[1]
     script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
 
-    assert script.get_heads() == ["e1f2a3b4c5d6"]
-    revision = script.get_revision("e1f2a3b4c5d6")
+    assert script.get_heads() == ["f2a3b4c5d6e7"]
+    revision = script.get_revision("f2a3b4c5d6e7")
     assert revision is not None
-    assert revision.down_revision == "d0e1f2a3b4c5"
+    assert revision.down_revision == "e1f2a3b4c5d6"
 
 
 def test_metaapi_copy_migration_pauses_routes_and_adds_connection_ownership() -> None:
@@ -68,3 +69,14 @@ def test_metaapi_copy_migration_skips_legacy_index_drop_when_index_is_missing(mo
     migration._drop_index_if_exists("trade_intents", "ix_trade_intent_account_state")
 
     assert dropped_indexes == [("ix_trade_intent_account_state", "trade_intents")]
+
+
+def test_metaapi_copy_pause_flag_migration_adds_missing_live_column() -> None:
+    root = Path(__file__).resolve().parents[1]
+    migration = (root / "alembic" / "versions" / PAUSE_FLAG_MIGRATION_NAME).read_text(encoding="utf-8")
+
+    assert "copy_trading_connections" in migration
+    assert "is_paused" in migration
+    assert "_has_column" in migration
+    assert "op.add_column" in migration
+    assert "server_default=sa.false()" in migration
