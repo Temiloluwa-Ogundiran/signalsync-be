@@ -2,9 +2,18 @@ from types import SimpleNamespace
 
 
 class FakeMetaApiAccount:
-    def __init__(self, account_id: str, *, state: str = "UNDEPLOYED") -> None:
+    def __init__(
+        self,
+        account_id: str,
+        *,
+        state: str = "UNDEPLOYED",
+        deploy_error: Exception | None = None,
+        wait_connected_error: Exception | None = None,
+    ) -> None:
         self.id = account_id
         self.state = state
+        self.deploy_error = deploy_error
+        self.wait_connected_error = wait_connected_error
         self.deploy_calls = 0
         self.wait_deployed_calls = 0
         self.wait_connected_calls = 0
@@ -13,6 +22,8 @@ class FakeMetaApiAccount:
 
     async def deploy(self) -> None:
         self.deploy_calls += 1
+        if self.deploy_error:
+            raise self.deploy_error
         self.state = "DEPLOYING"
 
     async def wait_deployed(self, **_kwargs) -> None:
@@ -21,6 +32,8 @@ class FakeMetaApiAccount:
 
     async def wait_connected(self, **_kwargs) -> None:
         self.wait_connected_calls += 1
+        if self.wait_connected_error:
+            raise self.wait_connected_error
 
     async def undeploy(self) -> None:
         self.undeploy_calls += 1

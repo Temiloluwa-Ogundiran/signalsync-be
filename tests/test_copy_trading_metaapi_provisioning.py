@@ -6,6 +6,7 @@ import pytest
 from app.domains.copy_trading.metaapi_provisioning import (
     MetaApiProvisioningError,
     MetaApiProvisioningService,
+    classify_metaapi_sdk_error,
     classify_provisioning_error,
 )
 from app.domains.copy_trading.metaapi_jobs import validate_terminal_account
@@ -110,6 +111,74 @@ def test_provisioning_errors_are_safe_and_actionable(details, state, code) -> No
     assert error.state == state
     assert error.code == code
     assert "raw provider details" not in error.user_message
+
+
+def test_metaapi_billing_error_is_actionable() -> None:
+    error = classify_metaapi_sdk_error(
+        RuntimeError("To allow trading account deployment please top up your account.")
+    )
+
+    assert error.state == CopyTradingConnectionState.provisioning_failed
+    assert error.code == "metaapi_billing_required"
+    assert "funding" in error.user_message
+
+
+def test_metaapi_connection_timeout_marks_broker_disconnected() -> None:
+    error = classify_metaapi_sdk_error(
+        TimeoutError("Timed out waiting for account account-id to connect to the broker")
+    )
+
+    assert error.state == CopyTradingConnectionState.broker_disconnected
+    assert error.code == "broker_connection_timeout"
+    assert error.retryable is True
+
+
+def test_sdk_deploy_error_is_persisted_on_connection() -> None:
+    target = connection()
+    control = FakeProvisioningClient([{"id": "meta-account", "state": "UNDEPLOYED"}])
+    account = FakeMetaApiAccount(
+        "meta-account",
+        deploy_error=RuntimeError(
+            "To allow trading account deployment please top up your account."
+        ),
+    )
+    service = MetaApiProvisioningService(
+        api=FakeMetaApi(account),
+        provisioning_client=control,
+        region="london",
+        account_type="cloud-g2",
+        timeout_seconds=120,
+    )
+
+    with pytest.raises(MetaApiProvisioningError):
+        asyncio.run(service.provision(target, password="password", persist=lambda: None))
+
+    assert target.state == CopyTradingConnectionState.provisioning_failed
+    assert target.last_error_code == "metaapi_billing_required"
+
+
+def test_sdk_connect_timeout_is_persisted_on_connection() -> None:
+    target = connection()
+    control = FakeProvisioningClient([{"id": "meta-account", "state": "UNDEPLOYED"}])
+    account = FakeMetaApiAccount(
+        "meta-account",
+        wait_connected_error=TimeoutError(
+            "Timed out waiting for account meta-account to connect to the broker"
+        ),
+    )
+    service = MetaApiProvisioningService(
+        api=FakeMetaApi(account),
+        provisioning_client=control,
+        region="london",
+        account_type="cloud-g2",
+        timeout_seconds=120,
+    )
+
+    with pytest.raises(MetaApiProvisioningError):
+        asyncio.run(service.provision(target, password="password", persist=lambda: None))
+
+    assert target.state == CopyTradingConnectionState.broker_disconnected
+    assert target.last_error_code == "broker_connection_timeout"
 
 
 def test_cleanup_is_idempotent_and_removes_credentials() -> None:

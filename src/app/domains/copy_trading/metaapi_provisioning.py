@@ -62,6 +62,24 @@ def classify_provisioning_error(
     )
 
 
+def classify_metaapi_sdk_error(exc: Exception) -> MetaApiProvisioningError:
+    evidence = f"{type(exc).__name__} {exc}".upper()
+    if "TOP UP" in evidence or "ALLOW TRADING ACCOUNT DEPLOYMENT" in evidence:
+        return MetaApiProvisioningError(
+            "metaapi_billing_required",
+            CopyTradingConnectionState.provisioning_failed,
+            "MetaApi rejected account deployment because the MetaApi account needs funding.",
+        )
+    if "TIMED OUT WAITING" in evidence and "CONNECT" in evidence:
+        return MetaApiProvisioningError(
+            "broker_connection_timeout",
+            CopyTradingConnectionState.broker_disconnected,
+            "MetaApi deployed the account but could not connect to the broker in time.",
+            retryable=True,
+        )
+    return classify_provisioning_error(None)
+
+
 async def _persist(callback: PersistCallback) -> None:
     result = callback()
     if inspect.isawaitable(result):
@@ -143,6 +161,13 @@ class MetaApiProvisioningService:
             connection.last_error_message = exc.user_message
             await _persist(persist)
             raise
+        except Exception as exc:
+            error = classify_metaapi_sdk_error(exc)
+            connection.state = error.state
+            connection.last_error_code = error.code
+            connection.last_error_message = error.user_message
+            await _persist(persist)
+            raise error from exc
 
     async def cleanup(
         self, connection: CopyTradingConnection, *, persist: PersistCallback
