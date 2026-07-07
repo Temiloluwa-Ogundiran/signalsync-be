@@ -183,6 +183,7 @@ class CopyTradingUserSettings(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
+    is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class CopyTradingConnection(Base):

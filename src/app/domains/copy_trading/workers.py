@@ -663,7 +663,18 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     intent_payload["conversation_id"] = str(conversation.id)
                     key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{revision}:{route.id}:{signal.action.value}:{index}"
                     intent_id = uuid.uuid4()
-                    intent = TradeIntent(id=intent_id, user_id=route.user_id, route_id=route.id, connection_id=route.target_connection_id, parsed_action_id=action.id, idempotency_key=key, client_order_id=metaapi_client_id(route_id=route.id, intent_id=intent_id), state=TradeIntentState.created, request_payload=intent_payload)
+                    intent = TradeIntent(
+                        id=intent_id,
+                        user_id=route.user_id,
+                        route_id=route.id,
+                        connection_id=route.target_connection_id,
+                        legacy_account_id=route.legacy_target_account_id,
+                        parsed_action_id=action.id,
+                        idempotency_key=key,
+                        client_order_id=metaapi_client_id(route_id=route.id, intent_id=intent_id),
+                        state=TradeIntentState.created,
+                        request_payload=intent_payload,
+                    )
                     try:
                         with db.begin_nested():
                             db.add(intent)
