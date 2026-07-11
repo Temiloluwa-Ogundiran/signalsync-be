@@ -127,8 +127,6 @@ class CopyTradingSettingsUpdate(BaseModel):
 class CopyTradingSettingsResponse(BaseModel):
     user_id: uuid.UUID
     is_paused: bool
-    created_at: datetime
-    updated_at: datetime
 
     model_config = {"from_attributes": True}
 

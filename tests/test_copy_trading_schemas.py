@@ -1,10 +1,17 @@
 from decimal import Decimal
+from types import SimpleNamespace
+import uuid
 
 import pytest
 from pydantic import ValidationError
 
 from app.domains.copy_trading.models import LotDistribution, MinimumFields, TakeProfitMode
-from app.domains.copy_trading.schemas import CopyActivityResponse, CopyRouteCreate, CopyRouteUpdate
+from app.domains.copy_trading.schemas import (
+    CopyActivityResponse,
+    CopyRouteCreate,
+    CopyRouteUpdate,
+    CopyTradingSettingsResponse,
+)
 
 
 SOURCE_ID = "11111111-1111-1111-1111-111111111111"
@@ -45,3 +52,13 @@ def test_route_update_preserves_omitted_fields() -> None:
 
 def test_activity_response_never_exposes_encrypted_raw_message() -> None:
     assert "encrypted_raw_message" not in CopyActivityResponse.model_fields
+
+
+def test_copy_trading_settings_response_matches_timestamp_free_table() -> None:
+    settings = SimpleNamespace(user_id=uuid.uuid4(), is_paused=False)
+
+    response = CopyTradingSettingsResponse.model_validate(settings)
+
+    assert response.user_id == settings.user_id
+    assert response.is_paused is False
+    assert "created_at" not in response.model_dump()

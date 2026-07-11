@@ -23,6 +23,12 @@ class MetaApiBroker:
             for item in self.connection.terminal_state.specifications
         ]
 
+    def positions(self) -> list[dict]:
+        return list(self.connection.terminal_state.positions)
+
+    def orders(self) -> list[dict]:
+        return list(self.connection.terminal_state.orders)
+
     def find_order(self, *, client_id: str, order_id: str | None = None):
         return next(
             (

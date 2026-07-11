@@ -12,6 +12,7 @@ from app.domains.copy_trading.delivery import DeliveryResult
 from app.domains.copy_trading.engine import SignalAction
 from app.domains.copy_trading.metaapi_broker import MetaApiBroker
 from app.domains.copy_trading.metaapi_connections import get_metaapi_runtime
+from app.domains.copy_trading.reconciliation import apply_broker_snapshot
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -134,6 +135,18 @@ def _publish_reconcile(client, event: CopyEvent, intent: TradeIntent) -> None:
             idempotency_key=f"reconcile:{intent.id}:{intent.attempt_count}",
         )
     )
+
+
+def _uncertain_intent_expired(intent: TradeIntent, now: datetime) -> bool:
+    age_seconds = max(0, (now - intent.created_at).total_seconds())
+    return age_seconds >= settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS
+
+
+def _reconcile_sweep_bucket(now: datetime) -> int:
+    bucket_seconds = max(
+        1, min(30, settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS)
+    )
+    return int(now.timestamp()) // bucket_seconds
 
 
 def _run_action(runtime, broker, route, intent, payload, copied, selected):
@@ -404,7 +417,13 @@ def reconcile_intent(event: CopyEvent, _client) -> DeliveryResult:
             intent.broker_result = {"order": order, "position": position, "deal": deal}
             intent.resolved_at = datetime.now(timezone.utc)
         else:
-            intent.state = TradeIntentState.uncertain
+            now = datetime.now(timezone.utc)
+            if _uncertain_intent_expired(intent, now):
+                intent.state = TradeIntentState.failed
+                intent.last_error_code = "BROKER_CONFIRMATION_TIMEOUT"
+                intent.resolved_at = now
+            else:
+                intent.state = TradeIntentState.uncertain
         db.commit()
         return DeliveryResult.success()
 
@@ -413,32 +432,30 @@ def reconcile_copied_trades() -> int:
     updated = 0
     with SessionLocal() as db:
         rows = db.execute(
-            select(CopiedTrade, CopyTradingConnection)
+            select(CopiedTrade, CopyTradingConnection, TradeIntent)
             .join(CopyRoute, CopyRoute.id == CopiedTrade.route_id)
             .join(CopyTradingConnection, CopyTradingConnection.id == CopyRoute.target_connection_id)
+            .join(TradeIntent, TradeIntent.id == CopiedTrade.intent_id)
             .where(CopiedTrade.lifecycle_state.in_(["open", "pending"]))
         ).all()
         brokers = {}
         runtime = get_metaapi_runtime()
-        for trade, connection in rows:
+        for trade, connection, source_intent in rows:
             if not connection.metaapi_account_id:
                 continue
             broker = brokers.setdefault(
                 connection.id,
                 MetaApiBroker(runtime.acquire(connection.metaapi_account_id)),
             )
-            position = broker.find_position(
-                client_id="", position_id=trade.broker_position_id
-            )
-            order = broker.find_order(client_id="", order_id=trade.broker_order_id)
-            if position:
-                trade.current_volume = Decimal(str(position.get("volume", trade.current_volume)))
-                trade.lifecycle_state = "open"
-                trade.broker_synced_at = datetime.now(timezone.utc)
-                updated += 1
-            elif order:
-                trade.lifecycle_state = "pending"
-                trade.broker_synced_at = datetime.now(timezone.utc)
+            positions = broker.positions()
+            orders = broker.orders()
+            if apply_broker_snapshot(
+                trade,
+                positions=positions,
+                orders=orders,
+                observed_at=datetime.now(timezone.utc),
+                client_order_id=getattr(source_intent, "client_order_id", None),
+            ):
                 updated += 1
         db.commit()
     return updated
@@ -451,12 +468,13 @@ def publish_unresolved_intents(client) -> None:
                 TradeIntent.state.in_([TradeIntentState.uncertain, TradeIntentState.reconciling])
             )
         ).scalars()
+        sweep_bucket = _reconcile_sweep_bucket(datetime.now(timezone.utc))
         for intent in intents:
             event = CopyEvent.new(
                 stream=StreamName.execution_intents,
                 event_type="intent.reconcile",
                 correlation_id=str(uuid.uuid4()),
                 payload={"intent_id": str(intent.id), "connection_id": str(intent.connection_id)},
-                idempotency_key=f"reconcile-sweep:{intent.id}:{intent.attempt_count}",
+                idempotency_key=f"reconcile-sweep:{intent.id}:{sweep_bucket}",
             )
             RedisStreamBus(client).publish(event)

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -8,6 +8,11 @@ from app.domains.copy_trading.reconciliation import (
     broker_result_matches_intent,
     should_retry_after_reconcile,
 )
+from app.domains.copy_trading.metaapi_execution import (
+    _reconcile_sweep_bucket,
+    _uncertain_intent_expired,
+)
+from app.core.config import settings
 
 
 def test_client_order_id_is_stable_compact_and_comment_safe() -> None:
@@ -113,3 +118,22 @@ def test_pending_order_activation_tracks_the_new_position() -> None:
 
     assert trade.lifecycle_state == "open"
     assert trade.broker_position_id == "99"
+
+
+def test_uncertain_intent_expires_at_configured_deadline() -> None:
+    now = datetime.now(timezone.utc)
+    intent = SimpleNamespace(
+        created_at=now
+        - timedelta(seconds=settings.COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS)
+    )
+
+    assert _uncertain_intent_expired(intent, now) is True
+
+
+def test_reconcile_sweep_key_bucket_advances_for_repeated_checks() -> None:
+    now = datetime(2026, 7, 11, tzinfo=timezone.utc)
+
+    first = _reconcile_sweep_bucket(now)
+    second = _reconcile_sweep_bucket(now + timedelta(seconds=30))
+
+    assert second > first
