@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from app.domains.copy_trading.client_ids import metaapi_client_id
 from app.domains.copy_trading.metaapi_broker import MetaApiBroker
+from app.domains.copy_trading.metaapi_execution import _trade_options
 from app.domains.copy_trading.symbols import broker_symbol_from_metaapi, normalize_volume
 
 
@@ -54,6 +55,16 @@ def test_client_id_is_deterministic_shaped_and_collision_resistant() -> None:
         for _ in range(5_000)
     }
     assert len(values) == 5_000
+
+
+def test_trade_options_fit_metaapi_tracking_limit() -> None:
+    route = SimpleNamespace(magic_number=123)
+    intent = SimpleNamespace(client_order_id="YN4WSI35_CDHUV4EC_MHO7ETRZ")
+
+    options = _trade_options(route, intent)
+
+    assert options == {"clientId": intent.client_order_id, "magic": 123}
+    assert len(options["clientId"]) <= 26
 
 
 def test_metaapi_specification_and_volume_normalization() -> None:

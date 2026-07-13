@@ -149,13 +149,16 @@ def _reconcile_sweep_bucket(now: datetime) -> int:
     return int(now.timestamp()) // bucket_seconds
 
 
-def _run_action(runtime, broker, route, intent, payload, copied, selected):
-    action = payload["action"]
-    options = {
+def _trade_options(route, intent) -> dict:
+    return {
         "clientId": intent.client_order_id,
         "magic": route.magic_number,
-        "comment": f"cp:{str(route.id)[:8]}",
     }
+
+
+def _run_action(runtime, broker, route, intent, payload, copied, selected):
+    action = payload["action"]
+    options = _trade_options(route, intent)
     if action in {SignalAction.open_market.value, SignalAction.additional_tp.value}:
         volume = normalize_volume(Decimal(str(payload.get("volume", route.fixed_lot))), selected)
         return runtime.run(
@@ -381,7 +384,6 @@ def execute_emergency(event: CopyEvent, client) -> DeliveryResult:
                             trade.broker_position_id,
                             options={
                                 "magic": route.magic_number,
-                                "comment": f"cp:{str(route.id)[:8]}",
                             },
                         )
                     )
