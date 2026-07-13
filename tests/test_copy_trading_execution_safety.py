@@ -14,6 +14,7 @@ from app.domains.copy_trading.execution import (
     signal_volume_for_action,
 )
 from app.domains.copy_trading.engine import SignalAction
+from app.domains.copy_trading.metaapi_execution import _mark_trade_terminal
 from app.domains.copy_trading.models import (
     CopyTradingConnectionState,
     TelegramSourceState,
@@ -75,6 +76,15 @@ def test_management_actions_do_not_consume_new_exposure(action) -> None:
         take_profit_mode="all",
         distribution="fixed_each",
     ) == Decimal("0")
+
+
+def test_terminal_management_action_clears_local_exposure() -> None:
+    copied = SimpleNamespace(lifecycle_state="open", current_volume=Decimal("0.01"))
+
+    _mark_trade_terminal(copied, SignalAction.full_close.value)
+
+    assert copied.lifecycle_state == "closed"
+    assert copied.current_volume == Decimal("0")
 
 
 def test_additional_take_profit_counts_as_new_exposure() -> None:

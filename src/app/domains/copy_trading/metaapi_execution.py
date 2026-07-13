@@ -156,6 +156,13 @@ def _trade_options(route, intent) -> dict:
     }
 
 
+def _mark_trade_terminal(copied, action: str) -> None:
+    copied.lifecycle_state = (
+        "closed" if action == SignalAction.full_close.value else "cancelled"
+    )
+    copied.current_volume = Decimal("0")
+
+
 def _run_action(runtime, broker, route, intent, payload, copied, selected):
     action = payload["action"]
     options = _trade_options(route, intent)
@@ -330,7 +337,7 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                 if payload.get("take_profit") is not None:
                     copied.take_profit = Decimal(str(payload["take_profit"]))
             elif copied and action in {SignalAction.full_close.value, SignalAction.cancel_pending.value}:
-                copied.lifecycle_state = "closed" if action == SignalAction.full_close.value else "cancelled"
+                _mark_trade_terminal(copied, action)
             if copied:
                 copied.broker_synced_at = datetime.now(timezone.utc)
             _record_activity(db, route, event, "broker.confirmed", "Copy trade confirmed", CopyActivityLevel.success)
