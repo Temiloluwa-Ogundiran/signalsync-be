@@ -194,5 +194,16 @@ class Settings(BaseSettings):
         origins = [item.strip() for item in raw.split(",") if item.strip()]
         return origins or [self.FRONTEND_URL]
 
+    def validate_production_security(self) -> None:
+        if not self.IS_PRODUCTION:
+            return
+        if self.SECRET_KEY == "change-me" or len(self.SECRET_KEY) < 32:
+            raise ValueError("SECRET_KEY must be a random value of at least 32 characters")
+        if not self.ENCRYPTION_KEY:
+            raise ValueError("ENCRYPTION_KEY is required in production")
+        origins = self.get_cors_allowed_origins()
+        if "*" in origins:
+            raise ValueError("Wildcard CORS origins are not allowed in production")
+
 
 settings = Settings()

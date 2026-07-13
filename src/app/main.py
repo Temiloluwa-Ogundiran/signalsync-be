@@ -40,6 +40,7 @@ logger = logging.getLogger("synctrades")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_production_security()
     if settings.AUTO_SEED_ON_STARTUP:
         logger.info("Seeding system journal templates and tags on startup")
         with SessionLocal() as db:
@@ -93,11 +94,44 @@ MAX_JSON_BODY = 1 * 1024 * 1024  # 1 MiB
 
 @app.middleware("http")
 async def limit_body_size(request: Request, call_next):
-    if request.method in ("POST", "PUT", "PATCH") and not request.url.path.startswith("/uploads"):
-        cl = request.headers.get("content-length")
-        if cl and int(cl) > MAX_JSON_BODY:
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return await call_next(request)
+
+    limit = settings.MAX_UPLOAD_BYTES if request.url.path.startswith("/csv-import") else MAX_JSON_BODY
+    raw_length = request.headers.get("content-length")
+    if raw_length:
+        try:
+            declared_length = int(raw_length)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length."})
+        if declared_length < 0:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length."})
+        if declared_length > limit:
             return JSONResponse(status_code=413, content={"detail": "Request body too large."})
-    return await call_next(request)
+
+    received = 0
+    original_receive = request._receive
+
+    async def limited_receive():
+        nonlocal received
+        message = await original_receive()
+        if message.get("type") == "http.request":
+            received += len(message.get("body", b""))
+            if received > limit:
+                from starlette.requests import ClientDisconnect
+
+                raise ClientDisconnect()
+        return message
+
+    request._receive = limited_receive
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        from starlette.requests import ClientDisconnect
+
+        if isinstance(exc, ClientDisconnect) and received > limit:
+            return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+        raise
 
 
 @app.middleware("http")
