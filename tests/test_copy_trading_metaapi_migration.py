@@ -23,10 +23,19 @@ def test_metaapi_copy_revision_is_the_only_head() -> None:
     root = Path(__file__).resolve().parents[1]
     script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
 
-    assert script.get_heads() == ["b7d9e1f3a5c7"]
+    assert script.get_heads() == ["c8e0f2a4b6d8"]
     revision = script.get_revision("f2a3b4c5d6e7")
     assert revision is not None
     assert revision.down_revision == "e1f2a3b4c5d6"
+
+
+def test_existing_per_trade_limits_are_clamped_to_total_limit():
+    migration = Path(
+        "alembic/versions/c8e0f2a4b6d8_clamp_existing_copy_trade_limits.py"
+    ).read_text(encoding="utf-8")
+
+    assert "LEAST(max_lot_per_trade, max_lot)" in migration
+    assert "max_lot_per_trade > max_lot" in migration
 
 
 def test_metaapi_copy_migration_pauses_routes_and_adds_connection_ownership() -> None:
