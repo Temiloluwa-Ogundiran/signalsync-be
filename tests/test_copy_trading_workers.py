@@ -282,6 +282,7 @@ def test_expired_incomplete_signal_is_marked_missed(
     assert assembly.state.value == "expired"
     assert assembly.completed_at is not None
     assert assembly.terminal_reason == "REQUIRED_DETAILS_TIMEOUT"
+    db.flush.assert_called_once()
     record_activity.assert_called_once_with(
         db,
         route=route,

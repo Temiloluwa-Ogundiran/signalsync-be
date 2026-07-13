@@ -228,6 +228,8 @@ def expire_signal_threads(now: datetime | None = None) -> int:
                 now,
             )
         conversation_ids = {item.conversation_id for item in expired_assemblies}
+        if conversation_ids:
+            db.flush()
         for conversation_id in conversation_ids:
             still_active = db.execute(
                 select(RouteSignalAssembly.id).where(
