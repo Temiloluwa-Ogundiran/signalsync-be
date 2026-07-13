@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.copy_trading.delivery import DeliveryResult
 from app.domains.copy_trading.engine import SignalAction
+from app.domains.copy_trading.execution import ensure_account_risk_within_limits
 from app.domains.copy_trading.metaapi_broker import MetaApiBroker
 from app.domains.copy_trading.metaapi_connections import get_metaapi_runtime
 from app.domains.copy_trading.reconciliation import apply_broker_snapshot
@@ -108,7 +109,18 @@ def _select_trade(trades: list[CopiedTrade], payload: dict) -> CopiedTrade | Non
     return trades[0] if len(trades) == 1 else None
 
 
-def _record_activity(db, route, event: CopyEvent, action: str, title: str, level) -> None:
+def _record_activity(
+    db,
+    route,
+    event: CopyEvent,
+    action: str,
+    title: str,
+    level,
+    *,
+    body: str | None = None,
+    parsed_details: dict | None = None,
+    broker_details: dict | None = None,
+) -> None:
     db.add(
         CopyActivityEvent(
             user_id=route.user_id,
@@ -119,10 +131,70 @@ def _record_activity(db, route, event: CopyEvent, action: str, title: str, level
             action=action,
             title=title[:200],
             level=level,
-            parsed_details={},
-            broker_details={},
+            body=body,
+            parsed_details=parsed_details or {},
+            broker_details=broker_details or {},
         )
     )
+
+
+def _activity_copy(payload: dict, result: dict) -> tuple[str, str]:
+    symbol = str(payload.get("symbol") or "Trade")
+    action = payload["action"]
+    labels = {
+        SignalAction.open_market.value: (
+            f"{symbol} trade opened",
+            "The market order was accepted by the trading account.",
+        ),
+        SignalAction.place_pending.value: (
+            f"{symbol} pending order placed",
+            "The pending order is waiting for its entry price.",
+        ),
+        SignalAction.modify_sl_tp.value: (
+            f"{symbol} protection updated",
+            "The stop loss and take profit were updated.",
+        ),
+        SignalAction.break_even.value: (
+            f"{symbol} moved to break even",
+            "The stop loss was moved to the entry price.",
+        ),
+        SignalAction.partial_close.value: (
+            f"{symbol} position reduced",
+            "Part of the copied position was closed.",
+        ),
+        SignalAction.full_close.value: (
+            f"{symbol} position closed",
+            "The copied position was closed.",
+        ),
+        SignalAction.cancel_pending.value: (
+            f"{symbol} pending order cancelled",
+            "The copied pending order was cancelled.",
+        ),
+        SignalAction.additional_tp.value: (
+            f"{symbol} take-profit instruction copied",
+            "The additional take-profit instruction was accepted.",
+        ),
+    }
+    return labels.get(
+        action,
+        ("Copy action completed", "The trading account accepted the instruction."),
+    )
+
+
+def _friendly_broker_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    lowered = message.lower()
+    if "market is closed" in lowered:
+        return "The market is closed for this symbol. No trade was placed."
+    if "invalid stops" in lowered or "stop" in lowered and "invalid" in lowered:
+        return "The broker rejected the stop loss or take profit. Check the price distance."
+    if "not enough money" in lowered or "no money" in lowered or "margin" in lowered:
+        return "The account does not have enough free margin for this trade."
+    if "volume" in lowered:
+        return "The broker rejected the trade size for this symbol."
+    if "timeout" in lowered or "temporar" in lowered or "connection" in lowered:
+        return "The broker did not confirm the request yet. TradePartna is checking its status."
+    return message[:500] or "The broker rejected the instruction."
 
 
 def _publish_reconcile(client, event: CopyEvent, intent: TradeIntent) -> None:
@@ -161,6 +233,55 @@ def _mark_trade_terminal(copied, action: str) -> None:
         "closed" if action == SignalAction.full_close.value else "cancelled"
     )
     copied.current_volume = Decimal("0")
+
+
+def _enforce_live_account_risk(db, *, policy, route, broker, payload, signal_volume) -> None:
+    if signal_volume is None or signal_volume <= 0:
+        return
+    account_information = broker.account_information()
+    equity_value = account_information.get("equity")
+    equity = Decimal(str(equity_value)) if equity_value is not None else None
+    today = datetime.now(timezone.utc).date()
+    if equity is not None:
+        if policy.daily_equity_anchor_date != today:
+            policy.daily_equity_anchor_date = today
+            policy.daily_equity_anchor = equity
+        if policy.peak_equity is None or equity > policy.peak_equity:
+            policy.peak_equity = equity
+
+    active_trades = list(
+        db.execute(
+            select(CopiedTrade)
+            .join(CopyRoute, CopyRoute.id == CopiedTrade.route_id)
+            .where(
+                CopyRoute.target_connection_id == route.target_connection_id,
+                CopiedTrade.lifecycle_state.in_(["open", "pending"]),
+            )
+        ).scalars()
+    )
+    current_exposure = sum(
+        (
+            Decimal(str(trade.current_volume or trade.original_volume or 0))
+            for trade in active_trades
+        ),
+        Decimal("0"),
+    )
+    ensure_account_risk_within_limits(
+        symbol=str(payload.get("symbol") or ""),
+        signal_volume=Decimal(str(signal_volume)),
+        current_exposure=current_exposure,
+        current_positions=len(active_trades),
+        equity=equity,
+        daily_equity_anchor=policy.daily_equity_anchor,
+        peak_equity=policy.peak_equity,
+        max_lot_per_trade=policy.max_lot_per_trade,
+        max_total_lot=policy.max_lot,
+        max_open_positions=policy.max_open_positions,
+        daily_loss_limit=policy.daily_loss_limit,
+        max_drawdown_percent=policy.max_drawdown_percent,
+        allowed_symbols=policy.allowed_symbols,
+        blocked_symbols=policy.blocked_symbols,
+    )
 
 
 def _run_action(runtime, broker, route, intent, payload, copied, selected):
@@ -277,6 +398,37 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                 ).scalars()
             )
             copied = _select_trade(copied_trades, payload)
+            requested_volume = (
+                Decimal(str(payload.get("volume", route.fixed_lot)))
+                if payload["action"] in OPEN_ACTIONS
+                else None
+            )
+            try:
+                _enforce_live_account_risk(
+                    db,
+                    policy=policy,
+                    route=route,
+                    broker=broker,
+                    payload=payload,
+                    signal_volume=requested_volume,
+                )
+            except ValueError as exc:
+                intent.state = TradeIntentState.failed
+                intent.last_error_code = "RISK_LIMIT_REACHED"
+                intent.broker_result = {"message": str(exc)}
+                _record_activity(
+                    db,
+                    route,
+                    event,
+                    "risk.blocked",
+                    "Trade blocked by account safety settings",
+                    CopyActivityLevel.warning,
+                    body=str(exc),
+                    parsed_details=payload,
+                    broker_details={"error_code": "RISK_LIMIT_REACHED"},
+                )
+                db.commit()
+                return DeliveryResult.success()
             intent.state = TradeIntentState.submitted
             intent.submitted_at = datetime.now(timezone.utc)
             intent.attempt_count += 1
@@ -297,6 +449,12 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                     "broker.failed" if permanent else "broker.uncertain",
                     "Copy trade rejected" if permanent else "Confirming broker status",
                     CopyActivityLevel.error if permanent else CopyActivityLevel.warning,
+                    body=_friendly_broker_error(exc),
+                    parsed_details=payload,
+                    broker_details={
+                        "error_code": exc.__class__.__name__,
+                        "message": str(exc)[:500],
+                    },
                 )
                 db.commit()
                 if not permanent:
@@ -340,7 +498,18 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                 _mark_trade_terminal(copied, action)
             if copied:
                 copied.broker_synced_at = datetime.now(timezone.utc)
-            _record_activity(db, route, event, "broker.confirmed", "Copy trade confirmed", CopyActivityLevel.success)
+            activity_title, activity_body = _activity_copy(payload, result)
+            _record_activity(
+                db,
+                route,
+                event,
+                "broker.confirmed",
+                activity_title,
+                CopyActivityLevel.success,
+                body=activity_body,
+                parsed_details=payload,
+                broker_details=result,
+            )
             db.commit()
             return DeliveryResult.success()
         finally:
@@ -441,7 +610,7 @@ def reconcile_copied_trades() -> int:
     updated = 0
     with SessionLocal() as db:
         rows = db.execute(
-            select(CopiedTrade, CopyTradingConnection, TradeIntent)
+            select(CopiedTrade, CopyTradingConnection, TradeIntent, CopyRoute)
             .join(CopyRoute, CopyRoute.id == CopiedTrade.route_id)
             .join(CopyTradingConnection, CopyTradingConnection.id == CopyRoute.target_connection_id)
             .join(TradeIntent, TradeIntent.id == CopiedTrade.intent_id)
@@ -449,7 +618,7 @@ def reconcile_copied_trades() -> int:
         ).all()
         brokers = {}
         runtime = get_metaapi_runtime()
-        for trade, connection, source_intent in rows:
+        for trade, connection, source_intent, route in rows:
             if not connection.metaapi_account_id:
                 continue
             broker = brokers.setdefault(
@@ -458,6 +627,12 @@ def reconcile_copied_trades() -> int:
             )
             positions = broker.positions()
             orders = broker.orders()
+            before = {
+                "lifecycle_state": trade.lifecycle_state,
+                "current_volume": str(trade.current_volume),
+                "stop_loss": str(trade.stop_loss),
+                "take_profit": str(trade.take_profit),
+            }
             if apply_broker_snapshot(
                 trade,
                 positions=positions,
@@ -466,6 +641,44 @@ def reconcile_copied_trades() -> int:
                 client_order_id=getattr(source_intent, "client_order_id", None),
             ):
                 updated += 1
+                after = {
+                    "lifecycle_state": trade.lifecycle_state,
+                    "current_volume": str(trade.current_volume),
+                    "stop_loss": str(trade.stop_loss),
+                    "take_profit": str(trade.take_profit),
+                }
+                if before["lifecycle_state"] != after["lifecycle_state"]:
+                    title = (
+                        f"{trade.broker_symbol} position closed outside TradePartna"
+                        if after["lifecycle_state"] == "closed"
+                        else f"{trade.broker_symbol} broker status changed"
+                    )
+                    body = (
+                        "The local copy record was updated to match the trading account."
+                    )
+                    level = CopyActivityLevel.warning
+                else:
+                    title = f"{trade.broker_symbol} broker changes synchronized"
+                    body = (
+                        "Trade size, stop loss, or take profit changed directly at the broker. "
+                        "TradePartna updated its local record."
+                    )
+                    level = CopyActivityLevel.info
+                db.add(
+                    CopyActivityEvent(
+                        user_id=route.user_id,
+                        route_id=route.id,
+                        source_id=route.source_id,
+                        connection_id=route.target_connection_id,
+                        correlation_id=f"reconcile:{trade.id}:{int(datetime.now(timezone.utc).timestamp())}",
+                        action="reconciliation.drift",
+                        title=title,
+                        body=body,
+                        level=level,
+                        parsed_details={"before": before},
+                        broker_details={"after": after},
+                    )
+                )
         db.commit()
     return updated
 

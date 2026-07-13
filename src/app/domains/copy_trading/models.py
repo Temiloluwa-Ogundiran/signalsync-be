@@ -1,6 +1,6 @@
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -8,6 +8,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -301,6 +302,28 @@ class CopyAccountPolicy(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "connection_id"),
         CheckConstraint("max_lot > 0", name="ck_copy_account_policy_max_lot_positive"),
+        CheckConstraint(
+            "max_lot_per_trade > 0",
+            name="ck_copy_account_policy_max_lot_per_trade_positive",
+        ),
+        CheckConstraint(
+            "max_open_positions > 0",
+            name="ck_copy_account_policy_max_open_positions_positive",
+        ),
+        CheckConstraint(
+            "daily_loss_limit IS NULL OR daily_loss_limit > 0",
+            name="ck_copy_account_policy_daily_loss_positive",
+        ),
+        CheckConstraint(
+            "max_drawdown_percent IS NULL OR "
+            "(max_drawdown_percent > 0 AND max_drawdown_percent <= 100)",
+            name="ck_copy_account_policy_drawdown_range",
+        ),
+        CheckConstraint(
+            "market_signal_max_age_seconds >= 1 AND "
+            "market_signal_max_age_seconds <= 3600",
+            name="ck_copy_account_policy_signal_age_range",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -319,6 +342,20 @@ class CopyAccountPolicy(Base):
     max_lot: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), nullable=False, default=Decimal("100.0000")
     )
+    max_lot_per_trade: Mapped[Decimal] = mapped_column(
+        Numeric(12, 4), nullable=False, default=Decimal("100.0000")
+    )
+    max_open_positions: Mapped[int] = mapped_column(nullable=False, default=100)
+    daily_loss_limit: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 2), nullable=True)
+    max_drawdown_percent: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(6, 2), nullable=True
+    )
+    allowed_symbols: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    blocked_symbols: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    market_signal_max_age_seconds: Mapped[int] = mapped_column(nullable=False, default=30)
+    daily_equity_anchor: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 2), nullable=True)
+    daily_equity_anchor_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    peak_equity: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 2), nullable=True)
     is_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

@@ -39,6 +39,9 @@ class MetaApiBroker:
     def orders(self) -> list[dict]:
         return list(self.connection.terminal_state.orders)
 
+    def account_information(self) -> dict:
+        return dict(self.connection.terminal_state.account_information or {})
+
     def find_order(self, *, client_id: str, order_id: str | None = None):
         return next(
             (

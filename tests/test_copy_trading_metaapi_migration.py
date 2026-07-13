@@ -23,7 +23,7 @@ def test_metaapi_copy_revision_is_the_only_head() -> None:
     root = Path(__file__).resolve().parents[1]
     script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
 
-    assert script.get_heads() == ["f2c5d7e9a1b3"]
+    assert script.get_heads() == ["b7d9e1f3a5c7"]
     revision = script.get_revision("f2a3b4c5d6e7")
     assert revision is not None
     assert revision.down_revision == "e1f2a3b4c5d6"

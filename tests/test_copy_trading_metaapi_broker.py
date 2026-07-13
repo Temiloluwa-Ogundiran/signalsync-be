@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 from app.domains.copy_trading.client_ids import metaapi_client_id
 from app.domains.copy_trading.metaapi_broker import MetaApiBroker
-from app.domains.copy_trading.metaapi_execution import _trade_options
+from app.domains.copy_trading.metaapi_execution import (
+    _activity_copy,
+    _friendly_broker_error,
+    _trade_options,
+)
 from app.domains.copy_trading.symbols import broker_symbol_from_metaapi, normalize_volume
 
 
@@ -27,6 +31,7 @@ class FakeConnection:
             ],
             positions=[{"id": "position-1", "clientId": "client-id"}],
             orders=[{"id": "order-1", "clientId": "client-id"}],
+            account_information={"equity": 10000, "balance": 10050},
         )
         self.history_storage = SimpleNamespace(
             deals=[{"id": "deal-1", "clientId": "client-id"}]
@@ -67,6 +72,22 @@ def test_trade_options_fit_metaapi_tracking_limit() -> None:
     assert len(options["clientId"]) <= 26
 
 
+def test_activity_copy_names_management_action_in_plain_language() -> None:
+    title, body = _activity_copy(
+        {"action": "full_close", "symbol": "EURUSD"},
+        {"position_id": "123"},
+    )
+
+    assert title == "EURUSD position closed"
+    assert body == "The copied position was closed."
+
+
+def test_broker_error_explains_market_closed_without_technical_noise() -> None:
+    assert _friendly_broker_error(Exception("TradeException: Market is closed")) == (
+        "The market is closed for this symbol. No trade was placed."
+    )
+
+
 def test_metaapi_specification_and_volume_normalization() -> None:
     symbol = broker_symbol_from_metaapi(FakeConnection().terminal_state.specifications[0])
 
@@ -78,6 +99,12 @@ def test_metaapi_specification_and_volume_normalization() -> None:
     assert normalize_volume(Decimal("0.126"), symbol) == Decimal("0.12")
     assert normalize_volume(Decimal("0.001"), symbol) == Decimal("0.01")
     assert normalize_volume(Decimal("60"), symbol) == Decimal("50")
+
+
+def test_broker_exposes_synchronized_account_information() -> None:
+    broker = MetaApiBroker(FakeConnection())
+
+    assert broker.account_information() == {"equity": 10000, "balance": 10050}
 
 
 def test_broker_maps_market_pending_and_management_actions() -> None:

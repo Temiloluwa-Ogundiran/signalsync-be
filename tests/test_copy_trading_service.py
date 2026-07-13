@@ -77,7 +77,9 @@ def test_create_ready_route_commits_with_activity(repo) -> None:
     repo.get_source_for_user.return_value = source
     repo.get_copy_connection_for_user.return_value = connection
     repo.get_route_by_source_and_connection.return_value = None
-    repo.get_account_policy.return_value = MagicMock(max_lot=Decimal("2.00"))
+    repo.get_account_policy.return_value = MagicMock(
+        max_lot=Decimal("2.00"), max_lot_per_trade=Decimal("2.00")
+    )
     repo.create_route.side_effect = lambda _db, route: route
     db = MagicMock()
 
@@ -102,7 +104,9 @@ def test_create_route_does_not_depend_on_channel_analysis_state(repo) -> None:
     repo.get_source_for_user.return_value = source
     repo.get_copy_connection_for_user.return_value = connection
     repo.get_route_by_source_and_connection.return_value = None
-    repo.get_account_policy.return_value = MagicMock(max_lot=Decimal("2.00"))
+    repo.get_account_policy.return_value = MagicMock(
+        max_lot=Decimal("2.00"), max_lot_per_trade=Decimal("2.00")
+    )
     repo.create_route.side_effect = lambda _db, route: route
 
     route = create_route(

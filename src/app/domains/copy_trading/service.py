@@ -216,21 +216,39 @@ def update_account_policy(
         db, connection_id=connection_id, user_id=current_user.id
     )
     changes = payload.model_dump(exclude_unset=True)
-    proposed_cap = changes.get("max_lot")
-    if proposed_cap is not None:
+    proposed_caps = {
+        "max_lot": changes.get("max_lot"),
+        "max_lot_per_trade": changes.get("max_lot_per_trade"),
+    }
+    if any(value is not None for value in proposed_caps.values()):
         largest_route_lot = repo.max_fixed_lot_for_connection(
             db, user_id=current_user.id, connection_id=connection_id
         )
-        if largest_route_lot is not None and Decimal(proposed_cap) < Decimal(largest_route_lot):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "The account cap cannot be lower than the largest configured "
-                    f"route lot ({largest_route_lot})."
-                ),
-            )
+        for field, proposed_cap in proposed_caps.items():
+            if (
+                proposed_cap is not None
+                and largest_route_lot is not None
+                and Decimal(proposed_cap) < Decimal(largest_route_lot)
+            ):
+                label = (
+                    "total exposure"
+                    if field == "max_lot"
+                    else "per-trade size"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"The {label} limit cannot be lower than the largest "
+                        f"configured route lot ({largest_route_lot})."
+                    ),
+                )
     for field, value in changes.items():
         setattr(policy, field, value)
+    if "daily_loss_limit" in changes:
+        policy.daily_equity_anchor = None
+        policy.daily_equity_anchor_date = None
+    if "max_drawdown_percent" in changes:
+        policy.peak_equity = None
     record_activity(
         db,
         user_id=current_user.id,
@@ -280,10 +298,12 @@ def create_route(
     ) or repo.get_or_create_account_policy(
         db, connection_id=connection.id, user_id=current_user.id
     )
-    if payload.fixed_lot > policy.max_lot:
+    if payload.fixed_lot > policy.max_lot or payload.fixed_lot > policy.max_lot_per_trade:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Fixed lot exceeds the account maximum of {policy.max_lot}.",
+            detail=(
+                "Fixed lot exceeds this account's configured trade or exposure limit."
+            ),
         )
 
     route_id = uuid.uuid4()
@@ -354,10 +374,15 @@ def update_route(
     policy = repo.get_or_create_account_policy(
         db, connection_id=route.target_connection_id, user_id=current_user.id
     )
-    if validated.fixed_lot > policy.max_lot:
+    if (
+        validated.fixed_lot > policy.max_lot
+        or validated.fixed_lot > policy.max_lot_per_trade
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Fixed lot exceeds the account maximum of {policy.max_lot}.",
+            detail=(
+                "Fixed lot exceeds this account's configured trade or exposure limit."
+            ),
         )
     for field in payload.model_fields_set - {"unsafe_minimum_confirmed"}:
         setattr(route, field, getattr(validated, field))

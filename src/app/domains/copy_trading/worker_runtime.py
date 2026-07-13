@@ -51,7 +51,9 @@ logger = logging.getLogger("copy-trading.worker")
 
 
 class StreamWorker:
-    max_attempts = 5
+    # One automatic retry after the first delivery. Longer retry loops increase
+    # latency and can hide persistent configuration or broker failures.
+    max_attempts = 2
     retry_idle_ms = 5_000
 
     def __init__(self, *, stream: StreamName, group: str, handler):

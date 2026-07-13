@@ -8,6 +8,7 @@ from app.domains.copy_trading.engine import (
     TakeProfitLeg,
     build_tp_legs,
 )
+from app.domains.copy_trading.symbols import normalize_symbol
 
 
 OPENING_ACTIONS = {
@@ -79,6 +80,76 @@ def ensure_exposure_within_limit(
     if signal_volume > maximum or current_exposure + signal_volume > maximum:
         raise ValueError(
             f"Copied exposure would exceed the account maximum of {maximum}."
+        )
+
+
+def _matches_symbol_list(symbol: str, configured: list[str]) -> bool:
+    normalized = normalize_symbol(symbol)
+    return any(
+        normalized.startswith(normalize_symbol(candidate))
+        for candidate in configured
+        if candidate.strip()
+    )
+
+
+def ensure_account_risk_within_limits(
+    *,
+    symbol: str,
+    signal_volume: Decimal,
+    current_exposure: Decimal,
+    current_positions: int,
+    equity: Decimal | None,
+    daily_equity_anchor: Decimal | None,
+    peak_equity: Decimal | None,
+    max_lot_per_trade: Decimal,
+    max_total_lot: Decimal,
+    max_open_positions: int,
+    daily_loss_limit: Decimal | None,
+    max_drawdown_percent: Decimal | None,
+    allowed_symbols: list[str],
+    blocked_symbols: list[str],
+) -> None:
+    if signal_volume > max_lot_per_trade:
+        raise ValueError(
+            f"Trade size would exceed the per-trade maximum of {max_lot_per_trade}."
+        )
+    if current_exposure + signal_volume > max_total_lot:
+        raise ValueError(
+            f"Trade would exceed the total copied exposure limit of {max_total_lot}."
+        )
+    if current_positions >= max_open_positions:
+        raise ValueError(
+            f"Trade would exceed the open-position maximum of {max_open_positions}."
+        )
+    if allowed_symbols and not _matches_symbol_list(symbol, allowed_symbols):
+        raise ValueError(f"{symbol} is not in this account's allowed-symbol list.")
+    if _matches_symbol_list(symbol, blocked_symbols):
+        raise ValueError(f"{symbol} is blocked for this account.")
+    if equity is None and (
+        daily_loss_limit is not None or max_drawdown_percent is not None
+    ):
+        raise ValueError(
+            "Live account equity is unavailable, so equity-based safety limits cannot be checked."
+        )
+    if equity is None:
+        return
+    if (
+        daily_loss_limit is not None
+        and daily_equity_anchor is not None
+        and daily_equity_anchor - equity >= daily_loss_limit
+    ):
+        raise ValueError(
+            f"Account equity has reached the daily loss limit of {daily_loss_limit}."
+        )
+    if (
+        max_drawdown_percent is not None
+        and peak_equity is not None
+        and peak_equity > 0
+        and ((peak_equity - equity) / peak_equity) * Decimal("100")
+        >= max_drawdown_percent
+    ):
+        raise ValueError(
+            f"Account equity has reached the drawdown limit of {max_drawdown_percent}%."
         )
 
 

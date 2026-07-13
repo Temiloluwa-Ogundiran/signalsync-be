@@ -133,13 +133,56 @@ class CopyTradingSettingsResponse(BaseModel):
 
 class CopyAccountPolicyUpdate(BaseModel):
     max_lot: Optional[Decimal] = Field(default=None, gt=0, max_digits=12, decimal_places=4)
+    max_lot_per_trade: Optional[Decimal] = Field(
+        default=None, gt=0, max_digits=12, decimal_places=4
+    )
+    max_open_positions: Optional[int] = Field(default=None, ge=1, le=1000)
+    daily_loss_limit: Optional[Decimal] = Field(
+        default=None, gt=0, max_digits=20, decimal_places=2
+    )
+    max_drawdown_percent: Optional[Decimal] = Field(
+        default=None, gt=0, le=100, max_digits=6, decimal_places=2
+    )
+    allowed_symbols: Optional[list[str]] = Field(default=None, max_length=200)
+    blocked_symbols: Optional[list[str]] = Field(default=None, max_length=200)
+    market_signal_max_age_seconds: Optional[int] = Field(default=None, ge=1, le=3600)
     is_paused: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def normalize_symbol_lists(self):
+        for field_name in ("allowed_symbols", "blocked_symbols"):
+            values = getattr(self, field_name)
+            if values is None:
+                continue
+            normalized = sorted(
+                {
+                    value.strip().upper()
+                    for value in values
+                    if value and value.strip()
+                }
+            )
+            setattr(self, field_name, normalized)
+        if self.allowed_symbols and self.blocked_symbols:
+            overlap = set(self.allowed_symbols) & set(self.blocked_symbols)
+            if overlap:
+                raise ValueError(
+                    "A symbol cannot be both allowed and blocked: "
+                    + ", ".join(sorted(overlap))
+                )
+        return self
 
 
 class CopyAccountPolicyResponse(BaseModel):
     id: uuid.UUID
     connection_id: uuid.UUID
     max_lot: Decimal
+    max_lot_per_trade: Decimal
+    max_open_positions: int
+    daily_loss_limit: Optional[Decimal]
+    max_drawdown_percent: Optional[Decimal]
+    allowed_symbols: list[str]
+    blocked_symbols: list[str]
+    market_signal_max_age_seconds: int
     is_paused: bool
     created_at: datetime
     updated_at: datetime

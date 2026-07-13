@@ -463,12 +463,33 @@ def replay_dead_letter(dead_letter_id: uuid.UUID, db: Session = Depends(get_db),
     item = db.execute(select(CopyDeadLetter).where(CopyDeadLetter.id == dead_letter_id, CopyDeadLetter.user_id == current_user.id)).scalar_one_or_none()
     if item is None:
         raise HTTPException(status_code=404, detail="Failed event not found.")
+    if item.state != DeadLetterState.pending:
+        raise HTTPException(
+            status_code=409,
+            detail="This failed event has already been retried.",
+        )
     fields = dict(item.event_payload)
     event = CopyEvent.from_fields(fields)
     replay = CopyEvent.new(stream=event.stream, event_type=event.event_type, correlation_id=event.correlation_id, payload=event.payload, idempotency_key=f"replay:{item.id}:{uuid_module.uuid4()}")
     RedisStreamBus(_redis_client()).publish(replay)
     item.state = DeadLetterState.replayed
     item.replayed_at = datetime.now(timezone.utc)
+    service.record_activity(
+        db,
+        user_id=current_user.id,
+        correlation_id=item.correlation_id,
+        action="dead_letter.replayed",
+        title="Failed copy action retried",
+        body=(
+            "TradePartna sent the failed action through the pipeline one more time. "
+            "Its result will appear in Activity."
+        ),
+        level=CopyActivityLevel.info,
+        parsed_details={
+            "error_code": item.error_code,
+            "attempts": item.attempts,
+        },
+    )
     db.commit(); db.refresh(item)
     return CopyDeadLetterResponse.model_validate(item)
 

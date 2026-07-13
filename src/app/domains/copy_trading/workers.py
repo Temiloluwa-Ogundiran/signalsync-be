@@ -20,7 +20,7 @@ from app.domains.copy_trading.assembly import (
 )
 from app.domains.copy_trading.delivery import DeliveryResult
 from app.domains.copy_trading.execution import (
-    ensure_exposure_within_limit,
+    ensure_account_risk_within_limits,
     intent_legs_for_action,
     signal_volume_for_action,
 )
@@ -597,7 +597,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                 validation = validate_signal(signal, RouteExecutionPolicy(
                     minimum_fields=route.minimum_fields.value,
                     confidence_threshold=settings.COPY_TRADING_CONFIDENCE_THRESHOLD,
-                    market_freshness_seconds=settings.COPY_TRADING_MARKET_FRESHNESS_SECONDS,
+                    market_freshness_seconds=policy_row.market_signal_max_age_seconds,
                     pending_orders_enabled=route.pending_orders_enabled,
                     allow_sl_tp_updates=route.allow_sl_tp_updates,
                     allow_break_even=route.allow_break_even,
@@ -639,10 +639,21 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                 )
                 if signal_volume > 0:
                     try:
-                        ensure_exposure_within_limit(
-                            current_exposure=current_exposure,
+                        ensure_account_risk_within_limits(
+                            symbol=signal.symbol or "",
                             signal_volume=signal_volume,
-                            maximum=policy_row.max_lot,
+                            current_exposure=current_exposure,
+                            current_positions=len(active_copied_trades),
+                            equity=None,
+                            daily_equity_anchor=None,
+                            peak_equity=None,
+                            max_lot_per_trade=policy_row.max_lot_per_trade,
+                            max_total_lot=policy_row.max_lot,
+                            max_open_positions=policy_row.max_open_positions,
+                            daily_loss_limit=None,
+                            max_drawdown_percent=None,
+                            allowed_symbols=policy_row.allowed_symbols,
+                            blocked_symbols=policy_row.blocked_symbols,
                         )
                     except ValueError as exc:
                         assembly.state = RouteAssemblyState.skipped

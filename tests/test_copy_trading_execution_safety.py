@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from app.domains.copy_trading.execution import (
     calculate_signal_volume,
     catalog_fingerprint,
+    ensure_account_risk_within_limits,
     ensure_exposure_within_limit,
     intent_legs_for_action,
     signal_volume_for_action,
@@ -54,6 +55,87 @@ def test_existing_exposure_and_new_signal_must_fit_account_limit() -> None:
             current_exposure=Decimal("0.35"),
             signal_volume=Decimal("0.20"),
             maximum=Decimal("0.50"),
+        )
+
+
+def test_account_risk_accepts_trade_within_user_limits() -> None:
+    ensure_account_risk_within_limits(
+        symbol="EURUSDm",
+        signal_volume=Decimal("0.10"),
+        current_exposure=Decimal("0.20"),
+        current_positions=2,
+        equity=Decimal("9800"),
+        daily_equity_anchor=Decimal("10000"),
+        peak_equity=Decimal("10100"),
+        max_lot_per_trade=Decimal("0.25"),
+        max_total_lot=Decimal("1.00"),
+        max_open_positions=5,
+        daily_loss_limit=Decimal("500"),
+        max_drawdown_percent=Decimal("5"),
+        allowed_symbols=["EURUSD"],
+        blocked_symbols=[],
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"signal_volume": Decimal("0.30")}, "per-trade maximum"),
+        ({"current_exposure": Decimal("0.95")}, "total copied exposure"),
+        ({"current_positions": 5}, "open-position maximum"),
+        ({"symbol": "XAUUSDm"}, "allowed-symbol list"),
+        ({"blocked_symbols": ["EURUSD"]}, "blocked"),
+        ({"equity": Decimal("9400")}, "daily loss limit"),
+        (
+            {
+                "equity": Decimal("9500"),
+                "peak_equity": Decimal("10100"),
+                "daily_loss_limit": Decimal("700"),
+            },
+            "drawdown limit",
+        ),
+    ],
+)
+def test_account_risk_rejects_each_user_limit(overrides, message) -> None:
+    values = {
+        "symbol": "EURUSDm",
+        "signal_volume": Decimal("0.10"),
+        "current_exposure": Decimal("0.20"),
+        "current_positions": 2,
+        "equity": Decimal("9800"),
+        "daily_equity_anchor": Decimal("10000"),
+        "peak_equity": Decimal("10100"),
+        "max_lot_per_trade": Decimal("0.25"),
+        "max_total_lot": Decimal("1.00"),
+        "max_open_positions": 5,
+        "daily_loss_limit": Decimal("500"),
+        "max_drawdown_percent": Decimal("5"),
+        "allowed_symbols": ["EURUSD"],
+        "blocked_symbols": [],
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        ensure_account_risk_within_limits(**values)
+
+
+def test_equity_based_limits_fail_closed_when_live_equity_is_unavailable() -> None:
+    with pytest.raises(ValueError, match="equity is unavailable"):
+        ensure_account_risk_within_limits(
+            symbol="EURUSD",
+            signal_volume=Decimal("0.10"),
+            current_exposure=Decimal("0"),
+            current_positions=0,
+            equity=None,
+            daily_equity_anchor=None,
+            peak_equity=None,
+            max_lot_per_trade=Decimal("1"),
+            max_total_lot=Decimal("2"),
+            max_open_positions=10,
+            daily_loss_limit=Decimal("100"),
+            max_drawdown_percent=None,
+            allowed_symbols=[],
+            blocked_symbols=[],
         )
 
 
