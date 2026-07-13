@@ -8,7 +8,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import text
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.domains.accounts.models import (
     AccountSnapshot,

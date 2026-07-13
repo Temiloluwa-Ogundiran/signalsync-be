@@ -6,7 +6,6 @@ from app.domains.copy_trading.execution import client_order_id_for_key
 from app.domains.copy_trading.reconciliation import (
     apply_broker_snapshot,
     broker_result_matches_intent,
-    should_retry_after_reconcile,
 )
 from app.domains.copy_trading.metaapi_execution import (
     _reconcile_sweep_bucket,
@@ -35,13 +34,6 @@ def test_reconciliation_rejects_a_different_client_order_id() -> None:
         {"client_order_id": "different", "positions": [{"ticket": 1}]},
         None,
     ) is False
-
-
-def test_uncertain_open_is_never_blindly_retried() -> None:
-    intent = SimpleNamespace(request_payload={"action": "open_market"})
-
-    assert should_retry_after_reconcile(intent, submission_started=True) is False
-    assert should_retry_after_reconcile(intent, submission_started=False) is True
 
 
 def test_snapshot_updates_current_volume_and_protective_levels() -> None:

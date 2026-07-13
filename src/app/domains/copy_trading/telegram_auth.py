@@ -50,7 +50,7 @@ class ImageMessageOutcome:
     message: str
 
 
-def image_message_outcome(recent_count: int) -> ImageMessageOutcome:
+def image_message_outcome() -> ImageMessageOutcome:
     return ImageMessageOutcome(
         disconnect=False,
         message="An image-only message was skipped because image signals are not processed.",

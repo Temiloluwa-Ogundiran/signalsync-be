@@ -21,7 +21,6 @@ from app.core.rate_limit import limiter
 from app.domains.ai import repository as repo
 from app.domains.ai import service
 from app.domains.ai.agent import get_compiled
-from app.domains.ai.deps import get_current_user_id
 from app.domains.ai.quota import check as quota_check, debit as quota_debit, get_usage_response
 from app.domains.ai.safety import internal_disclosure_response
 from app.domains.ai.schemas import (

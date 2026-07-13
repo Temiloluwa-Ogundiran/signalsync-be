@@ -5,9 +5,8 @@ from app.domains.copy_trading.telegram_auth import (
 
 
 def test_image_only_messages_are_skipped_without_disconnecting_source() -> None:
-    assert image_message_outcome(1).disconnect is False
-    assert image_message_outcome(3).disconnect is False
-    assert "skipped" in image_message_outcome(3).message.lower()
+    assert image_message_outcome().disconnect is False
+    assert "skipped" in image_message_outcome().message.lower()
 
 
 def test_persisted_auth_state_merges_without_retaining_passwords() -> None:

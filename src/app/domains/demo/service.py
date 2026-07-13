@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import random
 import uuid
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -190,8 +190,6 @@ def _seed_demo_tags_and_setups(
 def seed_demo_account(
     db: Session,
     user_id: uuid.UUID,
-    *,
-    signup_date: date | None = None,
 ) -> TradingAccount | None:
     """Create + populate a demo account for the user. Idempotent: if a demo
     account already exists, returns it without duplicating. Uses the caller's
@@ -200,10 +198,8 @@ def seed_demo_account(
     if existing is not None:
         return existing
 
-    signup_date = signup_date or datetime.now(timezone.utc).date()
     data: DemoData = generate_demo_data(
         seed=_seed_for_user(user_id),
-        signup_date=signup_date,
         starting_balance=DEMO_STARTING_BALANCE,
     )
 

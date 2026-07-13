@@ -489,7 +489,6 @@ DEFAULT_TARGET_NET = 8_470.26
 def generate_demo_data(
     *,
     seed: int,
-    signup_date: date | None = None,  # kept for call compatibility; unused
     end_date: date = DEFAULT_END_DATE,
     starting_balance: float = 25_000.0,
     weeks: int = 16,

@@ -8,8 +8,6 @@ PgBouncer's transaction pooling mode (RULES §3).
 DATABASE_URL_DIRECT is already used by Alembic for the same reason.
 """
 import logging
-import os
-
 from app.core.config import settings
 
 logger = logging.getLogger("synctrades.ai.checkpointer")

@@ -4,13 +4,6 @@ from decimal import Decimal
 from app.domains.copy_trading.engine import SignalAction
 
 
-OPEN_ACTIONS = {
-    SignalAction.open_market.value,
-    SignalAction.place_pending.value,
-    SignalAction.additional_tp.value,
-}
-
-
 def broker_result_matches_intent(intent, data: dict, copied) -> bool:
     client_order_id = getattr(intent, "client_order_id", None)
     if client_order_id:
@@ -48,13 +41,6 @@ def broker_result_matches_intent(intent, data: dict, copied) -> bool:
     if action == SignalAction.partial_close.value:
         return bool(deals)
     return False
-
-
-def should_retry_after_reconcile(intent, *, submission_started: bool) -> bool:
-    action = intent.request_payload.get("action")
-    if action in OPEN_ACTIONS:
-        return not submission_started
-    return True
 
 
 def apply_broker_snapshot(

@@ -404,7 +404,7 @@ class TelegramSessionRuntime:
                     counter_key = f"copy:telegram:image-only:{source.id}"
                     count = int(self.redis.incr(counter_key))
                     self.redis.expire(counter_key, 86400)
-                    outcome = image_message_outcome(count)
+                    outcome = image_message_outcome()
                     routes = list(db.execute(select(CopyRoute).where(CopyRoute.source_id == source.id)).scalars())
                     for route in routes:
                         db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=source.id, connection_id=route.target_connection_id, correlation_id=str(uuid.uuid4()), action="source.image_message", level=CopyActivityLevel.warning, title="Image signal skipped", body=outcome.message, parsed_details={"recent_image_only_count": count}, broker_details={}))

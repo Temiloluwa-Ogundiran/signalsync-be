@@ -458,18 +458,6 @@ def upsert_user_memory(
     return result.scalars().first()
 
 
-# ---------------------------------------------------------------------------
-# Account ID lookup (read-only cross-domain query, parameterized)
-# ---------------------------------------------------------------------------
-
-def get_account_ids_for_user(db: Session, *, user_id: uuid.UUID) -> List[str]:
-    rows = db.execute(
-        text("SELECT id FROM trading_accounts WHERE user_id = :uid"),
-        {"uid": str(user_id)},
-    ).fetchall()
-    return [str(r[0]) for r in rows]
-
-
 def get_accounts_for_user(db: Session, *, user_id: uuid.UUID) -> List[Dict[str, str]]:
     """Return id + human label for every account the user owns. Used to build the AI account map.
 

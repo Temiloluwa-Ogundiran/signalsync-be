@@ -32,7 +32,6 @@ dependencies = [
     "tzdata>=2025.2",
     "uvicorn[standard]>=0.41.0",
     # AI copilot (Partna AI)
-    "langchain>=0.3.0",
     "langchain-core>=0.3.0",
     "langchain-openai>=0.2.0",
     "langgraph>=0.2.0",
