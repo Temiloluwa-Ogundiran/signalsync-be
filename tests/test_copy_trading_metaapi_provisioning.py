@@ -1,5 +1,7 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+import uuid
 
 import pytest
 
@@ -10,7 +12,10 @@ from app.domains.copy_trading.metaapi_provisioning import (
     classify_provisioning_error,
 )
 from app.domains.copy_trading.metaapi_jobs import validate_terminal_account
+from app.domains.copy_trading.metaapi_jobs import provisioning_handler
 from app.domains.copy_trading.models import CopyTradingConnectionState
+from app.domains.copy_trading.streams import CopyEvent, StreamName
+from app.domains.copy_trading.delivery import DeliveryDisposition
 from tests.fakes.fake_metaapi import FakeMetaApi, FakeMetaApiAccount, FakeProvisioningClient
 
 
@@ -27,6 +32,31 @@ def connection() -> SimpleNamespace:
         last_error_code=None,
         last_error_message=None,
     )
+
+
+def test_duplicate_provisioning_event_waits_without_calling_provider(monkeypatch) -> None:
+    redis = MagicMock()
+    redis.set.return_value = False
+    connection_id = str(uuid.uuid4())
+    event = CopyEvent.new(
+        stream=StreamName.metaapi_provisioning,
+        event_type="connection.provision",
+        correlation_id=connection_id,
+        payload={"connection_id": connection_id},
+        idempotency_key=f"connection.provision:{connection_id}:transaction",
+    )
+    monkeypatch.setattr(
+        "app.domains.copy_trading.metaapi_jobs.settings.METAAPI_TOKEN", "token"
+    )
+
+    with patch(
+        "app.domains.copy_trading.metaapi_jobs.SessionLocal",
+        side_effect=AssertionError("database/provider path must not run"),
+    ):
+        result = provisioning_handler(event, redis)
+
+    assert result.disposition == DeliveryDisposition.retry
+    assert result.error_code == "PROVISIONING_IN_PROGRESS"
 
 
 def test_provisioning_uses_cloud_g2_high_reliability_and_persisted_transaction() -> None:

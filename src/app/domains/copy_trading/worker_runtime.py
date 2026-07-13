@@ -657,6 +657,10 @@ def run_process(role: str) -> None:
                 group="copy-provisioning",
                 handler=provisioning_handler,
             )
+            provisioning_worker.retry_idle_ms = max(
+                60_000,
+                (settings.METAAPI_CONNECTION_TIMEOUT_SECONDS * 3 + 30) * 1000,
+            )
             threading.Thread(
                 target=provisioning_worker.run,
                 name="copy-provisioning",

@@ -91,3 +91,24 @@ def test_process_runtime_keeps_connection_on_one_owned_event_loop() -> None:
     assert api.get_account_calls == 1
     assert first.close_calls == 1
     assert result["orderId"] == "order-1"
+
+
+def test_process_runtime_builds_metaapi_inside_its_running_event_loop() -> None:
+    account = FakeStreamingAccount("account-1")
+    api = FakeStreamingApi(account)
+    factory_observations: list[bool] = []
+
+    def api_factory():
+        factory_observations.append(asyncio.get_running_loop().is_running())
+        return api
+
+    runtime = MetaApiRuntime(
+        api_factory=api_factory,
+        timeout_seconds=30,
+        idle_seconds=300,
+    )
+
+    runtime.acquire("account-1")
+    runtime.shutdown()
+
+    assert factory_observations == [True]

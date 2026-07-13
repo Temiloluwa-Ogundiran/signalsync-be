@@ -137,13 +137,17 @@ class MetaApiRuntime:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
-        try:
+
+        async def initialize() -> None:
             self._api = self._api_factory()
             self._manager = MetaApiConnectionManager(
                 api=self._api,
                 timeout_seconds=self._timeout_seconds,
                 idle_seconds=self._idle_seconds,
             )
+
+        try:
+            loop.run_until_complete(initialize())
         except BaseException as exc:
             self._startup_error = exc
             self._ready.set()

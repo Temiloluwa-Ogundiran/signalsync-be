@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -19,6 +20,28 @@ from app.domains.copy_trading.models import (
     CopyTradingConnectionState,
 )
 from app.shared.utils.encryption import decrypt_secret
+
+
+logger = logging.getLogger("copy-trading.provisioning")
+_RELEASE_LOCK_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+end
+return 0
+"""
+
+
+def _provisioning_lock_ttl_seconds() -> int:
+    # Account deployment, broker connection, and streaming synchronization can
+    # each consume the configured MetaApi timeout.
+    return max(60, settings.METAAPI_CONNECTION_TIMEOUT_SECONDS * 3 + 30)
+
+
+def _release_provisioning_lock(client, key: str, token: str) -> None:
+    try:
+        client.eval(_RELEASE_LOCK_SCRIPT, 1, key, token)
+    except Exception:
+        logger.exception("Could not release MetaApi provisioning lock key=%s", key)
 
 
 def validate_terminal_account(connection, account_information: dict | None):
@@ -83,51 +106,68 @@ async def _run_job(connection: CopyTradingConnection, *, delete: bool, db) -> bo
             await asyncio.sleep(0)
 
 
-def provisioning_handler(event, _redis_client) -> DeliveryResult:
+def provisioning_handler(event, redis_client) -> DeliveryResult:
     if not settings.METAAPI_TOKEN:
         return DeliveryResult.retry(
             "METAAPI_NOT_CONFIGURED", "MetaApi credentials are not configured."
         )
     connection_id = uuid.UUID(event.payload["connection_id"])
-    with SessionLocal() as db:
-        connection = db.get(CopyTradingConnection, connection_id)
-        if connection is None:
-            return DeliveryResult.success()
-        try:
-            runtime = get_metaapi_runtime()
-            if event.event_type == "connection.delete" and connection.metaapi_account_id:
-                runtime.close_account(connection.metaapi_account_id)
-            completed = asyncio.run(
-                _run_job(
-                    connection,
-                    delete=event.event_type == "connection.delete",
-                    db=db,
-                )
-            )
-        except MetaApiProvisioningError as exc:
-            if exc.retryable:
-                return DeliveryResult.retry(exc.code, exc.user_message)
-            return DeliveryResult.success()
-        if not completed:
-            return DeliveryResult.retry(
-                "PROVISIONING_ACCEPTED",
-                "MetaApi is still provisioning the account.",
-            )
-        if event.event_type != "connection.delete" and connection.metaapi_account_id:
-            streaming_connection = runtime.acquire(connection.metaapi_account_id)
-            validation_error = validate_terminal_account(
-                connection,
-                streaming_connection.terminal_state.account_information,
-            )
-            if validation_error:
-                connection.state, connection.last_error_code, connection.last_error_message = (
-                    validation_error
-                )
-                db.commit()
+    lock_key = f"copy:metaapi:provisioning-lock:{connection_id}"
+    lock_token = str(uuid.uuid4())
+    acquired = redis_client.set(
+        lock_key,
+        lock_token,
+        nx=True,
+        ex=_provisioning_lock_ttl_seconds(),
+    )
+    if not acquired:
+        return DeliveryResult.retry(
+            "PROVISIONING_IN_PROGRESS",
+            "MetaApi account provisioning is already in progress.",
+        )
+
+    try:
+        with SessionLocal() as db:
+            connection = db.get(CopyTradingConnection, connection_id)
+            if connection is None:
                 return DeliveryResult.success()
-            connection.state = CopyTradingConnectionState.ready
-            connection.last_health_at = datetime.now(timezone.utc)
-            connection.last_error_code = None
-            connection.last_error_message = None
-            db.commit()
-        return DeliveryResult.success()
+            try:
+                runtime = get_metaapi_runtime()
+                if event.event_type == "connection.delete" and connection.metaapi_account_id:
+                    runtime.close_account(connection.metaapi_account_id)
+                completed = asyncio.run(
+                    _run_job(
+                        connection,
+                        delete=event.event_type == "connection.delete",
+                        db=db,
+                    )
+                )
+            except MetaApiProvisioningError as exc:
+                if exc.retryable:
+                    return DeliveryResult.retry(exc.code, exc.user_message)
+                return DeliveryResult.success()
+            if not completed:
+                return DeliveryResult.retry(
+                    "PROVISIONING_ACCEPTED",
+                    "MetaApi is still provisioning the account.",
+                )
+            if event.event_type != "connection.delete" and connection.metaapi_account_id:
+                streaming_connection = runtime.acquire(connection.metaapi_account_id)
+                validation_error = validate_terminal_account(
+                    connection,
+                    streaming_connection.terminal_state.account_information,
+                )
+                if validation_error:
+                    connection.state, connection.last_error_code, connection.last_error_message = (
+                        validation_error
+                    )
+                    db.commit()
+                    return DeliveryResult.success()
+                connection.state = CopyTradingConnectionState.ready
+                connection.last_health_at = datetime.now(timezone.utc)
+                connection.last_error_code = None
+                connection.last_error_message = None
+                db.commit()
+            return DeliveryResult.success()
+    finally:
+        _release_provisioning_lock(redis_client, lock_key, lock_token)
