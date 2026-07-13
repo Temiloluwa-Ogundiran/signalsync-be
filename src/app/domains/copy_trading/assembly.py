@@ -22,6 +22,7 @@ class ConversationCandidate:
     direction: str | None
     updated_at: datetime
     opening_submitted: bool = False
+    has_active_trade: bool = False
 
 
 @dataclass(frozen=True)
@@ -41,10 +42,27 @@ def choose_conversation(
     is_edit: bool = False,
 ) -> ConversationChoice:
     ordered = sorted(candidates, key=lambda item: item.updated_at, reverse=True)
+    management_actions = {
+        "modify_sl_tp",
+        "break_even",
+        "partial_close",
+        "full_close",
+        "cancel_pending",
+        "additional_tp",
+    }
+    eligible = (
+        [
+            item
+            for item in ordered
+            if not item.opening_submitted or item.has_active_trade
+        ]
+        if action in management_actions
+        else ordered
+    )
     if is_edit and message_id is not None:
         edit_matches = [
             item
-            for item in ordered
+            for item in eligible
             if message_id in {item.reply_root_message_id, item.last_message_id}
         ]
         if len(edit_matches) == 1:
@@ -54,7 +72,7 @@ def choose_conversation(
     if reply_to_message_id is not None:
         reply_matches = [
             item
-            for item in ordered
+            for item in eligible
             if reply_to_message_id
             in {item.reply_root_message_id, item.last_message_id}
         ]
@@ -64,9 +82,9 @@ def choose_conversation(
             return ConversationChoice(None, ambiguous=True)
 
     matchable = (
-        [item for item in ordered if not item.opening_submitted]
+        [item for item in eligible if not item.opening_submitted]
         if action in {"open_market", "place_pending"}
-        else ordered
+        else eligible
     )
     normalized_symbol = normalize_symbol(symbol)
     normalized_direction = normalize_direction(direction)

@@ -23,6 +23,7 @@ def candidate(
     root: int,
     last: int | None = None,
     opening_submitted: bool = False,
+    has_active_trade: bool = True,
 ) -> ConversationCandidate:
     return ConversationCandidate(
         id=uuid.uuid4(),
@@ -32,6 +33,7 @@ def candidate(
         direction=direction,
         updated_at=NOW,
         opening_submitted=opening_submitted,
+        has_active_trade=has_active_trade,
     )
 
 
@@ -173,6 +175,54 @@ def test_management_update_can_reuse_a_submitted_conversation() -> None:
     )
 
     assert result.selected == submitted
+
+
+def test_management_ignores_failed_attempt_when_one_live_trade_matches() -> None:
+    failed = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=10,
+        opening_submitted=True,
+        has_active_trade=False,
+    )
+    live = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=20,
+        opening_submitted=True,
+        has_active_trade=True,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        symbol="EURUSD",
+        direction=None,
+        action="modify_sl_tp",
+        candidates=[failed, live],
+    )
+
+    assert result.selected == live
+    assert result.ambiguous is False
+
+
+def test_management_update_still_enriches_an_incomplete_opening() -> None:
+    incomplete = candidate(
+        symbol="EURUSD",
+        direction="buy",
+        root=10,
+        opening_submitted=False,
+        has_active_trade=False,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        symbol="EURUSD",
+        direction=None,
+        action="modify_sl_tp",
+        candidates=[incomplete],
+    )
+
+    assert result.selected == incomplete
 
 
 def test_opening_message_claims_only_unresolved_symbol_less_conversation() -> None:

@@ -367,6 +367,15 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     )
                 ).all()
             } if conversations else set()
+            active_thread_ids = {
+                row[0]
+                for row in db.execute(
+                    select(CopiedTrade.thread_id).where(
+                        CopiedTrade.route_id.in_([route.id for route in routes]),
+                        CopiedTrade.lifecycle_state.in_(["open", "pending"]),
+                    )
+                ).all()
+            }
             candidates = [
                 ConversationCandidate(
                     id=item.id,
@@ -376,6 +385,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     direction=item.direction,
                     updated_at=item.updated_at,
                     opening_submitted=item.id in submitted_conversation_ids,
+                    has_active_trade=item.legacy_thread_id in active_thread_ids,
                 )
                 for item in conversations
             ]
@@ -410,6 +420,9 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     direction=existing_conversation.direction,
                     updated_at=existing_conversation.updated_at,
                     opening_submitted=existing_conversation.id in submitted_conversation_ids,
+                    has_active_trade=(
+                        existing_conversation.legacy_thread_id in active_thread_ids
+                    ),
                 )
                 ambiguous = False
             else:
