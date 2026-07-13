@@ -101,6 +101,30 @@ def test_broker_maps_market_pending_and_management_actions() -> None:
     asyncio.run(scenario())
 
 
+def test_broker_converts_serialized_decimal_stops_for_metaapi() -> None:
+    async def scenario() -> None:
+        connection = FakeConnection()
+        broker = MetaApiBroker(connection)
+
+        await broker.market_order(
+            direction="sell",
+            symbol="EURUSD",
+            volume=0.01,
+            stop_loss="1.14500",
+            take_profit="1.13000",
+        )
+        await broker.modify_position(
+            "position-1",
+            stop_loss=Decimal("1.14000"),
+            take_profit="1.13250",
+        )
+
+        assert connection.calls[0][1][2:4] == (1.145, 1.13)
+        assert connection.calls[1][1][1:3] == (1.14, 1.1325)
+
+    asyncio.run(scenario())
+
+
 def test_broker_exposes_synchronized_terminal_truth() -> None:
     broker = MetaApiBroker(FakeConnection())
 

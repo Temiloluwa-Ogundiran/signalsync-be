@@ -1,7 +1,17 @@
+from decimal import Decimal
+
 from app.domains.copy_trading.symbols import (
     BrokerSymbol,
     broker_symbol_from_metaapi,
 )
+
+
+def _numeric_stop(value):
+    if value is None or isinstance(value, (int, float, dict)):
+        return value
+    if isinstance(value, (str, Decimal)):
+        return float(value)
+    raise TypeError(f"Unsupported MetaApi stop value type: {type(value).__name__}")
 
 
 def _normalized_result(result: dict | None) -> dict[str, str | None]:
@@ -83,7 +93,13 @@ class MetaApiBroker:
             else self.connection.create_market_sell_order
         )
         return _normalized_result(
-            await method(symbol, volume, stop_loss, take_profit, options or {})
+            await method(
+                symbol,
+                volume,
+                _numeric_stop(stop_loss),
+                _numeric_stop(take_profit),
+                options or {},
+            )
         )
 
     async def pending_order(
@@ -105,15 +121,19 @@ class MetaApiBroker:
                 symbol,
                 volume,
                 open_price,
-                stop_loss,
-                take_profit,
+                _numeric_stop(stop_loss),
+                _numeric_stop(take_profit),
                 options or {},
             )
         )
 
     async def modify_position(self, position_id: str, *, stop_loss=None, take_profit=None) -> dict:
         return _normalized_result(
-            await self.connection.modify_position(position_id, stop_loss, take_profit)
+            await self.connection.modify_position(
+                position_id,
+                _numeric_stop(stop_loss),
+                _numeric_stop(take_profit),
+            )
         )
 
     async def close_position(
