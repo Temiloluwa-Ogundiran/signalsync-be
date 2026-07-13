@@ -29,9 +29,12 @@ worker_health_state = _enum("workerhealthstateenum", "healthy", "degraded", "fai
 
 def upgrade() -> None:
     bind = op.get_bind()
-    for value in ("advisory", "failed_retryable", "unsupported_image_primary"):
-        op.execute(f"ALTER TYPE telegramsourcestateenum ADD VALUE IF NOT EXISTS '{value}'")
-    op.execute("ALTER TYPE copyroutestateenum ADD VALUE IF NOT EXISTS 'needs_attention'")
+    # PostgreSQL requires newly added enum values to be committed before a
+    # later migration can use them in data updates.
+    with op.get_context().autocommit_block():
+        for value in ("advisory", "failed_retryable", "unsupported_image_primary"):
+            op.execute(f"ALTER TYPE telegramsourcestateenum ADD VALUE IF NOT EXISTS '{value}'")
+        op.execute("ALTER TYPE copyroutestateenum ADD VALUE IF NOT EXISTS 'needs_attention'")
     for enum_type in (conversation_state, assembly_state, auth_state, dead_letter_state, worker_health_state):
         enum_type.create(bind, checkfirst=True)
 

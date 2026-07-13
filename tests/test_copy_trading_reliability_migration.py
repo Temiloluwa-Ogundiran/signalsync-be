@@ -44,6 +44,7 @@ def test_reliability_migration_is_additive_and_complete() -> None:
         assert f'"{column}"' in text
 
     assert "drop_table(\"signal_threads\")" not in text
+    assert "autocommit_block" in text
 
 
 def test_generation_migration_is_additive() -> None:
