@@ -579,6 +579,8 @@ async def test_orchestrate_mt5_sync_sets_manual_cooldown_after_success(
     mock_account_repo.list_recent_sync_attempts_for_user.return_value = []
     mock_sync_account_deals_mt5.return_value = SimpleNamespace(
         inserted_trades=1,
+        updated_trades=2,
+        deleted_trades=3,
         touched_trading_dates=1,
     )
 
@@ -594,6 +596,9 @@ async def test_orchestrate_mt5_sync_sets_manual_cooldown_after_success(
         )
 
     assert result.outcome == "success"
+    assert result.inserted_trades == 1
+    assert result.updated_trades == 2
+    assert result.deleted_trades == 3
     mark_kwargs = mock_account_repo.mark_sync_success.call_args.kwargs
     assert mark_kwargs["next_sync_not_before"] == datetime(
         2026, 6, 7, 8, 5, 0, tzinfo=timezone.utc
@@ -603,7 +608,7 @@ async def test_orchestrate_mt5_sync_sets_manual_cooldown_after_success(
 @pytest.mark.anyio
 @patch("app.domains.accounts.sync_orchestrator.account_repo")
 @patch("app.domains.accounts.sync_orchestrator.sync_account_deals_mt5")
-async def test_manual_sync_with_zero_new_inserts_is_success_not_empty(
+async def test_manual_sync_with_updated_trades_is_reported_as_changed(
     mock_sync_account_deals_mt5,
     mock_account_repo,
     db_session: MagicMock,
@@ -619,7 +624,9 @@ async def test_manual_sync_with_zero_new_inserts_is_success_not_empty(
     mock_account_repo.list_recent_sync_attempts_for_user.return_value = []
     mock_sync_account_deals_mt5.return_value = SimpleNamespace(
         inserted_trades=0,
-        touched_trading_dates=0,
+        updated_trades=4,
+        deleted_trades=0,
+        touched_trading_dates=2,
     )
 
     result = await orchestrate_mt5_sync(
@@ -629,6 +636,9 @@ async def test_manual_sync_with_zero_new_inserts_is_success_not_empty(
     )
 
     assert result.outcome == "success"
+    assert result.inserted_trades == 0
+    assert result.updated_trades == 4
+    assert result.changed_trades == 4
     assert mock_account_repo.mark_sync_success.call_args.kwargs["outcome"] == "success"
 
 

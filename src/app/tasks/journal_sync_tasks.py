@@ -165,14 +165,16 @@ def bootstrap_account(self, account_id: str) -> dict:
                 db,
                 account,
                 synced_at=datetime.now(timezone.utc),
-                sync_outcome="success" if result.inserted_trades > 0 else "success_empty",
+                sync_outcome="success" if result.changed_trades > 0 else "success_empty",
             )
             db.commit()
-            if result.inserted_trades > 0:
+            if result.changed_trades > 0:
                 _bump_data_version(account_id)
             return {
                 "status": "ready",
                 "inserted_trades": result.inserted_trades,
+                "updated_trades": result.updated_trades,
+                "deleted_trades": result.deleted_trades,
                 "touched_trading_dates": result.touched_trading_dates,
             }
         except Mt5CoreClientJobFailed as exc:
@@ -231,11 +233,13 @@ def sync_account(self, account_id: str) -> dict:
 
         # Invalidate the AI tool cache for this account after a successful sync.
         # This ensures that the next AI query sees fresh trade data.
-        if result.inserted_trades > 0:
+        if result.changed_trades > 0:
             _bump_data_version(account_id)
 
         return {
             "status": result.outcome,
             "inserted_trades": result.inserted_trades,
+            "updated_trades": result.updated_trades,
+            "deleted_trades": result.deleted_trades,
             "touched_trading_dates": result.touched_trading_dates,
         }

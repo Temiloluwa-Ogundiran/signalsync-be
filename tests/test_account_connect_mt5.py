@@ -23,6 +23,7 @@ from app.domains.accounts.mt5_core_client import (
 )
 from app.domains.accounts.schemas import AccountConnectRequest, TraderAccessRequest
 from app.domains.accounts.service import connect_account, enable_trader_access
+from app.domains.accounts.sync import SyncResult
 from app.tasks.journal_sync_tasks import bootstrap_account
 
 
@@ -360,7 +361,7 @@ def test_bootstrap_account_verifies_snapshots_and_syncs_history(
         "equity": 5100.0,
     }
     mock_client_cls.return_value = mock_client
-    mock_sync_account_deals_mt5.return_value = MagicMock(
+    mock_sync_account_deals_mt5.return_value = SyncResult(
         inserted_trades=2,
         touched_trading_dates=1,
     )
@@ -396,7 +397,7 @@ def test_bootstrap_account_skips_verify_when_already_bootstrapping(
     mock_session_local.return_value = context
     mock_repo.get_account_by_id.return_value = mock_account
     mock_decrypt_secret.return_value = "investor-password"
-    mock_sync_account_deals_mt5.return_value = MagicMock(
+    mock_sync_account_deals_mt5.return_value = SyncResult(
         inserted_trades=0,
         touched_trading_dates=0,
     )

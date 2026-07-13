@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 class SyncResult:
     inserted_trades: int
     touched_trading_dates: int
+    updated_trades: int = 0
+    deleted_trades: int = 0
+
+    @property
+    def changed_trades(self) -> int:
+        return self.inserted_trades + self.updated_trades + self.deleted_trades
 
 
 _OPEN_TIMESTAMP_KEYS = (
@@ -290,7 +296,11 @@ def ingest_closed_deals(
         len(touched_dates),
     )
 
-    return SyncResult(inserted_trades=inserted, touched_trading_dates=len(touched_dates))
+    return SyncResult(
+        inserted_trades=inserted,
+        updated_trades=updated,
+        touched_trading_dates=len(touched_dates),
+    )
 
 
 def ingest_mt5_deals(
@@ -414,6 +424,7 @@ def ingest_mt5_core_history_result(
     if snapshot:
         snapshot_count = ingest_mt5_snapshots(db, account=account, snapshots=[snapshot])
 
+    deleted_count = 0
     deleted_dates: set[date] = set()
     if authoritative:
         valid_broker_trade_ids = {
@@ -422,7 +433,7 @@ def ingest_mt5_core_history_result(
             if str(deal.get("ticket") or "").strip()
         }
         if valid_broker_trade_ids:
-            _, deleted_dates = account_repo.delete_trades_outside_valid_broker_ids_in_window(
+            deleted_count, deleted_dates = account_repo.delete_trades_outside_valid_broker_ids_in_window(
                 db,
                 account_id=account.id,
                 closed_from_utc=closed_from_utc,
@@ -448,6 +459,7 @@ def ingest_mt5_core_history_result(
         deals=deals,
         extra_touched_dates=deleted_dates,
     )
+    sync_result.deleted_trades = deleted_count
     return sync_result
 
 

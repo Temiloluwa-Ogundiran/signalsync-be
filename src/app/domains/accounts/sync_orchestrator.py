@@ -24,9 +24,15 @@ from app.domains.accounts.sync import sync_account_deals_mt5
 class Mt5SyncExecutionResult:
     outcome: str
     inserted_trades: int = 0
+    updated_trades: int = 0
+    deleted_trades: int = 0
     touched_trading_dates: int = 0
     retry_after_seconds: int | None = None
     message: str | None = None
+
+    @property
+    def changed_trades(self) -> int:
+        return self.inserted_trades + self.updated_trades + self.deleted_trades
 
 
 def _seconds_until(target: datetime, now: datetime) -> int:
@@ -255,5 +261,7 @@ async def orchestrate_mt5_sync(
     return Mt5SyncExecutionResult(
         outcome="success",
         inserted_trades=result.inserted_trades,
+        updated_trades=result.updated_trades,
+        deleted_trades=result.deleted_trades,
         touched_trading_dates=result.touched_trading_dates,
     )

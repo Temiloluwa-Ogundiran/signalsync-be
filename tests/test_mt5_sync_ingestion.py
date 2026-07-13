@@ -83,6 +83,9 @@ def test_ingest_mt5_core_history_result(mock_repo, db_session, mock_account) -> 
 
     # Asserts
     assert result.inserted_trades == 1
+    assert result.updated_trades == 0
+    assert result.deleted_trades == 1
+    assert result.changed_trades == 2
     assert result.touched_trading_dates == 1
 
     # Verify offset updated
