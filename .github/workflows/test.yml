@@ -1,0 +1,47 @@
+name: Backend tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: synctrades_test
+          POSTGRES_USER: synctrades
+          POSTGRES_PASSWORD: test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U synctrades -d synctrades_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://synctrades:test-password@localhost:5432/synctrades_test
+      SECRET_KEY: ci-only-secret-key-with-at-least-32-bytes
+      ENCRYPTION_KEY: 5QbYRFHKWGUhJtWs1uBvNI3IYfY2YNPxHmQb-ZpFnHo=
+      RATE_LIMIT_REDIS_URL: memory://
+      ENVIRONMENT: test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Apply database migrations
+        run: uv run alembic upgrade head
+      - name: Run test suite
+        run: uv run pytest -q
