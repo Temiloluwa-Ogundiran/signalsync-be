@@ -176,6 +176,8 @@ async def test_manual_mt5_sync_default_window_matches_journal_range(
     mock_account.last_synced_at = None
     mock_decrypt_secret.return_value = "investor-password"
     mock_repo.try_acquire_account_sync_lock.return_value = True
+    mock_repo.get_latest_account_snapshot_balance.return_value = Decimal("501103.19")
+    mock_repo.count_closed_trades_for_accounts.return_value = {mock_account.id: 9}
     mock_ingest.return_value = SyncResult(inserted_trades=0, touched_trading_dates=0)
     mock_client = AsyncMock()
     mock_client.submit_history_sync.return_value = {
@@ -189,6 +191,8 @@ async def test_manual_mt5_sync_default_window_matches_journal_range(
 
     _, sync_kwargs = mock_client.submit_history_sync.call_args
     assert datetime.now(timezone.utc) - sync_kwargs["from_time"] >= timedelta(days=29, hours=23)
+    assert sync_kwargs["previous_balance"] == Decimal("501103.19")
+    assert sync_kwargs["known_closed_trade_count"] == 9
 
 
 @pytest.mark.anyio

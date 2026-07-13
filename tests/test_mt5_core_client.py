@@ -1,3 +1,6 @@
+import json
+from decimal import Decimal
+
 import pytest
 import httpx
 import anyio
@@ -428,10 +431,20 @@ async def test_submit_history_sync_success(client: Mt5CoreClient, httpx_mock) ->
     result = await client.submit_history_sync(
         account_id="acct-1",
         from_time=datetime(2026, 5, 20),
+        previous_balance=Decimal("501103.19"),
+        known_closed_trade_count=9,
         credentials={"login": "10001", "password": "p", "server": "s"},
     )
 
     assert result == {"deals": [{"ticket": "100"}]}
+    request = httpx_mock.get_request(
+        method="POST",
+        url="http://mt5-core-test/history/sync",
+    )
+    assert request is not None
+    payload = json.loads(request.content)
+    assert payload["previous_balance"] == 501103.19
+    assert payload["known_closed_trade_count"] == 9
 
 
 @pytest.mark.anyio

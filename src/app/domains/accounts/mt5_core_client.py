@@ -4,6 +4,7 @@ import anyio
 import httpx
 import time
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Optional
 from app.core.config import settings
 
@@ -222,6 +223,8 @@ class Mt5CoreClient:
         from_time: Optional[datetime] = None,
         to_time: Optional[datetime] = None,
         credentials: dict[str, Any],
+        previous_balance: Optional[Decimal] = None,
+        known_closed_trade_count: Optional[int] = None,
         correlation_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Submit a history sync job and poll until completion."""
@@ -236,6 +239,10 @@ class Mt5CoreClient:
             "to_time": to_time_str,
             "include_deals": True,
             "include_orders": True,
+            "previous_balance": (
+                float(previous_balance) if previous_balance is not None else None
+            ),
+            "known_closed_trade_count": known_closed_trade_count,
             "credentials": {
                 "login": str(credentials["login"]),
                 "password": str(credentials["password"]),
