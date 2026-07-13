@@ -370,15 +370,7 @@ def verify_email(db: Session, raw_token: str, response: Response) -> VerifyEmail
     # cookie) so the frontend's NextAuth session can refresh long-term — the
     # browser JS can't read the cookie, and login from an email link is a
     # one-time, user-initiated action.
-    access_token, expiry_minutes, raw_refresh = _issue_session(db, user, response)
-
-    return VerifyEmailResponse(
-        message="Email verified successfully.",
-        access_token=access_token,
-        access_token_expiry_minutes=expiry_minutes,
-        refresh_token=raw_refresh,
-        user=UserResponse.model_validate(user),
-    )
+    return VerifyEmailResponse(message="Email verified successfully.")
 
 
 def resend_verification(

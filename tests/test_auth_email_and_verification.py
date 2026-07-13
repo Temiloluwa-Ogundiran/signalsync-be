@@ -176,23 +176,12 @@ def test_verify_email_success() -> None:
     with (
         patch("app.domains.auth.service.user_repo.get_by_id", return_value=user),
         patch("app.domains.auth.service.token_repo.revoke") as revoke_mock,
-        patch(
-            "app.domains.auth.service._issue_session",
-            return_value=("access-token", 30, "raw-refresh"),
-        ) as issue_mock,
-        patch(
-            "app.domains.auth.service.UserResponse.model_validate",
-            return_value=None,
-        ),
     ):
         res = auth_service.verify_email(db, "raw-token", MagicMock())
 
     assert res.message == "Email verified successfully."
-    # Fresh verification auto-logs the user in (issues a session).
-    assert res.access_token == "access-token"
     assert user.is_email_verified is True
     revoke_mock.assert_called_once_with(db, token)
-    issue_mock.assert_called_once()
 
 
 def test_verify_email_idempotent_success() -> None:

@@ -21,6 +21,9 @@ COPY scripts/copy_trading_synthetic_signal.py ./scripts/copy_trading_synthetic_s
 
 RUN uv sync --frozen --no-dev
 
+RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8000
 
 CMD ["python", "scripts/docker_start.py"]
