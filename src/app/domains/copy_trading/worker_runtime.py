@@ -11,7 +11,7 @@ import io
 from datetime import datetime, timezone
 
 import redis
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 import app.models  # noqa: F401 - register string-based ORM relationships for standalone workers
 from app.core.config import settings
@@ -249,10 +249,27 @@ class TelegramSessionRuntime:
         self.qr_logins = {}
         self.cipher = SessionCipher(settings.ENCRYPTION_KEY)
         self.last_health_at = 0.0
+        self.last_connection_heartbeat_at = 0.0
         # Connection ids with a dialog refresh already running — prevents
         # overlapping iter_dialogs() walks (each is several GetDialogsRequest
         # calls) from stacking up and tripping Telegram's flood limit.
         self.dialog_refresh_inflight: set[str] = set()
+
+    def _refresh_connection_heartbeats(self) -> None:
+        connection_ids = [
+            uuid.UUID(key.removeprefix("connection:"))
+            for key in self.clients
+            if key.startswith("connection:")
+        ]
+        if not connection_ids:
+            return
+        with SessionLocal() as db:
+            db.execute(
+                update(TelegramConnection)
+                .where(TelegramConnection.id.in_(connection_ids))
+                .values(last_heartbeat_at=datetime.now(timezone.utc))
+            )
+            db.commit()
 
     def _auth_update(self, auth_id: str, **values) -> None:
         with SessionLocal() as db:
@@ -611,6 +628,9 @@ class TelegramSessionRuntime:
             if now - self.last_health_at >= 10:
                 await asyncio.to_thread(record_worker_health, worker_role=group, instance_id=consumer)
                 self.last_health_at = now
+            if now - self.last_connection_heartbeat_at >= 30:
+                await asyncio.to_thread(self._refresh_connection_heartbeats)
+                self.last_connection_heartbeat_at = now
             for _, messages in rows:
                 for message_id, fields in messages:
                     event = CopyEvent.from_fields(fields)

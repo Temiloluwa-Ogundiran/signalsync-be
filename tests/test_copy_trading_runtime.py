@@ -226,6 +226,19 @@ def test_telegram_worker_refreshes_dialogs_from_live_session():
     assert "Cached group" in value
 
 
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_telegram_worker_refreshes_attached_connection_heartbeats(session_local):
+    connection_id = uuid.uuid4()
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.clients = {f"connection:{connection_id}": MagicMock()}
+    db = session_local.return_value.__enter__.return_value
+
+    runtime._refresh_connection_heartbeats()
+
+    db.execute.assert_called_once()
+    db.commit.assert_called_once()
+
+
 @pytest.fixture
 def fernet_key():
     return "roLlHRZXRXpcMgc52s8FRneJOfs52P7G98Ibee1w-Uo="
