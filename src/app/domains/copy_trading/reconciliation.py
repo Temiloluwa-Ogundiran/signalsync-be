@@ -4,6 +4,15 @@ from decimal import Decimal
 from app.domains.copy_trading.engine import SignalAction
 
 
+def _broker_id(item: dict):
+    return item.get("id") if item.get("id") is not None else item.get("ticket")
+
+
+def _broker_value(item: dict, metaapi_key: str, legacy_key: str):
+    value = item.get(metaapi_key)
+    return value if value is not None else item.get(legacy_key)
+
+
 def broker_result_matches_intent(intent, data: dict, copied) -> bool:
     client_order_id = getattr(intent, "client_order_id", None)
     if client_order_id:
@@ -28,16 +37,18 @@ def broker_result_matches_intent(intent, data: dict, copied) -> bool:
         )
         expected_tp = intent.request_payload.get("take_profit")
         for position in positions:
-            if str(position.get("ticket")) != position_id:
+            if str(_broker_id(position)) != position_id:
                 continue
-            sl_matches = expected_sl is None or Decimal(str(position.get("sl"))) == Decimal(str(expected_sl))
-            tp_matches = expected_tp is None or Decimal(str(position.get("tp"))) == Decimal(str(expected_tp))
+            actual_sl = _broker_value(position, "stopLoss", "sl")
+            actual_tp = _broker_value(position, "takeProfit", "tp")
+            sl_matches = expected_sl is None or Decimal(str(actual_sl)) == Decimal(str(expected_sl))
+            tp_matches = expected_tp is None or Decimal(str(actual_tp)) == Decimal(str(expected_tp))
             return sl_matches and tp_matches
         return False
     if action == SignalAction.full_close.value:
-        return not any(str(item.get("ticket")) == position_id for item in positions)
+        return not any(str(_broker_id(item)) == position_id for item in positions)
     if action == SignalAction.cancel_pending.value:
-        return not any(str(item.get("ticket")) == order_id for item in orders)
+        return not any(str(_broker_id(item)) == order_id for item in orders)
     if action == SignalAction.partial_close.value:
         return bool(deals)
     return False
@@ -57,7 +68,7 @@ def apply_broker_snapshot(
             (
                 item
                 for item in positions
-                if str(item.get("ticket")) == str(trade.broker_position_id)
+                if str(_broker_id(item)) == str(trade.broker_position_id)
             ),
             None,
         )
@@ -68,8 +79,12 @@ def apply_broker_snapshot(
         else:
             values = {
                 "current_volume": Decimal(str(position.get("volume", 0))),
-                "stop_loss": Decimal(str(position.get("sl", 0))) if position.get("sl") else None,
-                "take_profit": Decimal(str(position.get("tp", 0))) if position.get("tp") else None,
+                "stop_loss": Decimal(str(_broker_value(position, "stopLoss", "sl")))
+                if _broker_value(position, "stopLoss", "sl")
+                else None,
+                "take_profit": Decimal(str(_broker_value(position, "takeProfit", "tp")))
+                if _broker_value(position, "takeProfit", "tp")
+                else None,
             }
             for field, value in values.items():
                 if getattr(trade, field) != value:
@@ -77,7 +92,7 @@ def apply_broker_snapshot(
                     changed = True
     elif trade.lifecycle_state == "pending":
         exists = any(
-            str(item.get("ticket")) == str(trade.broker_order_id)
+            str(_broker_id(item)) == str(trade.broker_order_id)
             for item in orders
         )
         if not exists:
@@ -86,17 +101,25 @@ def apply_broker_snapshot(
                 (
                     item
                     for item in positions
-                    if expected_comment
-                    and str(item.get("comment", "")) == expected_comment
+                    if (
+                        client_order_id
+                        and item.get("clientId") == client_order_id
+                    )
+                    or (
+                        expected_comment
+                        and str(item.get("comment", "")) == expected_comment
+                    )
                 ),
                 None,
             )
             if activated:
                 trade.lifecycle_state = "open"
-                trade.broker_position_id = str(activated.get("ticket"))
+                trade.broker_position_id = str(_broker_id(activated))
                 trade.current_volume = Decimal(str(activated.get("volume", 0)))
-                trade.stop_loss = Decimal(str(activated.get("sl"))) if activated.get("sl") else None
-                trade.take_profit = Decimal(str(activated.get("tp"))) if activated.get("tp") else None
+                stop_loss = _broker_value(activated, "stopLoss", "sl")
+                take_profit = _broker_value(activated, "takeProfit", "tp")
+                trade.stop_loss = Decimal(str(stop_loss)) if stop_loss else None
+                trade.take_profit = Decimal(str(take_profit)) if take_profit else None
             else:
                 trade.lifecycle_state = "cancelled"
             changed = True

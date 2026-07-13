@@ -61,6 +61,38 @@ def test_snapshot_updates_current_volume_and_protective_levels() -> None:
     assert trade.broker_synced_at is not None
 
 
+def test_snapshot_understands_metaapi_streaming_position_shape() -> None:
+    trade = SimpleNamespace(
+        broker_position_id="2955992556",
+        broker_order_id="2955992556",
+        lifecycle_state="open",
+        current_volume=Decimal("0.01"),
+        stop_loss=None,
+        take_profit=None,
+        broker_synced_at=None,
+    )
+
+    changed = apply_broker_snapshot(
+        trade,
+        positions=[{
+            "id": "2955992556",
+            "volume": 0.01,
+            "stopLoss": 1.145,
+            "takeProfit": 1.13,
+            "clientId": "STRATEGY_POSITION_ORDER",
+        }],
+        orders=[],
+        observed_at=datetime.now(timezone.utc),
+        client_order_id="STRATEGY_POSITION_ORDER",
+    )
+
+    assert changed is True
+    assert trade.lifecycle_state == "open"
+    assert trade.current_volume == Decimal("0.01")
+    assert trade.stop_loss == Decimal("1.145")
+    assert trade.take_profit == Decimal("1.13")
+
+
 def test_missing_open_position_is_closed_by_complete_snapshot() -> None:
     trade = SimpleNamespace(
         broker_position_id="42",
@@ -102,6 +134,35 @@ def test_pending_order_activation_tracks_the_new_position() -> None:
             "volume": 0.10,
             "sl": 1.08,
             "tp": 1.12,
+        }],
+        orders=[],
+        observed_at=datetime.now(timezone.utc),
+        client_order_id="CLIENT123",
+    )
+
+    assert trade.lifecycle_state == "open"
+    assert trade.broker_position_id == "99"
+
+
+def test_pending_order_activation_matches_metaapi_client_id() -> None:
+    trade = SimpleNamespace(
+        broker_position_id=None,
+        broker_order_id="77",
+        lifecycle_state="pending",
+        current_volume=Decimal("0.10"),
+        stop_loss=None,
+        take_profit=None,
+        broker_synced_at=None,
+    )
+
+    apply_broker_snapshot(
+        trade,
+        positions=[{
+            "id": "99",
+            "clientId": "CLIENT123",
+            "volume": 0.10,
+            "stopLoss": 1.08,
+            "takeProfit": 1.12,
         }],
         orders=[],
         observed_at=datetime.now(timezone.utc),
