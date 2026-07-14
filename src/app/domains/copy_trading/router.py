@@ -1,16 +1,20 @@
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 import json
 import redis
+import redis.asyncio as async_redis
 import time
 import uuid as uuid_module
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.domains.copy_trading import live_updates as _live_updates  # noqa: F401
 from app.domains.copy_trading import service
 from app.domains.copy_trading.schemas import (
     CopyAccountPolicyResponse,
@@ -53,6 +57,47 @@ router = APIRouter(prefix="/copy-trading", tags=["copy-trading"])
 
 def _redis_client():
     return redis.Redis.from_url(settings.COPY_TRADING_REDIS_URL, decode_responses=True)
+
+
+@router.get("/live")
+async def copy_trading_live_updates(
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    async def events():
+        client = async_redis.Redis.from_url(
+            settings.COPY_TRADING_REDIS_URL,
+            decode_responses=True,
+        )
+        pubsub = client.pubsub()
+        channel = f"copy:live:{current_user.id}"
+        await pubsub.subscribe(channel)
+        try:
+            yield 'data: {"type":"connected"}\n\n'
+            while True:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=15,
+                )
+                if message:
+                    yield f"data: {message['data']}\n\n"
+                else:
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _publish_command(event_type: str, correlation_id: str, payload: dict, key: str) -> None:

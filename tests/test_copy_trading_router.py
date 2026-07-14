@@ -146,6 +146,7 @@ def test_create_source_is_ready_immediately_without_channel_analysis(
 
 def test_copy_trading_openapi_exposes_health_and_dead_letter_recovery() -> None:
     paths = TestClient(app).get("/openapi.json").json()["paths"]
+    assert "/copy-trading/live" in paths
 
     assert "/copy-trading/health" in paths
     assert "/copy-trading/launch-readiness" in paths

@@ -239,6 +239,64 @@ def test_telegram_worker_refreshes_attached_connection_heartbeats(session_local)
     db.commit.assert_called_once()
 
 
+def test_telegram_worker_recovers_missed_basic_group_messages_in_order():
+    connection_id = str(uuid.uuid4())
+    source_id = str(uuid.uuid4())
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.redis = MagicMock()
+    runtime.redis.get.return_value = "94926"
+    runtime.source_recovery_cache_at = float("inf")
+    runtime.source_recovery_cache = {
+        connection_id: [(source_id, -5572947762)],
+    }
+    publisher = AsyncMock()
+    client = MagicMock()
+    client.is_connected.return_value = True
+
+    async def messages(*_args, **_kwargs):
+        for message_id in (94927, 94928, 94929):
+            message = MagicMock()
+            message.id = message_id
+            yield message
+
+    client.iter_messages = messages
+    runtime.clients = {f"connection:{connection_id}": client}
+    runtime.message_publishers = {connection_id: publisher}
+
+    recovered = __import__("asyncio").run(
+        runtime._recover_missed_source_messages(basic_groups_only=True)
+    )
+
+    assert recovered == 3
+    assert [call.args[1].id for call in publisher.await_args_list] == [
+        94927,
+        94928,
+        94929,
+    ]
+
+
+def test_telegram_fast_recovery_leaves_channels_event_driven():
+    connection_id = str(uuid.uuid4())
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.redis = MagicMock()
+    runtime.source_recovery_cache_at = float("inf")
+    runtime.source_recovery_cache = {
+        connection_id: [(str(uuid.uuid4()), -1005572947762)],
+    }
+    client = MagicMock()
+    client.is_connected.return_value = True
+    client.iter_messages = MagicMock()
+    runtime.clients = {f"connection:{connection_id}": client}
+    runtime.message_publishers = {connection_id: AsyncMock()}
+
+    recovered = __import__("asyncio").run(
+        runtime._recover_missed_source_messages(basic_groups_only=True)
+    )
+
+    assert recovered == 0
+    client.iter_messages.assert_not_called()
+
+
 @pytest.fixture
 def fernet_key():
     return "roLlHRZXRXpcMgc52s8FRneJOfs52P7G98Ibee1w-Uo="

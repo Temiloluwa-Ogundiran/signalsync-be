@@ -11,9 +11,10 @@ import io
 from datetime import datetime, timezone
 
 import redis
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 import app.models  # noqa: F401 - register string-based ORM relationships for standalone workers
+from app.domains.copy_trading import live_updates as _live_updates  # noqa: F401
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.copy_trading.models import (
@@ -26,6 +27,8 @@ from app.domains.copy_trading.models import (
     TelegramSource,
     TelegramSourceType,
     CopyRoute,
+    CopyRouteState,
+    SignalConversation,
     TelegramAuthAttempt,
     TradeIntent,
 )
@@ -262,6 +265,11 @@ class TelegramSessionRuntime:
         self.cipher = SessionCipher(settings.ENCRYPTION_KEY)
         self.last_health_at = 0.0
         self.last_connection_heartbeat_at = 0.0
+        self.last_source_recovery_at = 0.0
+        self.last_full_source_recovery_at = 0.0
+        self.source_recovery_cache_at = 0.0
+        self.source_recovery_cache: dict[str, list[tuple[str, int]]] = {}
+        self.message_publishers = {}
         # Connection ids with a dialog refresh already running — prevents
         # overlapping iter_dialogs() walks (each is several GetDialogsRequest
         # calls) from stacking up and tripping Telegram's flood limit.
@@ -420,14 +428,17 @@ class TelegramSessionRuntime:
             except Exception:
                 logger.warning("Could not disconnect stale Telegram client connection_id=%s", connection_id, exc_info=True)
 
-        async def publish_message(event_type: str, event) -> None:
-            chat_id = int(event.chat_id)
-            message = event.message
+        async def publish_message(event_type: str, message) -> None:
+            chat_id = int(message.chat_id)
             text = message.message or ""
             with SessionLocal() as db:
                 source = db.execute(select(TelegramSource).where(TelegramSource.connection_id == uuid.UUID(connection_id), TelegramSource.telegram_chat_id == chat_id)).scalar_one_or_none()
                 connection = db.get(TelegramConnection, uuid.UUID(connection_id))
-                if source is None or connection is None or connection.is_paused or source.is_paused:
+                if source is None:
+                    return
+                cursor_key = f"copy:telegram:source-cursor:{source.id}"
+                if connection is None or connection.is_paused or source.is_paused:
+                    self._advance_source_cursor(cursor_key, int(message.id))
                     return
                 if not text.strip() and message.media:
                     counter_key = f"copy:telegram:image-only:{source.id}"
@@ -438,10 +449,12 @@ class TelegramSessionRuntime:
                     for route in routes:
                         db.add(CopyActivityEvent(user_id=route.user_id, route_id=route.id, source_id=source.id, connection_id=route.target_connection_id, correlation_id=str(uuid.uuid4()), action="source.image_message", level=CopyActivityLevel.warning, title="Image signal skipped", body=outcome.message, parsed_details={"recent_image_only_count": count}, broker_details={}))
                     db.commit()
+                    self._advance_source_cursor(cursor_key, int(message.id))
                     return
                 source_id = str(source.id)
                 source_type = source.source_type
             if not text.strip():
+                self._advance_source_cursor(cursor_key, int(message.id))
                 return
             sender_is_admin = source_type == TelegramSourceType.channel
             if (
@@ -485,9 +498,11 @@ class TelegramSessionRuntime:
                 "occurred_at": message.date.astimezone(timezone.utc).isoformat(),
             }
             self.bus.publish(CopyEvent.new(stream=StreamName.telegram_messages, event_type=event_type, correlation_id=str(uuid.uuid4()), payload=payload, idempotency_key=f"{connection_id}:{chat_id}:{message.id}:{event_type}"))
+            self._advance_source_cursor(cursor_key, int(message.id))
 
-        client.add_event_handler(lambda event: publish_message("message.created", event), events.NewMessage())
-        client.add_event_handler(lambda event: publish_message("message.edited", event), events.MessageEdited())
+        self.message_publishers[connection_id] = publish_message
+        client.add_event_handler(lambda event: publish_message("message.created", event.message), events.NewMessage())
+        client.add_event_handler(lambda event: publish_message("message.edited", event.message), events.MessageEdited())
         async def publish_deleted(event) -> None:
             chat_id = int(event.chat_id) if event.chat_id else None
             if chat_id is None:
@@ -501,6 +516,76 @@ class TelegramSessionRuntime:
                 self.bus.publish(CopyEvent.new(stream=StreamName.telegram_messages, event_type="message.deleted", correlation_id=str(uuid.uuid4()), payload={"connection_id": connection_id, "source_id": source_id, "chat_id": chat_id, "message_id": int(message_id)}, idempotency_key=f"{connection_id}:{chat_id}:{message_id}:deleted"))
         client.add_event_handler(publish_deleted, events.MessageDeleted())
         self.clients[f"connection:{connection_id}"] = client
+
+    def _advance_source_cursor(self, cursor_key: str, message_id: int) -> None:
+        current_cursor = int(self.redis.get(cursor_key) or 0)
+        if message_id > current_cursor:
+            self.redis.set(cursor_key, message_id)
+
+    def _refresh_source_recovery_cache(self) -> None:
+        cache: dict[str, list[tuple[str, int]]] = {}
+        with SessionLocal() as db:
+            sources = list(
+                db.execute(
+                    select(TelegramSource)
+                    .join(CopyRoute, CopyRoute.source_id == TelegramSource.id)
+                    .where(
+                        CopyRoute.state == CopyRouteState.active,
+                        TelegramSource.is_paused.is_(False),
+                    )
+                    .distinct()
+                ).scalars()
+            )
+            for source in sources:
+                connection_id = str(source.connection_id)
+                cache.setdefault(connection_id, []).append(
+                    (str(source.id), int(source.telegram_chat_id))
+                )
+                cursor_key = f"copy:telegram:source-cursor:{source.id}"
+                if self.redis.get(cursor_key) is not None:
+                    continue
+                last_message_id = db.scalar(
+                    select(func.max(SignalConversation.last_message_id)).where(
+                        SignalConversation.source_id == source.id
+                    )
+                )
+                if last_message_id is not None:
+                    self.redis.set(cursor_key, int(last_message_id))
+        self.source_recovery_cache = cache
+        self.source_recovery_cache_at = time.monotonic()
+
+    async def _recover_missed_source_messages(self, *, basic_groups_only: bool) -> int:
+        if time.monotonic() - self.source_recovery_cache_at >= 30:
+            self._refresh_source_recovery_cache()
+        recovered = 0
+        for connection_id, sources in self.source_recovery_cache.items():
+            client = self.clients.get(f"connection:{connection_id}")
+            publisher = self.message_publishers.get(connection_id)
+            if client is None or publisher is None or not client.is_connected():
+                continue
+            for source_id, chat_id in sources:
+                # Telethon marks channels/supergroups below -10^12. Basic groups
+                # need a fast safety poll because self-sent updates can be lost.
+                if basic_groups_only and chat_id <= -1_000_000_000_000:
+                    continue
+                cursor_key = f"copy:telegram:source-cursor:{source_id}"
+                cursor = int(self.redis.get(cursor_key) or 0)
+                if cursor == 0:
+                    latest = await client.get_messages(chat_id, limit=1)
+                    if latest:
+                        self.redis.set(cursor_key, int(latest[0].id))
+                    continue
+                async for message in client.iter_messages(
+                    chat_id,
+                    min_id=cursor,
+                    reverse=True,
+                    limit=100,
+                ):
+                    await publisher("message.created", message)
+                    recovered += 1
+        if recovered:
+            logger.warning("Recovered missed Telegram messages count=%s", recovered)
+        return recovered
 
     async def _new_client(self):
         from telethon import TelegramClient
@@ -618,6 +703,7 @@ class TelegramSessionRuntime:
                 if not await client.is_user_authorized():
                     raise RuntimeError("Telegram authorization expired")
                 await self._attach_updates(str(connection.id), client)
+                await client.catch_up()
                 asyncio.create_task(
                     self._refresh_dialog_cache(str(connection.id), client)
                 )
@@ -630,6 +716,8 @@ class TelegramSessionRuntime:
 
     async def run(self) -> None:
         await self.restore()
+        self._refresh_source_recovery_cache()
+        await self._recover_missed_source_messages(basic_groups_only=False)
         group = "telegram-session"
         consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
         self.bus.ensure_group(StreamName.telegram_commands, group)
@@ -643,6 +731,12 @@ class TelegramSessionRuntime:
             if now - self.last_connection_heartbeat_at >= 30:
                 await asyncio.to_thread(self._refresh_connection_heartbeats)
                 self.last_connection_heartbeat_at = now
+            if now - self.last_source_recovery_at >= 2:
+                await self._recover_missed_source_messages(basic_groups_only=True)
+                self.last_source_recovery_at = now
+            if now - self.last_full_source_recovery_at >= 60:
+                await self._recover_missed_source_messages(basic_groups_only=False)
+                self.last_full_source_recovery_at = now
             for _, messages in rows:
                 for message_id, fields in messages:
                     event = CopyEvent.from_fields(fields)
