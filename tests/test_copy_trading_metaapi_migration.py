@@ -8,6 +8,7 @@ from alembic.script import ScriptDirectory
 
 MIGRATION_NAME = "e1f2a3b4c5d6_add_metaapi_copy_connections.py"
 PAUSE_FLAG_MIGRATION_NAME = "f2a3b4c5d6e7_add_copy_connection_pause_flag.py"
+PRODUCTION_CONTROLS_MIGRATION_NAME = "d9f1a3c5e7b9_add_copy_production_controls.py"
 
 
 def _load_migration_module():
@@ -89,3 +90,13 @@ def test_metaapi_copy_pause_flag_migration_adds_missing_live_column() -> None:
     assert "_has_column" in migration
     assert "op.add_column" in migration
     assert "server_default=sa.false()" in migration
+
+
+def test_production_controls_migration_does_not_create_review_enum_twice() -> None:
+    root = Path(__file__).resolve().parents[1]
+    migration = (
+        root / "alembic" / "versions" / PRODUCTION_CONTROLS_MIGRATION_NAME
+    ).read_text(encoding="utf-8")
+
+    assert "review_state.create(op.get_bind(), checkfirst=True)" in migration
+    assert "create_type=False" in migration

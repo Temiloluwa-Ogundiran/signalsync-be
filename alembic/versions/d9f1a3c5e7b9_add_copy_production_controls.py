@@ -33,7 +33,13 @@ def upgrade() -> None:
     op.create_check_constraint("ck_copy_policy_trading_hours_pair", "copy_account_policies", "(trading_start_hour_utc IS NULL) = (trading_end_hour_utc IS NULL)")
     op.create_check_constraint("ck_copy_route_duplicate_window", "copy_routes", "semantic_duplicate_window_seconds BETWEEN 0 AND 3600")
 
-    review_state = postgresql.ENUM("pending", "approved", "ignored", name="signalreviewstateenum")
+    review_state = postgresql.ENUM(
+        "pending",
+        "approved",
+        "ignored",
+        name="signalreviewstateenum",
+        create_type=False,
+    )
     review_state.create(op.get_bind(), checkfirst=True)
     op.create_table(
         "copy_execution_metrics",
