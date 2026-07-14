@@ -50,15 +50,40 @@ def choose_conversation(
         "cancel_pending",
         "additional_tp",
     }
-    eligible = (
-        [
+    if action == "modify_sl_tp":
+        eligible = [
             item
             for item in ordered
             if not item.opening_submitted or item.has_active_trade
         ]
-        if action in management_actions
-        else ordered
-    )
+    elif action in management_actions:
+        eligible = [item for item in ordered if item.has_active_trade]
+    else:
+        eligible = ordered
+
+    # A standalone SL/TP line immediately following an incomplete opening is
+    # part of that signal, not an instruction for an older live position.
+    if action == "modify_sl_tp":
+        normalized_symbol = normalize_symbol(symbol)
+        normalized_direction = normalize_direction(direction)
+        incomplete_openings = [
+            item
+            for item in eligible
+            if not item.opening_submitted
+            and (
+                normalized_symbol is None
+                or normalize_symbol(item.symbol) == normalized_symbol
+            )
+            and (
+                normalized_direction is None
+                or normalize_direction(item.direction) == normalized_direction
+            )
+        ]
+        if len(incomplete_openings) == 1:
+            return ConversationChoice(incomplete_openings[0])
+        if len(incomplete_openings) > 1:
+            return ConversationChoice(None, ambiguous=True)
+
     if is_edit and message_id is not None:
         edit_matches = [
             item

@@ -225,6 +225,62 @@ def test_management_update_still_enriches_an_incomplete_opening() -> None:
     assert result.selected == incomplete
 
 
+def test_sl_tp_fragment_prefers_incomplete_opening_over_live_trade() -> None:
+    incomplete = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=30,
+        opening_submitted=False,
+        has_active_trade=False,
+    )
+    live = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=20,
+        opening_submitted=True,
+        has_active_trade=True,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        message_id=31,
+        symbol=None,
+        direction=None,
+        action="modify_sl_tp",
+        candidates=[live, incomplete],
+    )
+
+    assert result.selected == incomplete
+    assert result.ambiguous is False
+
+
+def test_break_even_does_not_attach_to_incomplete_opening() -> None:
+    incomplete = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=30,
+        opening_submitted=False,
+        has_active_trade=False,
+    )
+    live = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=20,
+        opening_submitted=True,
+        has_active_trade=True,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        symbol="EURUSD",
+        direction="sell",
+        action="break_even",
+        candidates=[incomplete, live],
+    )
+
+    assert result.selected == live
+
+
 def test_opening_message_claims_only_unresolved_symbol_less_conversation() -> None:
     unresolved = candidate(symbol=None, direction=None, root=10)
 
