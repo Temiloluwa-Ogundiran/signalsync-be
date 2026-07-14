@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 import uuid
 from datetime import datetime, timezone
 
@@ -37,6 +37,12 @@ from app.domains.copy_trading.workers import (
     expire_signal_threads,
 )
 from app.domains.copy_trading.metaapi_execution import execution_handler
+from app.domains.copy_trading.metaapi_execution import (
+    _connection_lock,
+    _release_connection_lock,
+    warm_active_copy_connections,
+)
+from redis.exceptions import LockNotOwnedError
 
 
 def event(event_type: str, payload: dict) -> CopyEvent:
@@ -54,6 +60,44 @@ def session_with_get(values: dict[type, object]) -> tuple[MagicMock, MagicMock]:
     db = session_local.return_value.__enter__.return_value
     db.get.side_effect = lambda model, _identifier: values.get(model)
     return session_local, db
+
+
+def test_connection_lock_outlives_metaapi_connection_timeout() -> None:
+    client = MagicMock()
+    connection_id = uuid.uuid4()
+
+    _connection_lock(client, connection_id)
+
+    client.lock.assert_called_once_with(
+        f"copy:connection-lock:{connection_id}",
+        timeout=max(300, settings.METAAPI_CONNECTION_TIMEOUT_SECONDS * 2 + 60),
+        blocking_timeout=10,
+    )
+
+
+def test_expired_connection_lock_does_not_fail_completed_delivery() -> None:
+    lock = MagicMock()
+    lock.release.side_effect = LockNotOwnedError("expired")
+
+    _release_connection_lock(lock, connection_id=uuid.uuid4())
+
+    lock.release.assert_called_once()
+
+
+@patch("app.domains.copy_trading.metaapi_execution.get_metaapi_runtime")
+@patch("app.domains.copy_trading.metaapi_execution.SessionLocal")
+@patch.object(settings, "COPY_TRADING_METAAPI_ENABLED", True)
+def test_active_copy_connections_are_warmed_before_signal_delivery(
+    session_local, get_runtime
+) -> None:
+    db = session_local.return_value.__enter__.return_value
+    db.execute.return_value.scalars.return_value = ["account-1", "account-2"]
+    runtime = get_runtime.return_value
+
+    count = warm_active_copy_connections()
+
+    assert count == 2
+    assert runtime.acquire.call_args_list == [call("account-1"), call("account-2")]
 
 
 def test_retried_signal_delivery_reuses_existing_conversation_by_correlation() -> None:

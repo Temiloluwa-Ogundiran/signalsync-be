@@ -1,9 +1,11 @@
 import hashlib
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from redis.exceptions import LockNotOwnedError
 from sqlalchemy import select
 
 from app.core.config import settings
@@ -38,6 +40,53 @@ OPEN_ACTIONS = {
     SignalAction.place_pending.value,
     SignalAction.additional_tp.value,
 }
+
+logger = logging.getLogger("copy-trading.metaapi-execution")
+
+
+def _connection_lock(client, connection_id):
+    # Acquisition and the broker action can each consume one MetaApi timeout.
+    lease_seconds = max(300, settings.METAAPI_CONNECTION_TIMEOUT_SECONDS * 2 + 60)
+    return client.lock(
+        f"copy:connection-lock:{connection_id}",
+        timeout=lease_seconds,
+        blocking_timeout=10,
+    )
+
+
+def _release_connection_lock(lock, *, connection_id) -> None:
+    try:
+        lock.release()
+    except LockNotOwnedError:
+        logger.warning(
+            "Connection lock expired before release connection_id=%s",
+            connection_id,
+        )
+
+
+def warm_active_copy_connections() -> int:
+    if not settings.COPY_TRADING_METAAPI_ENABLED:
+        return 0
+    with SessionLocal() as db:
+        account_ids = list(
+            db.execute(
+                select(CopyTradingConnection.metaapi_account_id)
+                .join(
+                    CopyRoute,
+                    CopyRoute.target_connection_id == CopyTradingConnection.id,
+                )
+                .where(
+                    CopyRoute.state == CopyRouteState.active,
+                    CopyTradingConnection.state == CopyTradingConnectionState.ready,
+                    CopyTradingConnection.metaapi_account_id.is_not(None),
+                )
+                .distinct()
+            ).scalars()
+        )
+    runtime = get_metaapi_runtime()
+    for account_id in account_ids:
+        runtime.acquire(account_id)
+    return len(account_ids)
 
 
 def is_permanent_metaapi_error(exc: Exception) -> bool:
@@ -354,9 +403,7 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
         route = db.get(CopyRoute, intent.route_id)
         connection = db.get(CopyTradingConnection, intent.connection_id)
         parsed_action = db.get(ParsedAction, intent.parsed_action_id)
-        lock = client.lock(
-            f"copy:connection-lock:{intent.connection_id}", timeout=30, blocking_timeout=10
-        )
+        lock = _connection_lock(client, intent.connection_id)
         if not lock.acquire(blocking=True):
             return DeliveryResult.retry("CONNECTION_BUSY", "The copy account is processing another action.")
         try:
@@ -513,7 +560,7 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
             db.commit()
             return DeliveryResult.success()
         finally:
-            lock.release()
+            _release_connection_lock(lock, connection_id=intent.connection_id)
 
 
 def execute_emergency(event: CopyEvent, client) -> DeliveryResult:
@@ -544,9 +591,7 @@ def execute_emergency(event: CopyEvent, client) -> DeliveryResult:
         for trade, route, connection in rows:
             if not connection.metaapi_account_id:
                 continue
-            lock = client.lock(
-                f"copy:connection-lock:{connection.id}", timeout=30, blocking_timeout=10
-            )
+            lock = _connection_lock(client, connection.id)
             if not lock.acquire(blocking=True):
                 return DeliveryResult.retry(
                     "CONNECTION_BUSY", "A copy account is processing another action."
@@ -570,7 +615,7 @@ def execute_emergency(event: CopyEvent, client) -> DeliveryResult:
                 trade.broker_synced_at = datetime.now(timezone.utc)
                 db.commit()
             finally:
-                lock.release()
+                _release_connection_lock(lock, connection_id=connection.id)
         return DeliveryResult.success()
 
 

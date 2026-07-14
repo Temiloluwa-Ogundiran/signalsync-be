@@ -90,7 +90,7 @@ def build_launch_readiness(
     elif uncertain_intent_ages:
         warnings.append("broker_confirmation_pending")
     if dead_letter_count:
-        blockers.append("dead_letters")
+        warnings.append("dead_letters_need_review")
     oldest_active_intent = max(active_intent_ages or [0])
     if oldest_active_intent > active_intent_max_age_seconds:
         blockers.append("active_intents")

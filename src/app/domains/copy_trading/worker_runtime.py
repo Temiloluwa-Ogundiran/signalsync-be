@@ -71,7 +71,13 @@ class StreamWorker:
     def run(self) -> None:
         self.bus.ensure_group(self.stream, self.group)
         if self.group == "copy-execution":
-            from app.domains.copy_trading.metaapi_execution import publish_unresolved_intents
+            from app.domains.copy_trading.metaapi_execution import (
+                publish_unresolved_intents,
+                warm_active_copy_connections,
+            )
+
+            warmed = warm_active_copy_connections()
+            logger.info("Warmed active MetaApi connections count=%s", warmed)
             publish_unresolved_intents(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
@@ -125,8 +131,12 @@ class StreamWorker:
             from app.domains.copy_trading.metaapi_execution import (
                 publish_unresolved_intents,
                 reconcile_copied_trades,
+                warm_active_copy_connections,
             )
 
+            warmed = warm_active_copy_connections()
+            if warmed:
+                logger.debug("Refreshed active MetaApi connections count=%s", warmed)
             publish_unresolved_intents(self.client)
             updated = reconcile_copied_trades()
             if updated:

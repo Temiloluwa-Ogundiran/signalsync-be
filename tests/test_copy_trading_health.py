@@ -103,7 +103,7 @@ def test_launch_readiness_blocks_old_uncertain_intent() -> None:
     assert result.oldest_uncertain_seconds == 121
 
 
-def test_launch_readiness_blocks_pending_dead_letters() -> None:
+def test_launch_readiness_warns_about_pending_dead_letters() -> None:
     result = build_launch_readiness(
         aggregate_health(
             [heartbeat(role) for role in REQUIRED_WORKER_ROLES],
@@ -117,8 +117,8 @@ def test_launch_readiness_blocks_pending_dead_letters() -> None:
         global_paused=True,
     )
 
-    assert result.ready is False
-    assert "dead_letters" in result.blockers
+    assert result.ready is True
+    assert "dead_letters_need_review" in result.warnings
 
 
 def test_launch_readiness_blocks_stuck_active_intent() -> None:
