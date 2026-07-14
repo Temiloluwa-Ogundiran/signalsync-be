@@ -270,6 +270,7 @@ class TelegramSessionRuntime:
         self.source_recovery_cache_at = 0.0
         self.source_recovery_cache: dict[str, list[tuple[str, int]]] = {}
         self.message_publishers = {}
+        self.message_locks: dict[tuple[str, int], asyncio.Lock] = {}
         # Connection ids with a dialog refresh already running — prevents
         # overlapping iter_dialogs() walks (each is several GetDialogsRequest
         # calls) from stacking up and tripping Telegram's flood limit.
@@ -428,7 +429,7 @@ class TelegramSessionRuntime:
             except Exception:
                 logger.warning("Could not disconnect stale Telegram client connection_id=%s", connection_id, exc_info=True)
 
-        async def publish_message(event_type: str, message) -> None:
+        async def publish_message_unlocked(event_type: str, message) -> None:
             chat_id = int(message.chat_id)
             text = message.message or ""
             with SessionLocal() as db:
@@ -499,6 +500,15 @@ class TelegramSessionRuntime:
             }
             self.bus.publish(CopyEvent.new(stream=StreamName.telegram_messages, event_type=event_type, correlation_id=str(uuid.uuid4()), payload=payload, idempotency_key=f"{connection_id}:{chat_id}:{message.id}:{event_type}"))
             self._advance_source_cursor(cursor_key, int(message.id))
+
+        async def publish_message(event_type: str, message) -> None:
+            chat_id = int(message.chat_id)
+            lock = self.message_locks.setdefault(
+                (connection_id, chat_id),
+                asyncio.Lock(),
+            )
+            async with lock:
+                await publish_message_unlocked(event_type, message)
 
         self.message_publishers[connection_id] = publish_message
         client.add_event_handler(lambda event: publish_message("message.created", event.message), events.NewMessage())
@@ -703,10 +713,6 @@ class TelegramSessionRuntime:
                 if not await client.is_user_authorized():
                     raise RuntimeError("Telegram authorization expired")
                 await self._attach_updates(str(connection.id), client)
-                await client.catch_up()
-                asyncio.create_task(
-                    self._refresh_dialog_cache(str(connection.id), client)
-                )
             except Exception as exc:
                 with SessionLocal() as db:
                     item = db.get(TelegramConnection, connection.id)

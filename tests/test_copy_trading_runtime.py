@@ -1,4 +1,5 @@
 from decimal import Decimal
+import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -295,6 +296,13 @@ def test_telegram_fast_recovery_leaves_channels_event_driven():
 
     assert recovered == 0
     client.iter_messages.assert_not_called()
+
+
+def test_telegram_restore_does_not_compete_with_signal_recovery():
+    source = inspect.getsource(TelegramSessionRuntime.restore)
+
+    assert "catch_up" not in source
+    assert "_refresh_dialog_cache" not in source
 
 
 @pytest.fixture
