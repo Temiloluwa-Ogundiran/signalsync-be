@@ -9,6 +9,8 @@ from app.domains.copy_trading.models import (
     CopyTradingUserSettings,
     CopyDeadLetter,
     CopyWorkerHealth,
+    CopyExecutionMetric,
+    CopySignalReview,
     CopiedTrade,
     RouteSignalAssembly,
     SignalConversation,
@@ -65,6 +67,15 @@ def test_reliability_runtime_tables_are_declared() -> None:
         "copy_dead_letters",
         "copy_worker_health",
     }
+
+
+def test_production_control_tables_are_declared() -> None:
+    assert CopyExecutionMetric.__tablename__ == "copy_execution_metrics"
+    assert CopySignalReview.__tablename__ == "copy_signal_reviews"
+    policy_columns = {column.name for column in inspect(CopyAccountPolicy).columns}
+    route_columns = {column.name for column in inspect(CopyRoute).columns}
+    assert {"max_spread_points", "max_slippage_points", "max_quote_age_seconds"} <= policy_columns
+    assert "semantic_duplicate_window_seconds" in route_columns
 
 
 def test_trade_intents_and_copied_trades_store_broker_identity_and_state() -> None:

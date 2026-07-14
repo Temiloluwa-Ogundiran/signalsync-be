@@ -16,6 +16,7 @@ from app.domains.copy_trading.models import (
     TelegramConnectionState,
     TelegramSourceState,
     TelegramSourceType,
+    SignalReviewState,
 )
 
 
@@ -66,6 +67,7 @@ class CopyRouteCreate(BaseModel):
     process_all_group_authors: bool = False
     notify_success: bool = True
     notify_failure: bool = True
+    semantic_duplicate_window_seconds: int = Field(default=30, ge=0, le=3600)
     allow_sl_tp_updates: bool = True
     allow_break_even: bool = True
     allow_additional_tp: bool = True
@@ -96,6 +98,7 @@ class CopyRouteUpdate(BaseModel):
     process_all_group_authors: Optional[bool] = None
     notify_success: Optional[bool] = None
     notify_failure: Optional[bool] = None
+    semantic_duplicate_window_seconds: Optional[int] = Field(default=None, ge=0, le=3600)
     allow_sl_tp_updates: Optional[bool] = None
     allow_break_even: Optional[bool] = None
     allow_additional_tp: Optional[bool] = None
@@ -146,6 +149,12 @@ class CopyAccountPolicyUpdate(BaseModel):
     allowed_symbols: Optional[list[str]] = Field(default=None, max_length=200)
     blocked_symbols: Optional[list[str]] = Field(default=None, max_length=200)
     market_signal_max_age_seconds: Optional[int] = Field(default=None, ge=1, le=3600)
+    max_spread_points: Optional[int] = Field(default=None, ge=0, le=100000)
+    max_slippage_points: Optional[int] = Field(default=None, ge=0, le=100000)
+    max_quote_age_seconds: Optional[int] = Field(default=None, ge=1, le=300)
+    high_spread_behavior: Optional[str] = Field(default=None, pattern=r"^(reject|wait)$")
+    trading_start_hour_utc: Optional[int] = Field(default=None, ge=0, le=23)
+    trading_end_hour_utc: Optional[int] = Field(default=None, ge=0, le=23)
     is_paused: Optional[bool] = None
 
     @model_validator(mode="after")
@@ -183,6 +192,12 @@ class CopyAccountPolicyResponse(BaseModel):
     allowed_symbols: list[str]
     blocked_symbols: list[str]
     market_signal_max_age_seconds: int
+    max_spread_points: Optional[int]
+    max_slippage_points: Optional[int]
+    max_quote_age_seconds: int
+    high_spread_behavior: str
+    trading_start_hour_utc: Optional[int]
+    trading_end_hour_utc: Optional[int]
     is_paused: bool
     created_at: datetime
     updated_at: datetime
@@ -205,6 +220,7 @@ class CopyRouteResponse(BaseModel):
     process_all_group_authors: bool
     notify_success: bool
     notify_failure: bool
+    semantic_duplicate_window_seconds: int
     allow_sl_tp_updates: bool
     allow_break_even: bool
     allow_additional_tp: bool
@@ -238,6 +254,50 @@ class CopyActivityResponse(BaseModel):
 class CopyActivityPageResponse(BaseModel):
     items: list[CopyActivityResponse]
     next_cursor: Optional[str] = None
+
+
+class CopyRoutePreviewRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=5000)
+    occurred_at: Optional[datetime] = None
+
+
+class CopyRoutePreviewResponse(BaseModel):
+    accepted: bool
+    reason: Optional[str]
+    action: str
+    signal_symbol: Optional[str]
+    broker_symbol: Optional[str]
+    direction: Optional[str]
+    volume: Optional[str]
+    take_profits: list[str]
+    warnings: list[str] = []
+
+
+class CopyExecutionLatencyResponse(BaseModel):
+    sample_count: int
+    p50_ms: Optional[int]
+    p95_ms: Optional[int]
+    p99_ms: Optional[int]
+    target_ms: int = 2000
+    over_target_count: int
+    recent: list[dict]
+
+
+class CopySignalReviewResponse(BaseModel):
+    id: uuid.UUID
+    route_id: uuid.UUID
+    source_id: uuid.UUID
+    correlation_id: str
+    parsed_details: dict
+    candidates: list[dict]
+    state: SignalReviewState
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CopySignalReviewApprove(BaseModel):
+    conversation_id: uuid.UUID
 
 
 class CopyHealthComponentResponse(BaseModel):

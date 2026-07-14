@@ -42,6 +42,9 @@ class MetaApiBroker:
     def account_information(self) -> dict:
         return dict(self.connection.terminal_state.account_information or {})
 
+    def price(self, symbol: str) -> dict:
+        return dict(self.connection.terminal_state.price(symbol) or {})
+
     def find_order(self, *, client_id: str, order_id: str | None = None):
         return next(
             (

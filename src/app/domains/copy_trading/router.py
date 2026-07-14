@@ -40,6 +40,11 @@ from app.domains.copy_trading.schemas import (
     TelegramPhoneAuthStart,
     TelegramSourceCreate,
     TelegramSourceResponse,
+    CopyRoutePreviewRequest,
+    CopyRoutePreviewResponse,
+    CopyExecutionLatencyResponse,
+    CopySignalReviewResponse,
+    CopySignalReviewApprove,
 )
 from app.core.config import settings
 from app.domains.copy_trading import repository as repo
@@ -48,6 +53,7 @@ from app.domains.copy_trading.health import add_metaapi_health, aggregate_health
 from app.domains.copy_trading.telegram_auth import decode_auth_state, encode_auth_state
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
+from app.domains.copy_trading import operator_tools
 from app.domains.users.models import User
 from app.shared.deps import get_current_user
 
@@ -344,6 +350,25 @@ def get_route(
     return CopyRouteResponse.model_validate(route)
 
 
+@router.post("/routes/{route_id}/preview", response_model=CopyRoutePreviewResponse)
+def preview_route(
+    route_id: uuid.UUID,
+    payload: CopyRoutePreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopyRoutePreviewResponse:
+    route = service.get_route(db, current_user=current_user, route_id=route_id)
+    return CopyRoutePreviewResponse.model_validate(
+        operator_tools.preview_route(
+            db,
+            current_user=current_user,
+            route=route,
+            text=payload.text,
+            occurred_at=payload.occurred_at,
+        )
+    )
+
+
 @router.patch("/routes/{route_id}", response_model=CopyRouteResponse)
 def update_route(
     route_id: uuid.UUID,
@@ -416,6 +441,60 @@ def list_activity(
     visible = events[:limit]
     next_cursor = visible[-1].created_at.isoformat() if has_more and visible else None
     return CopyActivityPageResponse(items=[CopyActivityResponse.model_validate(event) for event in visible], next_cursor=next_cursor)
+
+
+@router.get("/latency", response_model=CopyExecutionLatencyResponse)
+def copy_latency(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopyExecutionLatencyResponse:
+    return CopyExecutionLatencyResponse.model_validate(
+        operator_tools.latency_summary(db, user_id=current_user.id)
+    )
+
+
+@router.get("/signal-reviews", response_model=list[CopySignalReviewResponse])
+def signal_reviews(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[CopySignalReviewResponse]:
+    return [
+        CopySignalReviewResponse.model_validate(item)
+        for item in operator_tools.list_reviews(db, user_id=current_user.id)
+    ]
+
+
+@router.post("/signal-reviews/{review_id}/approve", response_model=CopySignalReviewResponse)
+def approve_signal_review(
+    review_id: uuid.UUID,
+    payload: CopySignalReviewApprove,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopySignalReviewResponse:
+    item = operator_tools.resolve_review(
+        db,
+        user_id=current_user.id,
+        review_id=review_id,
+        conversation_id=payload.conversation_id,
+        client=_redis_client(),
+    )
+    return CopySignalReviewResponse.model_validate(item)
+
+
+@router.post("/signal-reviews/{review_id}/ignore", response_model=CopySignalReviewResponse)
+def ignore_signal_review(
+    review_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CopySignalReviewResponse:
+    item = operator_tools.resolve_review(
+        db,
+        user_id=current_user.id,
+        review_id=review_id,
+        conversation_id=None,
+        client=_redis_client(),
+    )
+    return CopySignalReviewResponse.model_validate(item)
 
 
 @router.get("/health", response_model=CopySystemHealthResponse)

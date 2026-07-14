@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.domains.copy_trading.models import LotDistribution, MinimumFields, TakeProfitMode
 from app.domains.copy_trading.schemas import (
+    CopyAccountPolicyUpdate,
     CopyActivityResponse,
     CopyRouteCreate,
     CopyRouteUpdate,
@@ -48,6 +49,14 @@ def test_route_update_rejects_assembly_window_above_ten_minutes() -> None:
 def test_route_update_preserves_omitted_fields() -> None:
     payload = CopyRouteUpdate(notify_success=False)
     assert payload.model_fields_set == {"notify_success"}
+
+
+def test_production_controls_are_bounded() -> None:
+    assert CopyRouteUpdate(semantic_duplicate_window_seconds=0).semantic_duplicate_window_seconds == 0
+    with pytest.raises(ValidationError):
+        CopyRouteUpdate(semantic_duplicate_window_seconds=3601)
+    with pytest.raises(ValidationError):
+        CopyAccountPolicyUpdate(high_spread_behavior="loop_forever")
 
 
 def test_activity_response_never_exposes_encrypted_raw_message() -> None:

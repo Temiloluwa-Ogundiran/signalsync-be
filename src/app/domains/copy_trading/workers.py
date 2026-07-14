@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -50,6 +51,7 @@ from app.domains.copy_trading.models import (
     RouteSignalAssembly,
     SignalConversation,
     SignalConversationState,
+    CopySignalReview,
     SignalThread,
     SignalThreadState,
     TelegramSource,
@@ -64,6 +66,18 @@ from app.domains.copy_trading.symbols import normalize_symbol
 
 
 logger = logging.getLogger("copy-trading.signal")
+
+
+def _semantic_fingerprint(route: CopyRoute, payload: dict) -> str:
+    meaningful = {
+        key: payload.get(key)
+        for key in (
+            "action", "symbol", "direction", "entry", "entry_high",
+            "stop_loss", "take_profits", "close_fraction",
+        )
+    }
+    encoded = json.dumps(meaningful, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(f"{route.id}:{encoded}".encode("utf-8")).hexdigest()
 
 
 def _load_existing_conversation_for_correlation(
@@ -440,6 +454,18 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                 choice = selected_choice.selected
                 ambiguous = selected_choice.ambiguous
             if ambiguous:
+                encrypted_payload = SessionCipher(settings.ENCRYPTION_KEY).encrypt(
+                    json.dumps(event.payload, default=str)
+                )
+                candidate_payload = [
+                    {
+                        "conversation_id": str(item.id),
+                        "symbol": item.symbol,
+                        "direction": item.direction,
+                        "updated_at": item.updated_at.isoformat(),
+                    }
+                    for item in candidates
+                ]
                 for route in routes:
                     _activity(
                         db,
@@ -450,6 +476,17 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                         level=CopyActivityLevel.warning,
                         details=parsed.model_dump(mode="json"),
                         raw_message=event.payload.get("text"),
+                    )
+                    db.add(
+                        CopySignalReview(
+                            user_id=route.user_id,
+                            route_id=route.id,
+                            source_id=route.source_id,
+                            correlation_id=event.correlation_id,
+                            encrypted_event_payload=encrypted_payload,
+                            parsed_details=parsed.model_dump(mode="json"),
+                            candidates=candidate_payload,
+                        )
                     )
                 db.commit()
                 return DeliveryResult.success()
@@ -668,6 +705,28 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                             raw_message=event.payload.get("text"),
                         )
                         continue
+                duplicate_window = route.semantic_duplicate_window_seconds
+                if duplicate_window > 0:
+                    fingerprint = _semantic_fingerprint(route, merged)
+                    accepted = client.set(
+                        f"copy:semantic:{fingerprint}",
+                        event.correlation_id,
+                        nx=True,
+                        ex=duplicate_window,
+                    )
+                    if not accepted:
+                        assembly.state = RouteAssemblyState.skipped
+                        _activity(
+                            db,
+                            route=route,
+                            correlation_id=conversation.correlation_id,
+                            action="signal.duplicate",
+                            title="Duplicate signal ignored",
+                            level=CopyActivityLevel.info,
+                            details=merged,
+                            raw_message=event.payload.get("text"),
+                        )
+                        continue
                 legs = intent_legs_for_action(
                     action=signal.action,
                     fixed_lot=route.fixed_lot,
@@ -686,6 +745,12 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                         else None
                     )
                     intent_payload["conversation_id"] = str(conversation.id)
+                    intent_payload["_telemetry"] = {
+                        "correlation_id": conversation.correlation_id,
+                        "telegram_at": event.payload.get("occurred_at"),
+                        "ingested_at": event.occurred_at,
+                        "validated_at": datetime.now(timezone.utc).isoformat(),
+                    }
                     key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{revision}:{route.id}:{signal.action.value}:{index}"
                     intent_id = uuid.uuid4()
                     intent = TradeIntent(

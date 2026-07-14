@@ -49,6 +49,26 @@ def test_unhealthy_connection_is_closed_and_replaced() -> None:
     asyncio.run(scenario())
 
 
+def test_health_monitor_disconnect_is_replaced_before_use() -> None:
+    async def scenario() -> None:
+        account = FakeStreamingAccount("account-1")
+        manager = MetaApiConnectionManager(
+            api=FakeStreamingApi(account), timeout_seconds=30, idle_seconds=300
+        )
+        first = await manager.acquire("account-1")
+        first.health_monitor = type(
+            "HealthMonitor", (), {"health_status": {"connected": False}}
+        )()
+
+        second = await manager.acquire("account-1")
+
+        assert second is not first
+        assert first.close_calls == 1
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_idle_eviction_and_shutdown_close_connections() -> None:
     async def scenario() -> None:
         now = [100.0]

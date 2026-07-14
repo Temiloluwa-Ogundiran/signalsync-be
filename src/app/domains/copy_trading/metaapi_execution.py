@@ -15,6 +15,11 @@ from app.domains.copy_trading.engine import SignalAction
 from app.domains.copy_trading.execution import ensure_account_risk_within_limits
 from app.domains.copy_trading.metaapi_broker import MetaApiBroker
 from app.domains.copy_trading.metaapi_connections import get_metaapi_runtime
+from app.domains.copy_trading.quality import ExecutionQualityError, check_execution_quality
+from app.domains.copy_trading.telemetry import record_execution_metric
+from app.domains.notifications.models import NotificationType
+from app.domains.notifications.service import notify
+from app.domains.users.models import User
 from app.domains.copy_trading.reconciliation import apply_broker_snapshot
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
@@ -185,6 +190,48 @@ def _record_activity(
             broker_details=broker_details or {},
         )
     )
+
+
+def _notify_execution(db, *, route, title: str, body: str, success: bool, details: dict) -> None:
+    enabled = route.notify_success if success else route.notify_failure
+    if not enabled:
+        return
+    notify(
+        db,
+        user_id=route.user_id,
+        title=title,
+        body=body,
+        link="/copy-trading/activity",
+        type=NotificationType.success if success else NotificationType.error,
+    )
+    user = db.get(User, route.user_id)
+    if user and user.email:
+        try:
+            from app.tasks.copy_trading_tasks import send_execution_email_task
+
+            send_execution_email_task.delay(user.email, title, details)
+        except Exception:
+            logger.exception("Could not enqueue copy-trading email user_id=%s", route.user_id)
+
+
+def _quality_details(policy, broker, selected, payload) -> dict:
+    quality = check_execution_quality(
+        price=broker.price(selected.name),
+        symbol=selected,
+        direction=str(payload.get("direction") or "buy"),
+        entry=Decimal(str(payload["entry"])) if payload.get("entry") is not None else None,
+        max_spread_points=policy.max_spread_points,
+        max_slippage_points=policy.max_slippage_points,
+        max_quote_age_seconds=policy.max_quote_age_seconds,
+        high_spread_behavior=policy.high_spread_behavior,
+        trading_start_hour_utc=policy.trading_start_hour_utc,
+        trading_end_hour_utc=policy.trading_end_hour_utc,
+    )
+    return {
+        "spread_points": str(quality.spread_points),
+        "quote_age_seconds": round(quality.quote_age_seconds, 3),
+        "slippage_points": str(quality.slippage_points) if quality.slippage_points is not None else None,
+    }
 
 
 def _activity_copy(payload: dict, result: dict) -> tuple[str, str]:
@@ -427,7 +474,11 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                 db.commit()
                 return DeliveryResult.success()
             runtime = get_metaapi_runtime()
-            broker = MetaApiBroker(runtime.acquire(connection.metaapi_account_id))
+            try:
+                broker = MetaApiBroker(runtime.acquire(connection.metaapi_account_id))
+            except Exception as exc:
+                runtime.mark_unhealthy(connection.metaapi_account_id)
+                return DeliveryResult.retry(exc.__class__.__name__.upper(), str(exc))
             payload = intent.request_payload
             selected = (
                 _resolve_broker_symbol(db, route, connection, broker, payload["symbol"])
@@ -450,6 +501,43 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                 if payload["action"] in OPEN_ACTIONS
                 else None
             )
+            if payload["action"] in OPEN_ACTIONS and selected is not None:
+                try:
+                    payload["_execution_quality"] = _quality_details(
+                        policy, broker, selected, payload
+                    )
+                except ExecutionQualityError as exc:
+                    intent.attempt_count += 1
+                    if exc.retryable and intent.attempt_count <= 1:
+                        intent.state = TradeIntentState.retryable
+                        intent.last_error_code = exc.code
+                        db.commit()
+                        return DeliveryResult.retry(exc.code, str(exc))
+                    intent.state = TradeIntentState.failed
+                    intent.last_error_code = exc.code
+                    intent.broker_result = {"message": str(exc)}
+                    _record_activity(
+                        db,
+                        route,
+                        event,
+                        "execution.blocked",
+                        "Trade blocked by execution settings",
+                        CopyActivityLevel.warning,
+                        body=str(exc),
+                        parsed_details=payload,
+                        broker_details={"error_code": exc.code},
+                    )
+                    record_execution_metric(db, intent=intent, route=route, status="blocked")
+                    _notify_execution(
+                        db,
+                        route=route,
+                        title="Copied trade blocked",
+                        body=str(exc),
+                        success=False,
+                        details={"symbol": payload.get("symbol"), "reason": str(exc)},
+                    )
+                    db.commit()
+                    return DeliveryResult.success()
             try:
                 _enforce_live_account_risk(
                     db,
@@ -474,10 +562,20 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                     parsed_details=payload,
                     broker_details={"error_code": "RISK_LIMIT_REACHED"},
                 )
+                record_execution_metric(db, intent=intent, route=route, status="blocked")
+                _notify_execution(
+                    db,
+                    route=route,
+                    title="Copied trade blocked",
+                    body=str(exc),
+                    success=False,
+                    details={"symbol": payload.get("symbol"), "reason": str(exc)},
+                )
                 db.commit()
                 return DeliveryResult.success()
             intent.state = TradeIntentState.submitted
             intent.submitted_at = datetime.now(timezone.utc)
+            payload.setdefault("_telemetry", {})["submitted_at"] = intent.submitted_at.isoformat()
             intent.attempt_count += 1
             db.commit()
             try:
@@ -485,6 +583,8 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                     runtime, broker, route, intent, payload, copied, selected
                 )
             except Exception as exc:
+                resolved_at = datetime.now(timezone.utc)
+                payload.setdefault("_telemetry", {})["resolved_at"] = resolved_at.isoformat()
                 permanent = is_permanent_metaapi_error(exc)
                 intent.state = TradeIntentState.failed if permanent else TradeIntentState.uncertain
                 intent.last_error_code = exc.__class__.__name__
@@ -503,14 +603,30 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                         "message": str(exc)[:500],
                     },
                 )
+                record_execution_metric(
+                    db,
+                    intent=intent,
+                    route=route,
+                    status="failed" if permanent else "uncertain",
+                )
+                _notify_execution(
+                    db,
+                    route=route,
+                    title="Copy trade rejected" if permanent else "Broker confirmation delayed",
+                    body=_friendly_broker_error(exc),
+                    success=False,
+                    details={"symbol": payload.get("symbol"), "reason": str(exc)[:500]},
+                )
                 db.commit()
                 if not permanent:
+                    runtime.mark_unhealthy(connection.metaapi_account_id)
                     _publish_reconcile(client, event, intent)
                 return DeliveryResult.success()
 
             intent.state = TradeIntentState.confirmed
             intent.broker_result = result
             intent.resolved_at = datetime.now(timezone.utc)
+            payload.setdefault("_telemetry", {})["resolved_at"] = intent.resolved_at.isoformat()
             action = payload["action"]
             if action in OPEN_ACTIONS:
                 db.add(
@@ -556,6 +672,31 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                 body=activity_body,
                 parsed_details=payload,
                 broker_details=result,
+            )
+            metric = record_execution_metric(db, intent=intent, route=route, status="confirmed")
+            if metric.total_ms is not None and metric.total_ms > 2000:
+                _record_activity(
+                    db,
+                    route,
+                    event,
+                    "latency.slow",
+                    "Copy execution exceeded the 2-second target",
+                    CopyActivityLevel.warning,
+                    body=f"End-to-end execution took {metric.total_ms / 1000:.2f} seconds.",
+                    parsed_details={"total_ms": metric.total_ms},
+                )
+            _notify_execution(
+                db,
+                route=route,
+                title=activity_title,
+                body=activity_body,
+                success=True,
+                details={
+                    "symbol": payload.get("symbol"),
+                    "action": payload.get("action"),
+                    "volume": str(submitted_volume) if submitted_volume is not None else None,
+                    **result,
+                },
             )
             db.commit()
             return DeliveryResult.success()

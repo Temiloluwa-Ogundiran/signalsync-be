@@ -216,6 +216,13 @@ def update_account_policy(
         db, connection_id=connection_id, user_id=current_user.id
     )
     changes = payload.model_dump(exclude_unset=True)
+    start_hour = changes.get("trading_start_hour_utc", policy.trading_start_hour_utc)
+    end_hour = changes.get("trading_end_hour_utc", policy.trading_end_hour_utc)
+    if (start_hour is None) != (end_hour is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Trading start and end hours must be set or cleared together.",
+        )
     proposed_caps = {
         "max_lot": changes.get("max_lot"),
         "max_lot_per_trade": changes.get("max_lot_per_trade"),
@@ -300,7 +307,7 @@ def create_route(
     )
     if payload.fixed_lot > policy.max_lot or payload.fixed_lot > policy.max_lot_per_trade:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=422,
             detail=(
                 "Fixed lot exceeds this account's configured trade or exposure limit."
             ),
@@ -359,6 +366,7 @@ def update_route(
         "process_all_group_authors": route.process_all_group_authors,
         "notify_success": route.notify_success,
         "notify_failure": route.notify_failure,
+        "semantic_duplicate_window_seconds": route.semantic_duplicate_window_seconds,
         "allow_sl_tp_updates": route.allow_sl_tp_updates,
         "allow_break_even": route.allow_break_even,
         "allow_additional_tp": route.allow_additional_tp,
@@ -379,7 +387,7 @@ def update_route(
         or validated.fixed_lot > policy.max_lot_per_trade
     ):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                status_code=422,
             detail=(
                 "Fixed lot exceeds this account's configured trade or exposure limit."
             ),

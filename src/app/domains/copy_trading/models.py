@@ -14,6 +14,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -106,6 +107,12 @@ class CopyActivityLevel(str, enum.Enum):
     success = "success"
     warning = "warning"
     error = "error"
+
+
+class SignalReviewState(str, enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    ignored = "ignored"
 
 
 class AutomationConfidence(str, enum.Enum):
@@ -324,6 +331,26 @@ class CopyAccountPolicy(Base):
             "market_signal_max_age_seconds <= 3600",
             name="ck_copy_account_policy_signal_age_range",
         ),
+        CheckConstraint(
+            "max_quote_age_seconds BETWEEN 1 AND 300",
+            name="ck_copy_policy_quote_age",
+        ),
+        CheckConstraint(
+            "max_spread_points IS NULL OR max_spread_points >= 0",
+            name="ck_copy_policy_spread_nonnegative",
+        ),
+        CheckConstraint(
+            "max_slippage_points IS NULL OR max_slippage_points >= 0",
+            name="ck_copy_policy_slippage_nonnegative",
+        ),
+        CheckConstraint(
+            "high_spread_behavior IN ('reject', 'wait')",
+            name="ck_copy_policy_spread_behavior",
+        ),
+        CheckConstraint(
+            "(trading_start_hour_utc IS NULL) = (trading_end_hour_utc IS NULL)",
+            name="ck_copy_policy_trading_hours_pair",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -353,6 +380,14 @@ class CopyAccountPolicy(Base):
     allowed_symbols: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     blocked_symbols: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     market_signal_max_age_seconds: Mapped[int] = mapped_column(nullable=False, default=30)
+    max_spread_points: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_slippage_points: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_quote_age_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    high_spread_behavior: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="reject"
+    )
+    trading_start_hour_utc: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    trading_end_hour_utc: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     daily_equity_anchor: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 2), nullable=True)
     daily_equity_anchor_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     peak_equity: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 2), nullable=True)
@@ -373,6 +408,10 @@ class CopyRoute(Base):
             "assembly_window_seconds IS NULL OR "
             "(assembly_window_seconds >= 1 AND assembly_window_seconds <= 600)",
             name="ck_copy_route_assembly_window",
+        ),
+        CheckConstraint(
+            "semantic_duplicate_window_seconds BETWEEN 0 AND 3600",
+            name="ck_copy_route_duplicate_window",
         ),
     )
 
@@ -422,6 +461,9 @@ class CopyRoute(Base):
     process_all_group_authors: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notify_success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notify_failure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    semantic_duplicate_window_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30
+    )
     allow_sl_tp_updates: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     allow_break_even: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     allow_additional_tp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -739,5 +781,53 @@ class CopyWorkerHealth(Base):
     pending_count: Mapped[int] = mapped_column(nullable=False, default=0)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class CopyExecutionMetric(Base):
+    __tablename__ = "copy_execution_metrics"
+    __table_args__ = (
+        Index("ix_copy_execution_metric_user_created", "user_id", "created_at"),
+        Index("ix_copy_execution_metric_route_created", "route_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    route_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_routes.id", ondelete="CASCADE"), nullable=False, index=True)
+    intent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("trade_intents.id", ondelete="CASCADE"), nullable=False, unique=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    symbol: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    telegram_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingestion_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    assembly_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    broker_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class CopySignalReview(Base):
+    __tablename__ = "copy_signal_reviews"
+    __table_args__ = (
+        Index("ix_copy_signal_review_user_state", "user_id", "state", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    route_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("copy_routes.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("telegram_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    encrypted_event_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    parsed_details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    candidates: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    state: Mapped[SignalReviewState] = mapped_column(Enum(SignalReviewState, values_callable=enum_values, name="signalreviewstateenum"), nullable=False, default=SignalReviewState.pending)
+    resolved_conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("signal_conversations.id", ondelete="SET NULL"), nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)

@@ -32,16 +32,29 @@ class MetaApiConnectionManager:
     def warm_count(self) -> int:
         return len(self._entries)
 
+    @staticmethod
+    def _healthy(connection: object) -> bool:
+        monitor = getattr(connection, "health_monitor", None)
+        health = getattr(monitor, "health_status", None)
+        if not isinstance(health, dict):
+            return True
+        return health.get("connected") is not False and health.get("synchronized") is not False
+
     async def acquire(self, account_id: str):
+        stale = None
         async with self._lock:
             entry = self._entries.get(account_id)
-            if entry is not None:
+            if entry is not None and self._healthy(entry.connection):
                 entry.last_used_at = self._clock()
                 return entry.connection
+            if entry is not None:
+                stale = self._entries.pop(account_id).connection
             opening = self._opening.get(account_id)
             if opening is None:
                 opening = asyncio.create_task(self._open(account_id))
                 self._opening[account_id] = opening
+        if stale is not None:
+            await stale.close()
         return await opening
 
     async def _open(self, account_id: str):
@@ -176,6 +189,10 @@ class MetaApiRuntime:
     def close_account(self, account_id: str) -> None:
         if self._manager is not None:
             self._submit(self._manager.close_account(account_id))
+
+    def mark_unhealthy(self, account_id: str) -> None:
+        if self._manager is not None:
+            self._submit(self._manager.mark_unhealthy(account_id))
 
     def shutdown(self) -> None:
         if self._thread is None or not self._thread.is_alive() or self._loop is None:

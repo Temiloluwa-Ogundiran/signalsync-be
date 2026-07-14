@@ -6,7 +6,11 @@ celery_app = Celery(
     "synctrades",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["app.tasks.journal_sync_tasks", "app.tasks.auth_tasks"],
+    include=[
+        "app.tasks.journal_sync_tasks",
+        "app.tasks.auth_tasks",
+        "app.tasks.copy_trading_tasks",
+    ],
 )
 
 celery_app.conf.update(

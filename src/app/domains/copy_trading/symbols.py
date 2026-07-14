@@ -15,6 +15,7 @@ class BrokerSymbol:
     volume_step: Decimal = Decimal("0.01")
     filling_modes: tuple[str, ...] = ()
     execution_mode: str | None = None
+    point: Decimal = Decimal("0.00001")
 
 
 def broker_symbol_from_metaapi(specification: dict) -> BrokerSymbol:
@@ -29,6 +30,7 @@ def broker_symbol_from_metaapi(specification: dict) -> BrokerSymbol:
         volume_step=Decimal(str(specification.get("volumeStep") or "0.01")),
         filling_modes=tuple(specification.get("fillingModes") or ()),
         execution_mode=specification.get("executionMode"),
+        point=Decimal(str(specification.get("point") or "0.00001")),
     )
 
 
