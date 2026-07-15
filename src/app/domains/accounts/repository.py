@@ -295,6 +295,15 @@ def count_closed_trades_for_accounts(
     return {account_id: int(count) for account_id, count in db.execute(stmt).all()}
 
 
+def get_latest_closed_trade_at(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+) -> Optional[datetime]:
+    stmt = select(func.max(Trade.closed_at)).where(Trade.account_id == account_id)
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def set_account_last_synced_at(
     db: Session, account: TradingAccount, synced_at: datetime
 ) -> None:

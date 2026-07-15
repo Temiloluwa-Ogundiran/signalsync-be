@@ -12,6 +12,7 @@ import app.domains.auth.models  # noqa: F401
 
 from app.domains.accounts.models import TradingAccount, TradingPlatform, TradingAccountType
 from app.domains.accounts.models import Trade
+from app.core.config import settings
 from app.domains.accounts.sync import SyncResult, ingest_mt5_core_history_result, sync_account_deals_mt5
 
 @pytest.fixture
@@ -178,6 +179,8 @@ async def test_manual_mt5_sync_default_window_matches_journal_range(
     mock_repo.try_acquire_account_sync_lock.return_value = True
     mock_repo.get_latest_account_snapshot_balance.return_value = Decimal("501103.19")
     mock_repo.count_closed_trades_for_accounts.return_value = {mock_account.id: 9}
+    latest_closed_at = datetime(2026, 7, 14, 12, 30, tzinfo=timezone.utc)
+    mock_repo.get_latest_closed_trade_at.return_value = latest_closed_at
     mock_ingest.return_value = SyncResult(inserted_trades=0, touched_trading_dates=0)
     mock_client = AsyncMock()
     mock_client.submit_history_sync.return_value = {
@@ -193,6 +196,10 @@ async def test_manual_mt5_sync_default_window_matches_journal_range(
     assert datetime.now(timezone.utc) - sync_kwargs["from_time"] >= timedelta(days=29, hours=23)
     assert sync_kwargs["previous_balance"] == Decimal("501103.19")
     assert sync_kwargs["known_closed_trade_count"] == 9
+    assert sync_kwargs["known_latest_closed_at"] == latest_closed_at
+    mock_client_cls.assert_called_once_with(
+        poll_interval=settings.MT5_CORE_SYNC_POLL_INTERVAL_SECONDS,
+    )
 
 
 @pytest.mark.anyio

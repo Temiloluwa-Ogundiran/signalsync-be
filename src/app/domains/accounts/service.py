@@ -249,8 +249,10 @@ async def connect_account(
     return account
 
 
-def list_accounts(db: Session, *, current_user: User) -> list[TradingAccount]:
-    accounts = account_repo.list_accounts_for_user(db, current_user.id)
+def _enrich_account_summaries(
+    db: Session,
+    accounts: list[TradingAccount],
+) -> list[TradingAccount]:
     if not accounts:
         return accounts
 
@@ -270,6 +272,11 @@ def list_accounts(db: Session, *, current_user: User) -> list[TradingAccount]:
     return accounts
 
 
+def list_accounts(db: Session, *, current_user: User) -> list[TradingAccount]:
+    accounts = account_repo.list_accounts_for_user(db, current_user.id)
+    return _enrich_account_summaries(db, accounts)
+
+
 def get_account(
     db: Session, *, current_user: User, account_id: uuid.UUID
 ) -> TradingAccount:
@@ -278,7 +285,7 @@ def get_account(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Trading account not found."
         )
-    return account
+    return _enrich_account_summaries(db, [account])[0]
 
 
 async def enable_trader_access(

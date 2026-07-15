@@ -225,6 +225,7 @@ class Mt5CoreClient:
         credentials: dict[str, Any],
         previous_balance: Optional[Decimal] = None,
         known_closed_trade_count: Optional[int] = None,
+        known_latest_closed_at: Optional[datetime] = None,
         correlation_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Submit a history sync job and poll until completion."""
@@ -243,6 +244,11 @@ class Mt5CoreClient:
                 float(previous_balance) if previous_balance is not None else None
             ),
             "known_closed_trade_count": known_closed_trade_count,
+            "known_latest_closed_at": (
+                known_latest_closed_at.isoformat()
+                if known_latest_closed_at is not None
+                else None
+            ),
             "credentials": {
                 "login": str(credentials["login"]),
                 "password": str(credentials["password"]),

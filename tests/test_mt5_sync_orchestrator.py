@@ -666,6 +666,34 @@ def test_list_accounts_includes_latest_snapshot_balance_and_trade_count(
     assert accounts[0].closed_trade_count == 10
 
 
+@patch("app.domains.accounts.service.account_repo")
+def test_get_account_includes_latest_snapshot_balance_and_trade_count(
+    mock_account_repo,
+    db_session: MagicMock,
+) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    account = MagicMock()
+    account.id = uuid.uuid4()
+    snapshot = MagicMock(balance=Decimal("10000.00"), equity=Decimal("10050.00"))
+    mock_account_repo.get_account_by_id_for_user.return_value = account
+    mock_account_repo.get_latest_snapshots_for_accounts.return_value = {
+        account.id: snapshot,
+    }
+    mock_account_repo.count_closed_trades_for_accounts.return_value = {
+        account.id: 10,
+    }
+
+    result = account_service.get_account(
+        db_session,
+        current_user=user,
+        account_id=account.id,
+    )
+
+    assert result.latest_balance == Decimal("10000.00")
+    assert result.latest_equity == Decimal("10050.00")
+    assert result.closed_trade_count == 10
+
+
 @patch("app.domains.journal.service._trades.journal_repo")
 @patch("app.domains.journal.service._trades.account_repo")
 def test_journal_trade_response_includes_backend_trading_date(

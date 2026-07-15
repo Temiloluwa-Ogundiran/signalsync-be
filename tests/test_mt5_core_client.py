@@ -433,6 +433,7 @@ async def test_submit_history_sync_success(client: Mt5CoreClient, httpx_mock) ->
         from_time=datetime(2026, 5, 20),
         previous_balance=Decimal("501103.19"),
         known_closed_trade_count=9,
+        known_latest_closed_at=datetime(2026, 5, 20, 9, 30),
         credentials={"login": "10001", "password": "p", "server": "s"},
     )
 
@@ -445,6 +446,7 @@ async def test_submit_history_sync_success(client: Mt5CoreClient, httpx_mock) ->
     payload = json.loads(request.content)
     assert payload["previous_balance"] == 501103.19
     assert payload["known_closed_trade_count"] == 9
+    assert payload["known_latest_closed_at"] == "2026-05-20T09:30:00"
 
 
 @pytest.mark.anyio

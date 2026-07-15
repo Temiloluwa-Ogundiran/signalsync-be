@@ -500,7 +500,9 @@ async def sync_account_deals_mt5(
         from_time = min(account.last_synced_at, cleanup_floor)
 
     # 3. Call mt5-core client
-    client = client or Mt5CoreClient()
+    client = client or Mt5CoreClient(
+        poll_interval=settings.MT5_CORE_SYNC_POLL_INTERVAL_SECONDS,
+    )
     previous_balance = account_repo.get_latest_account_snapshot_balance(
         db,
         account_id=account.id,
@@ -509,11 +511,16 @@ async def sync_account_deals_mt5(
         db,
         account_ids=[account.id],
     ).get(account.id, 0)
+    known_latest_closed_at = account_repo.get_latest_closed_trade_at(
+        db,
+        account_id=account.id,
+    )
     sync_result = await client.submit_history_sync(
         account_id=str(account.id),
         from_time=from_time,
         previous_balance=previous_balance,
         known_closed_trade_count=known_closed_trade_count,
+        known_latest_closed_at=known_latest_closed_at,
         credentials={
             "login": account.broker_login,
             "password": investor_password,
