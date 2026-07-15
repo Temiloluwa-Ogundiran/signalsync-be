@@ -70,6 +70,59 @@ def add_metaapi_health(
     )
 
 
+def add_telegram_connection_health(
+    health: HealthSummary,
+    *,
+    connection_states: list[str],
+) -> HealthSummary:
+    normalized = [getattr(state, "value", state) for state in connection_states]
+    if not normalized:
+        component = {
+            "role": "telegram-connection",
+            "status": "not_configured",
+            "heartbeat_at": None,
+            "stream_lag": 0,
+            "pending_count": 0,
+            "last_error": None,
+        }
+        return HealthSummary(
+            status=health.status,
+            ready=health.ready,
+            components=[*health.components, component],
+            issues=health.issues,
+        )
+    unhealthy = [state for state in normalized if state != "ready"]
+    if not unhealthy:
+        component = {
+            "role": "telegram-connection",
+            "status": "healthy",
+            "heartbeat_at": None,
+            "stream_lag": 0,
+            "pending_count": 0,
+            "last_error": None,
+        }
+        return HealthSummary(
+            status=health.status,
+            ready=health.ready,
+            components=[*health.components, component],
+            issues=health.issues,
+        )
+    component = {
+        "role": "telegram-connection",
+        "status": str(unhealthy[0]),
+        "heartbeat_at": None,
+        "stream_lag": 0,
+        "pending_count": 0,
+        "last_error": "Reconnect Telegram to resume reading copy signals.",
+    }
+    return HealthSummary(
+        status="action_required",
+        ready=False,
+        components=[*health.components, component],
+        issues=[*health.issues, "Reconnect Telegram to resume reading copy signals."],
+    )
+
+
 def build_launch_readiness(
     health: HealthSummary,
     *,

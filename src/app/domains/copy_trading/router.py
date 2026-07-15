@@ -48,8 +48,8 @@ from app.domains.copy_trading.schemas import (
 )
 from app.core.config import settings
 from app.domains.copy_trading import repository as repo
-from app.domains.copy_trading.models import CopyActivityLevel, CopyDeadLetter, CopyWorkerHealth, DeadLetterState, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState, TradeIntent, TradeIntentState
-from app.domains.copy_trading.health import add_metaapi_health, aggregate_health, build_launch_readiness
+from app.domains.copy_trading.models import CopyActivityLevel, CopyDeadLetter, CopyRoute, CopyRouteState, CopyWorkerHealth, DeadLetterState, TelegramAuthAttempt, TelegramAuthState, TelegramConnection, TelegramSource, TelegramSourceState, TradeIntent, TradeIntentState
+from app.domains.copy_trading.health import add_metaapi_health, add_telegram_connection_health, aggregate_health, build_launch_readiness
 from app.domains.copy_trading.telegram_auth import decode_auth_state, encode_auth_state
 from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamName
 from app.domains.copy_trading.security import SessionCipher
@@ -63,6 +63,30 @@ router = APIRouter(prefix="/copy-trading", tags=["copy-trading"])
 
 def _redis_client():
     return redis.Redis.from_url(settings.COPY_TRADING_REDIS_URL, decode_responses=True)
+
+
+def _add_user_telegram_health(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    health,
+):
+    states = list(
+        db.execute(
+            select(TelegramConnection.state)
+            .join(
+                TelegramSource,
+                TelegramSource.connection_id == TelegramConnection.id,
+            )
+            .join(CopyRoute, CopyRoute.source_id == TelegramSource.id)
+            .where(
+                CopyRoute.user_id == user_id,
+                CopyRoute.state == CopyRouteState.active,
+            )
+            .distinct()
+        ).scalars()
+    )
+    return add_telegram_connection_health(health, connection_states=states)
 
 
 @router.get("/live")
@@ -506,6 +530,11 @@ def copy_system_health(db: Session = Depends(get_db), current_user: User = Depen
         metaapi_enabled=settings.COPY_TRADING_METAAPI_ENABLED,
         token_configured=bool(settings.METAAPI_TOKEN),
     )
+    health = _add_user_telegram_health(
+        db,
+        user_id=current_user.id,
+        health=health,
+    )
     return CopySystemHealthResponse.model_validate(health.__dict__)
 
 
@@ -520,6 +549,11 @@ def copy_launch_readiness(
         copy_trading_enabled=settings.COPY_TRADING_ENABLED,
         metaapi_enabled=settings.COPY_TRADING_METAAPI_ENABLED,
         token_configured=bool(settings.METAAPI_TOKEN),
+    )
+    health = _add_user_telegram_health(
+        db,
+        user_id=current_user.id,
+        health=health,
     )
     uncertain_created_at = list(
         db.execute(

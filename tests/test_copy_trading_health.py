@@ -6,6 +6,7 @@ from app.domains.copy_trading.health import (
     aggregate_health,
     build_launch_readiness,
     add_metaapi_health,
+    add_telegram_connection_health,
 )
 
 
@@ -82,6 +83,37 @@ def test_metaapi_configuration_is_required_when_copy_trading_is_enabled() -> Non
     assert result.status == "action_required"
     assert result.components[-1]["role"] == "metaapi"
     assert result.components[-1]["status"] == "missing"
+
+
+def test_active_telegram_connection_is_required_for_user_readiness() -> None:
+    health = aggregate_health(
+        [heartbeat(role) for role in REQUIRED_WORKER_ROLES], now=NOW
+    )
+
+    result = add_telegram_connection_health(
+        health,
+        connection_states=["reauthentication_required"],
+    )
+
+    assert result.ready is False
+    assert result.status == "action_required"
+    assert result.components[-1]["role"] == "telegram-connection"
+    assert result.components[-1]["status"] == "reauthentication_required"
+    assert "Reconnect Telegram" in result.issues[-1]
+
+
+def test_ready_telegram_connection_preserves_user_readiness() -> None:
+    health = aggregate_health(
+        [heartbeat(role) for role in REQUIRED_WORKER_ROLES], now=NOW
+    )
+
+    result = add_telegram_connection_health(
+        health,
+        connection_states=["ready"],
+    )
+
+    assert result.ready is True
+    assert result.components[-1]["status"] == "healthy"
 
 
 def test_launch_readiness_blocks_old_uncertain_intent() -> None:
