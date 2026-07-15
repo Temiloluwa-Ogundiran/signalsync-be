@@ -277,6 +277,10 @@ class StreamWorker:
 
 
 class TelegramSessionRuntime:
+    RUNTIME_OWNERSHIP_KEY = "copy:telegram:runtime-owner"
+    RUNTIME_OWNERSHIP_TTL_SECONDS = 30
+    RUNTIME_OWNERSHIP_REFRESH_SECONDS = 5
+
     def __init__(self):
         self.redis = redis.Redis.from_url(settings.COPY_TRADING_REDIS_URL, decode_responses=True)
         self.bus = RedisStreamBus(self.redis)
@@ -287,6 +291,7 @@ class TelegramSessionRuntime:
         self.last_connection_heartbeat_at = 0.0
         self.last_source_recovery_at = 0.0
         self.last_full_source_recovery_at = 0.0
+        self.last_ownership_refresh_at = 0.0
         self.source_recovery_cache_at = 0.0
         self.source_recovery_cache: dict[str, list[tuple[str, int]]] = {}
         self.message_publishers = {}
@@ -295,6 +300,61 @@ class TelegramSessionRuntime:
         # overlapping iter_dialogs() walks (each is several GetDialogsRequest
         # calls) from stacking up and tripping Telegram's flood limit.
         self.dialog_refresh_inflight: set[str] = set()
+
+    def _try_claim_runtime_ownership(self) -> str | None:
+        token = str(uuid.uuid4())
+        acquired = self.redis.set(
+            self.RUNTIME_OWNERSHIP_KEY,
+            token,
+            nx=True,
+            ex=self.RUNTIME_OWNERSHIP_TTL_SECONDS,
+        )
+        return token if acquired else None
+
+    def _refresh_runtime_ownership(self, token: str) -> bool:
+        renewed = self.redis.eval(
+            """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+              return redis.call('expire', KEYS[1], ARGV[2])
+            end
+            return 0
+            """,
+            1,
+            self.RUNTIME_OWNERSHIP_KEY,
+            token,
+            self.RUNTIME_OWNERSHIP_TTL_SECONDS,
+        )
+        return bool(renewed)
+
+    def _release_runtime_ownership(self, token: str) -> None:
+        self.redis.eval(
+            """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+              return redis.call('del', KEYS[1])
+            end
+            return 0
+            """,
+            1,
+            self.RUNTIME_OWNERSHIP_KEY,
+            token,
+        )
+
+    async def _disconnect_all_clients(self) -> None:
+        disconnected: set[int] = set()
+        for value in list(self.clients.values()):
+            client = value[0] if isinstance(value, tuple) else value
+            if id(client) in disconnected:
+                continue
+            disconnected.add(id(client))
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.warning(
+                    "Could not disconnect Telegram client during ownership release",
+                    exc_info=True,
+                )
+        self.clients.clear()
+        self.message_publishers.clear()
 
     def _refresh_connection_heartbeats(self) -> None:
         connection_ids = [
@@ -792,54 +852,69 @@ class TelegramSessionRuntime:
                     db.commit()
 
     async def run(self) -> None:
-        await self.restore()
-        self._refresh_source_recovery_cache()
-        await self._recover_missed_source_messages(basic_groups_only=False)
-        group = "telegram-session"
-        consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-        self.bus.ensure_group(StreamName.telegram_commands, group)
-        while True:
-            rows = await asyncio.to_thread(self.redis.xreadgroup, group, consumer, {StreamName.telegram_commands.value: ">"}, count=10, block=1000)
-            self.redis.setex(f"copy:heartbeat:{group}:{consumer}", 30, datetime.now(timezone.utc).isoformat())
-            now = time.monotonic()
-            if now - self.last_health_at >= 10:
-                await asyncio.to_thread(record_worker_health, worker_role=group, instance_id=consumer)
-                self.last_health_at = now
-            if now - self.last_connection_heartbeat_at >= 30:
-                await self._validate_connection_health()
-                await asyncio.to_thread(self._refresh_connection_heartbeats)
-                self.last_connection_heartbeat_at = now
-            if now - self.last_source_recovery_at >= 2:
-                await self._recover_missed_source_messages(basic_groups_only=True)
-                self.last_source_recovery_at = now
-            if now - self.last_full_source_recovery_at >= 60:
-                await self._recover_missed_source_messages(basic_groups_only=False)
-                self.last_full_source_recovery_at = now
-            for _, messages in rows:
-                for message_id, fields in messages:
-                    event = CopyEvent.from_fields(fields)
-                    try:
-                        await self.handle(event)
-                    except Exception as exc:
-                        logger.exception("Telegram command failed", extra={"correlation_id": event.correlation_id})
-                        attempt = int(event.payload.get("_attempt", 1))
-                        if attempt < 5:
-                            retry_payload = dict(event.payload)
-                            retry_payload["_attempt"] = attempt + 1
-                            self.bus.publish(
-                                CopyEvent.new(
-                                    stream=StreamName.telegram_commands,
-                                    event_type=event.event_type,
-                                    correlation_id=event.correlation_id,
-                                    payload=retry_payload,
-                                    idempotency_key=f"{event.idempotency_key}:retry:{attempt + 1}",
+        ownership_token = None
+        while ownership_token is None:
+            ownership_token = self._try_claim_runtime_ownership()
+            if ownership_token is None:
+                await asyncio.sleep(1)
+        logger.info("Telegram runtime ownership acquired")
+        try:
+            await self.restore()
+            self._refresh_source_recovery_cache()
+            await self._recover_missed_source_messages(basic_groups_only=False)
+            group = "telegram-session"
+            consumer = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+            self.bus.ensure_group(StreamName.telegram_commands, group)
+            while True:
+                rows = await asyncio.to_thread(self.redis.xreadgroup, group, consumer, {StreamName.telegram_commands.value: ">"}, count=10, block=1000)
+                self.redis.setex(f"copy:heartbeat:{group}:{consumer}", 30, datetime.now(timezone.utc).isoformat())
+                now = time.monotonic()
+                if now - self.last_ownership_refresh_at >= self.RUNTIME_OWNERSHIP_REFRESH_SECONDS:
+                    if not self._refresh_runtime_ownership(ownership_token):
+                        raise RuntimeError("Telegram runtime ownership was lost")
+                    self.last_ownership_refresh_at = now
+                if now - self.last_health_at >= 10:
+                    await asyncio.to_thread(record_worker_health, worker_role=group, instance_id=consumer)
+                    self.last_health_at = now
+                if now - self.last_connection_heartbeat_at >= 30:
+                    await self._validate_connection_health()
+                    await asyncio.to_thread(self._refresh_connection_heartbeats)
+                    self.last_connection_heartbeat_at = now
+                if now - self.last_source_recovery_at >= 2:
+                    await self._recover_missed_source_messages(basic_groups_only=True)
+                    self.last_source_recovery_at = now
+                if now - self.last_full_source_recovery_at >= 60:
+                    await self._recover_missed_source_messages(basic_groups_only=False)
+                    self.last_full_source_recovery_at = now
+                for _, messages in rows:
+                    for message_id, fields in messages:
+                        event = CopyEvent.from_fields(fields)
+                        try:
+                            await self.handle(event)
+                        except Exception as exc:
+                            logger.exception("Telegram command failed", extra={"correlation_id": event.correlation_id})
+                            attempt = int(event.payload.get("_attempt", 1))
+                            if attempt < 5:
+                                retry_payload = dict(event.payload)
+                                retry_payload["_attempt"] = attempt + 1
+                                self.bus.publish(
+                                    CopyEvent.new(
+                                        stream=StreamName.telegram_commands,
+                                        event_type=event.event_type,
+                                        correlation_id=event.correlation_id,
+                                        payload=retry_payload,
+                                        idempotency_key=f"{event.idempotency_key}:retry:{attempt + 1}",
+                                    )
                                 )
-                            )
-                        elif event.payload.get("auth_id"):
-                            self._auth_update(event.payload["auth_id"], state="failed", message=f"Telegram sign-in failed: {exc}")
-                    finally:
-                        self.redis.xack(StreamName.telegram_commands.value, group, message_id)
-                        self.redis.xdel(StreamName.telegram_commands.value, message_id)
+                            elif event.payload.get("auth_id"):
+                                self._auth_update(event.payload["auth_id"], state="failed", message=f"Telegram sign-in failed: {exc}")
+                        finally:
+                            self.redis.xack(StreamName.telegram_commands.value, group, message_id)
+                            self.redis.xdel(StreamName.telegram_commands.value, message_id)
+        finally:
+            await self._disconnect_all_clients()
+            self._release_runtime_ownership(ownership_token)
+            logger.info("Telegram runtime ownership released")
 
 
 def run_process(role: str) -> None:

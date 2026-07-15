@@ -68,6 +68,53 @@ def test_phone_auth_explains_when_telegram_delivers_code_in_app():
     assert "not send this code by SMS" in message
 
 
+def test_telegram_runtime_claims_single_owner_lease_before_connecting():
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.redis = MagicMock()
+    runtime.redis.set.return_value = True
+
+    token = runtime._try_claim_runtime_ownership()
+
+    assert token
+    runtime.redis.set.assert_called_once_with(
+        TelegramSessionRuntime.RUNTIME_OWNERSHIP_KEY,
+        token,
+        nx=True,
+        ex=TelegramSessionRuntime.RUNTIME_OWNERSHIP_TTL_SECONDS,
+    )
+
+
+def test_telegram_runtime_does_not_connect_when_another_owner_is_active():
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.redis = MagicMock()
+    runtime.redis.set.return_value = False
+
+    assert runtime._try_claim_runtime_ownership() is None
+
+
+def test_telegram_runtime_renews_and_releases_only_its_own_lease():
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.redis = MagicMock()
+    runtime.redis.eval.side_effect = [1, 1]
+
+    assert runtime._refresh_runtime_ownership("owner-token") is True
+    runtime._release_runtime_ownership("owner-token")
+
+    renew = runtime.redis.eval.call_args_list[0]
+    release = runtime.redis.eval.call_args_list[1]
+    assert renew.args[1:] == (
+        1,
+        TelegramSessionRuntime.RUNTIME_OWNERSHIP_KEY,
+        "owner-token",
+        TelegramSessionRuntime.RUNTIME_OWNERSHIP_TTL_SECONDS,
+    )
+    assert release.args[1:] == (
+        1,
+        TelegramSessionRuntime.RUNTIME_OWNERSHIP_KEY,
+        "owner-token",
+    )
+
+
 @patch("telethon.sessions.StringSession.save", return_value="new-session")
 @patch("app.domains.copy_trading.worker_runtime.SessionLocal")
 def test_reauthentication_keeps_auth_status_when_temporary_connection_is_removed(
