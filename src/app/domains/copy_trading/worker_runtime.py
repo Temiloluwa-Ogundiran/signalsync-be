@@ -53,6 +53,9 @@ logger = logging.getLogger("copy-trading.worker")
 _TELEGRAM_REAUTHENTICATION_REASON = (
     "Telegram disconnected this session. Reconnect Telegram to resume copying signals."
 )
+_TELEGRAM_RECONNECTING_REASON = (
+    "Telegram connection was interrupted. TradePartna is reconnecting automatically."
+)
 
 
 def _phone_code_delivery_message(sent_code) -> str:
@@ -85,6 +88,27 @@ def _telegram_auth_failure_message(exc: Exception) -> str:
     if detail:
         return f"Telegram sign-in failed: {detail}"
     return "Telegram sign-in failed. Generate a new code and try again."
+
+
+def _is_telegram_auth_error(exc: Exception) -> bool:
+    from telethon.errors import (
+        AuthKeyDuplicatedError,
+        AuthKeyUnregisteredError,
+        SessionRevokedError,
+        UserDeactivatedBanError,
+        UserDeactivatedError,
+    )
+
+    return isinstance(
+        exc,
+        (
+            AuthKeyDuplicatedError,
+            AuthKeyUnregisteredError,
+            SessionRevokedError,
+            UserDeactivatedBanError,
+            UserDeactivatedError,
+        ),
+    )
 
 
 class StreamWorker:
@@ -303,6 +327,7 @@ class TelegramSessionRuntime:
         self.cipher = SessionCipher(settings.ENCRYPTION_KEY)
         self.last_health_at = 0.0
         self.last_connection_heartbeat_at = 0.0
+        self.last_connection_restore_at = 0.0
         self.last_source_recovery_at = 0.0
         self.last_full_source_recovery_at = 0.0
         self.last_ownership_refresh_at = 0.0
@@ -387,17 +412,19 @@ class TelegramSessionRuntime:
             db.commit()
 
     async def _validate_connection_health(self) -> None:
-        unhealthy: list[tuple[str, object]] = []
+        interrupted: list[tuple[str, object, bool]] = []
         for key, client in list(self.clients.items()):
             if not key.startswith("connection:"):
                 continue
             try:
-                if not client.is_connected() or not await client.is_user_authorized():
-                    unhealthy.append((key, client))
-            except Exception:
-                unhealthy.append((key, client))
+                if not client.is_connected():
+                    interrupted.append((key, client, False))
+                elif not await client.is_user_authorized():
+                    interrupted.append((key, client, True))
+            except Exception as exc:
+                interrupted.append((key, client, _is_telegram_auth_error(exc)))
 
-        for key, client in unhealthy:
+        for key, client, authorization_invalid in interrupted:
             connection_id = key.removeprefix("connection:")
             self.clients.pop(key, None)
             self.message_publishers.pop(connection_id, None)
@@ -412,13 +439,27 @@ class TelegramSessionRuntime:
             with SessionLocal() as db:
                 connection = db.get(TelegramConnection, uuid.UUID(connection_id))
                 if connection is not None:
-                    connection.state = TelegramConnectionState.reauthentication_required
-                    connection.reauthentication_reason = _TELEGRAM_REAUTHENTICATION_REASON
+                    connection.state = (
+                        TelegramConnectionState.reauthentication_required
+                        if authorization_invalid
+                        else TelegramConnectionState.disconnected
+                    )
+                    connection.reauthentication_reason = (
+                        _TELEGRAM_REAUTHENTICATION_REASON
+                        if authorization_invalid
+                        else _TELEGRAM_RECONNECTING_REASON
+                    )
                     db.commit()
-            logger.warning(
-                "Telegram connection requires reauthentication connection_id=%s",
-                connection_id,
-            )
+            if authorization_invalid:
+                logger.warning(
+                    "Telegram connection requires reauthentication connection_id=%s",
+                    connection_id,
+                )
+            else:
+                logger.warning(
+                    "Telegram connection interrupted; automatic reconnect scheduled connection_id=%s",
+                    connection_id,
+                )
 
     def _auth_update(self, auth_id: str, **values) -> None:
         with SessionLocal() as db:
@@ -870,20 +911,75 @@ class TelegramSessionRuntime:
         from telethon import TelegramClient
         from telethon.sessions import StringSession
         with SessionLocal() as db:
-            connections = list(db.execute(select(TelegramConnection).where(TelegramConnection.state == TelegramConnectionState.ready)).scalars())
+            connections = list(
+                db.execute(
+                    select(TelegramConnection).where(
+                        TelegramConnection.state.in_(
+                            [
+                                TelegramConnectionState.ready,
+                                TelegramConnectionState.disconnected,
+                            ]
+                        )
+                    )
+                ).scalars()
+            )
         for connection in connections:
+            connection_id = str(connection.id)
+            if f"connection:{connection_id}" in self.clients:
+                continue
+            client = None
             try:
                 client = TelegramClient(StringSession(self.cipher.decrypt(connection.encrypted_session)), settings.TELEGRAM_API_ID, settings.TELEGRAM_API_HASH)
                 await client.connect()
                 if not await client.is_user_authorized():
-                    raise RuntimeError("Telegram authorization expired")
-                await self._attach_updates(str(connection.id), client)
-            except Exception as exc:
+                    with SessionLocal() as db:
+                        item = db.get(TelegramConnection, connection.id)
+                        if item is not None:
+                            item.state = TelegramConnectionState.reauthentication_required
+                            item.reauthentication_reason = _TELEGRAM_REAUTHENTICATION_REASON
+                            db.commit()
+                    await client.disconnect()
+                    continue
+                await self._attach_updates(connection_id, client)
                 with SessionLocal() as db:
                     item = db.get(TelegramConnection, connection.id)
-                    item.state = TelegramConnectionState.reauthentication_required
-                    item.reauthentication_reason = _TELEGRAM_REAUTHENTICATION_REASON
-                    db.commit()
+                    if item is not None:
+                        item.state = TelegramConnectionState.ready
+                        item.reauthentication_reason = None
+                        item.last_heartbeat_at = datetime.now(timezone.utc)
+                        db.commit()
+                logger.info(
+                    "Telegram connection restored connection_id=%s",
+                    connection_id,
+                )
+            except Exception as exc:
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        logger.debug("Could not close failed Telegram restore client", exc_info=True)
+                with SessionLocal() as db:
+                    item = db.get(TelegramConnection, connection.id)
+                    if item is not None:
+                        authorization_invalid = _is_telegram_auth_error(exc)
+                        item.state = (
+                            TelegramConnectionState.reauthentication_required
+                            if authorization_invalid
+                            else TelegramConnectionState.disconnected
+                        )
+                        item.reauthentication_reason = (
+                            _TELEGRAM_REAUTHENTICATION_REASON
+                            if authorization_invalid
+                            else _TELEGRAM_RECONNECTING_REASON
+                        )
+                        db.commit()
+                logger.warning(
+                    "Telegram restore failed; %s connection_id=%s",
+                    "user reauthentication required"
+                    if _is_telegram_auth_error(exc)
+                    else "automatic retry scheduled",
+                    connection_id,
+                )
 
     async def run(self) -> None:
         ownership_token = None
@@ -914,6 +1010,9 @@ class TelegramSessionRuntime:
                     await self._validate_connection_health()
                     await asyncio.to_thread(self._refresh_connection_heartbeats)
                     self.last_connection_heartbeat_at = now
+                if now - self.last_connection_restore_at >= 5:
+                    await self.restore()
+                    self.last_connection_restore_at = now
                 if now - self.last_source_recovery_at >= 2:
                     await self._recover_missed_source_messages(basic_groups_only=True)
                     self.last_source_recovery_at = now

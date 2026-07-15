@@ -91,8 +91,11 @@ def add_telegram_connection_health(
             components=[*health.components, component],
             issues=health.issues,
         )
-    unhealthy = [state for state in normalized if state != "ready"]
-    if not unhealthy:
+    authorization_required = [
+        state for state in normalized if state == "reauthentication_required"
+    ]
+    reconnecting = [state for state in normalized if state == "disconnected"]
+    if not authorization_required and not reconnecting:
         component = {
             "role": "telegram-connection",
             "status": "healthy",
@@ -107,9 +110,24 @@ def add_telegram_connection_health(
             components=[*health.components, component],
             issues=health.issues,
         )
+    if reconnecting and not authorization_required:
+        component = {
+            "role": "telegram-connection",
+            "status": "reconnecting",
+            "heartbeat_at": None,
+            "stream_lag": 0,
+            "pending_count": 0,
+            "last_error": "Telegram is reconnecting automatically.",
+        }
+        return HealthSummary(
+            status="degraded",
+            ready=False,
+            components=[*health.components, component],
+            issues=[*health.issues, "Telegram is reconnecting automatically."],
+        )
     component = {
         "role": "telegram-connection",
-        "status": str(unhealthy[0]),
+        "status": "reauthentication_required",
         "heartbeat_at": None,
         "stream_lag": 0,
         "pending_count": 0,

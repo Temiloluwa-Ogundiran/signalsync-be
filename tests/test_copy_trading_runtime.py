@@ -359,7 +359,7 @@ def test_telegram_worker_refreshes_attached_connection_heartbeats(session_local)
 
 
 @patch("app.domains.copy_trading.worker_runtime.SessionLocal")
-def test_telegram_worker_marks_disconnected_session_for_reauthentication(session_local):
+def test_telegram_worker_schedules_automatic_reconnect_for_transient_disconnect(session_local):
     connection_id = uuid.uuid4()
     runtime = object.__new__(TelegramSessionRuntime)
     client = MagicMock()
@@ -375,9 +375,96 @@ def test_telegram_worker_marks_disconnected_session_for_reauthentication(session
 
     assert runtime.clients == {}
     assert runtime.message_publishers == {}
+    assert connection.state == TelegramConnectionState.disconnected
+    assert "reconnecting automatically" in connection.reauthentication_reason
+    db.commit.assert_called_once()
+
+
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_telegram_worker_only_requests_reauthentication_when_authorization_is_invalid(
+    session_local,
+):
+    connection_id = uuid.uuid4()
+    runtime = object.__new__(TelegramSessionRuntime)
+    client = MagicMock()
+    client.is_connected.return_value = True
+    client.is_user_authorized = AsyncMock(return_value=False)
+    client.disconnect = AsyncMock()
+    runtime.clients = {f"connection:{connection_id}": client}
+    runtime.message_publishers = {str(connection_id): AsyncMock()}
+    connection = MagicMock()
+    db = session_local.return_value.__enter__.return_value
+    db.get.return_value = connection
+
+    __import__("asyncio").run(runtime._validate_connection_health())
+
     assert connection.state == TelegramConnectionState.reauthentication_required
     assert "Reconnect Telegram" in connection.reauthentication_reason
     db.commit.assert_called_once()
+
+
+@patch("telethon.TelegramClient")
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_telegram_restore_keeps_saved_session_for_transient_network_failure(
+    session_local,
+    telegram_client,
+):
+    connection = SimpleNamespace(
+        id=uuid.uuid4(),
+        encrypted_session="encrypted-session",
+        state=TelegramConnectionState.ready,
+        reauthentication_reason=None,
+    )
+    db = session_local.return_value.__enter__.return_value
+    db.execute.return_value.scalars.return_value = [connection]
+    db.get.return_value = connection
+    client = telegram_client.return_value
+    client.connect = AsyncMock(side_effect=ConnectionError("network unavailable"))
+    client.disconnect = AsyncMock()
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.clients = {}
+    runtime.cipher = MagicMock()
+    runtime.cipher.decrypt.return_value = ""
+    runtime._attach_updates = AsyncMock()
+
+    __import__("asyncio").run(runtime.restore())
+
+    assert connection.state == TelegramConnectionState.disconnected
+    assert "reconnecting automatically" in connection.reauthentication_reason
+    runtime._attach_updates.assert_not_awaited()
+
+
+@patch("telethon.TelegramClient")
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_telegram_restore_reuses_saved_session_and_returns_ready(
+    session_local,
+    telegram_client,
+):
+    connection = SimpleNamespace(
+        id=uuid.uuid4(),
+        encrypted_session="encrypted-session",
+        state=TelegramConnectionState.disconnected,
+        reauthentication_reason="reconnecting",
+        last_heartbeat_at=None,
+    )
+    db = session_local.return_value.__enter__.return_value
+    db.execute.return_value.scalars.return_value = [connection]
+    db.get.return_value = connection
+    client = telegram_client.return_value
+    client.connect = AsyncMock()
+    client.is_user_authorized = AsyncMock(return_value=True)
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.clients = {}
+    runtime.cipher = MagicMock()
+    runtime.cipher.decrypt.return_value = ""
+    runtime._attach_updates = AsyncMock()
+
+    __import__("asyncio").run(runtime.restore())
+
+    runtime._attach_updates.assert_awaited_once_with(str(connection.id), client)
+    assert connection.state == TelegramConnectionState.ready
+    assert connection.reauthentication_reason is None
+    assert connection.last_heartbeat_at is not None
 
 
 def test_telegram_worker_recovers_missed_basic_group_messages_in_order():

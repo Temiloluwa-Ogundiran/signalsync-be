@@ -116,6 +116,23 @@ def test_ready_telegram_connection_preserves_user_readiness() -> None:
     assert result.components[-1]["status"] == "healthy"
 
 
+def test_interrupted_telegram_connection_reconnects_without_user_action() -> None:
+    health = aggregate_health(
+        [heartbeat(role) for role in REQUIRED_WORKER_ROLES], now=NOW
+    )
+
+    result = add_telegram_connection_health(
+        health,
+        connection_states=["disconnected"],
+    )
+
+    assert result.ready is False
+    assert result.status == "degraded"
+    assert result.components[-1]["status"] == "reconnecting"
+    assert "automatically" in result.issues[-1]
+    assert "Reconnect Telegram" not in result.issues[-1]
+
+
 def test_launch_readiness_blocks_old_uncertain_intent() -> None:
     result = build_launch_readiness(
         aggregate_health(
