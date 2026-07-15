@@ -209,7 +209,10 @@ def _notify_execution(db, *, route, title: str, body: str, success: bool, detail
         try:
             from app.tasks.copy_trading_tasks import send_execution_email_task
 
-            send_execution_email_task.delay(user.email, title, details)
+            send_execution_email_task.apply_async(
+                args=(user.email, title, details),
+                ignore_result=True,
+            )
         except Exception:
             logger.exception("Could not enqueue copy-trading email user_id=%s", route.user_id)
 

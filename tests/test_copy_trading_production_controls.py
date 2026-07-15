@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from app.domains.copy_trading.metaapi_execution import _notify_execution
 from app.domains.copy_trading.telemetry import record_execution_metric
@@ -30,6 +30,24 @@ def test_disabled_route_notification_produces_no_delivery(notify) -> None:
 
     notify.assert_not_called()
     db.get.assert_not_called()
+
+
+@patch("app.tasks.copy_trading_tasks.send_execution_email_task")
+@patch("app.domains.copy_trading.metaapi_execution.notify")
+def test_enabled_route_email_is_enqueued_without_waiting_for_a_result(notify, email_task) -> None:
+    db = MagicMock()
+    user_id = uuid.uuid4()
+    db.get.return_value = SimpleNamespace(email="trader@example.com")
+    route = SimpleNamespace(notify_success=True, notify_failure=True, user_id=user_id)
+
+    _notify_execution(db, route=route, title="Done", body="Body", success=True, details={"symbol": "EURUSD"})
+
+    notify.assert_called_once()
+    db.get.assert_called_once_with(ANY, user_id)
+    email_task.apply_async.assert_called_once_with(
+        args=("trader@example.com", "Done", {"symbol": "EURUSD"}),
+        ignore_result=True,
+    )
 
 
 def test_execution_metric_records_each_pipeline_stage() -> None:

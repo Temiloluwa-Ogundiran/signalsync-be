@@ -4,6 +4,7 @@ from app.core.celery_app import celery_app
 @celery_app.task(
     name="copy_trading.send_execution_email",
     bind=True,
+    ignore_result=True,
     max_retries=2,
     default_retry_delay=30,
     autoretry_for=(Exception,),
