@@ -23,6 +23,7 @@ from app.domains.copy_trading.models import (
     ParsedAction,
     SignalThread,
     SymbolMapping,
+    TelegramConnectionState,
     TradeIntent,
 )
 from app.domains.copy_trading.worker_runtime import (
@@ -237,6 +238,28 @@ def test_telegram_worker_refreshes_attached_connection_heartbeats(session_local)
     runtime._refresh_connection_heartbeats()
 
     db.execute.assert_called_once()
+    db.commit.assert_called_once()
+
+
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_telegram_worker_marks_disconnected_session_for_reauthentication(session_local):
+    connection_id = uuid.uuid4()
+    runtime = object.__new__(TelegramSessionRuntime)
+    client = MagicMock()
+    client.is_connected.return_value = False
+    client.disconnect = AsyncMock()
+    runtime.clients = {f"connection:{connection_id}": client}
+    runtime.message_publishers = {str(connection_id): AsyncMock()}
+    connection = MagicMock()
+    db = session_local.return_value.__enter__.return_value
+    db.get.return_value = connection
+
+    __import__("asyncio").run(runtime._validate_connection_health())
+
+    assert runtime.clients == {}
+    assert runtime.message_publishers == {}
+    assert connection.state == TelegramConnectionState.reauthentication_required
+    assert "Reconnect Telegram" in connection.reauthentication_reason
     db.commit.assert_called_once()
 
 

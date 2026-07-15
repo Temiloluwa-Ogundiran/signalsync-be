@@ -292,6 +292,43 @@ class TelegramSessionRuntime:
             )
             db.commit()
 
+    async def _validate_connection_health(self) -> None:
+        unhealthy: list[tuple[str, object]] = []
+        for key, client in list(self.clients.items()):
+            if not key.startswith("connection:"):
+                continue
+            try:
+                if not client.is_connected() or not await client.is_user_authorized():
+                    unhealthy.append((key, client))
+            except Exception:
+                unhealthy.append((key, client))
+
+        for key, client in unhealthy:
+            connection_id = key.removeprefix("connection:")
+            self.clients.pop(key, None)
+            self.message_publishers.pop(connection_id, None)
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.debug(
+                    "Could not disconnect unhealthy Telegram client connection_id=%s",
+                    connection_id,
+                    exc_info=True,
+                )
+            with SessionLocal() as db:
+                connection = db.get(TelegramConnection, uuid.UUID(connection_id))
+                if connection is not None:
+                    connection.state = TelegramConnectionState.reauthentication_required
+                    connection.reauthentication_reason = (
+                        "Telegram disconnected this session. Reconnect Telegram to resume "
+                        "copying signals."
+                    )
+                    db.commit()
+            logger.warning(
+                "Telegram connection requires reauthentication connection_id=%s",
+                connection_id,
+            )
+
     def _auth_update(self, auth_id: str, **values) -> None:
         with SessionLocal() as db:
             attempt = db.execute(select(TelegramAuthAttempt).where(TelegramAuthAttempt.auth_id == auth_id)).scalar_one_or_none()
@@ -735,6 +772,7 @@ class TelegramSessionRuntime:
                 await asyncio.to_thread(record_worker_health, worker_role=group, instance_id=consumer)
                 self.last_health_at = now
             if now - self.last_connection_heartbeat_at >= 30:
+                await self._validate_connection_health()
                 await asyncio.to_thread(self._refresh_connection_heartbeats)
                 self.last_connection_heartbeat_at = now
             if now - self.last_source_recovery_at >= 2:
