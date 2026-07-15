@@ -254,6 +254,37 @@ def test_sl_tp_fragment_prefers_incomplete_opening_over_live_trade() -> None:
     assert result.ambiguous is False
 
 
+def test_adjacent_sl_fragment_prefers_latest_opening_among_stale_incomplete_signals() -> None:
+    stale = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=20,
+        last=20,
+        opening_submitted=False,
+        has_active_trade=False,
+    )
+    latest = candidate(
+        symbol="EURUSD",
+        direction="sell",
+        root=30,
+        last=30,
+        opening_submitted=False,
+        has_active_trade=False,
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        message_id=31,
+        symbol=None,
+        direction=None,
+        action="modify_sl_tp",
+        candidates=[stale, latest],
+    )
+
+    assert result.selected == latest
+    assert result.ambiguous is False
+
+
 def test_break_even_does_not_attach_to_incomplete_opening() -> None:
     incomplete = candidate(
         symbol="EURUSD",

@@ -52,7 +52,6 @@ from app.domains.copy_trading.models import (
     RouteSignalAssembly,
     SignalConversation,
     SignalConversationState,
-    CopySignalReview,
     SignalThread,
     SignalThreadState,
     TelegramSource,
@@ -489,39 +488,22 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                 choice = selected_choice.selected
                 ambiguous = selected_choice.ambiguous
             if ambiguous:
-                encrypted_payload = SessionCipher(settings.ENCRYPTION_KEY).encrypt(
-                    json.dumps(event.payload, default=str)
+                logger.info(
+                    "Skipped ambiguous signal update correlation_id=%s source_id=%s candidates=%s",
+                    event.correlation_id,
+                    source_id,
+                    len(candidates),
                 )
-                candidate_payload = [
-                    {
-                        "conversation_id": str(item.id),
-                        "symbol": item.symbol,
-                        "direction": item.direction,
-                        "updated_at": item.updated_at.isoformat(),
-                    }
-                    for item in candidates
-                ]
                 for route in routes:
                     _activity(
                         db,
                         route=route,
                         correlation_id=event.correlation_id,
-                        action="signal.ambiguous",
-                        title="Signal update needs a clear reference",
-                        level=CopyActivityLevel.warning,
+                        action="signal.skipped",
+                        title="Unclear channel update skipped",
+                        level=CopyActivityLevel.info,
                         details=parsed.model_dump(mode="json"),
                         raw_message=event.payload.get("text"),
-                    )
-                    db.add(
-                        CopySignalReview(
-                            user_id=route.user_id,
-                            route_id=route.id,
-                            source_id=route.source_id,
-                            correlation_id=event.correlation_id,
-                            encrypted_event_payload=encrypted_payload,
-                            parsed_details=parsed.model_dump(mode="json"),
-                            candidates=candidate_payload,
-                        )
                     )
                 db.commit()
                 return DeliveryResult.success()

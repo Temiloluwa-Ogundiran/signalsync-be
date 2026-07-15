@@ -64,6 +64,14 @@ def choose_conversation(
     # A standalone SL/TP line immediately following an incomplete opening is
     # part of that signal, not an instruction for an older live position.
     if action == "modify_sl_tp":
+        if message_id is not None:
+            adjacent = [
+                item
+                for item in eligible
+                if not item.opening_submitted and item.last_message_id + 1 == message_id
+            ]
+            if len(adjacent) == 1:
+                return ConversationChoice(adjacent[0])
         normalized_symbol = normalize_symbol(symbol)
         normalized_direction = normalize_direction(direction)
         incomplete_openings = [
