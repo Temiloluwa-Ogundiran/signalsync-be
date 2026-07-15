@@ -29,6 +29,7 @@ from app.domains.copy_trading.models import (
 from app.domains.copy_trading.worker_runtime import (
     StreamWorker,
     TelegramSessionRuntime,
+    _phone_code_delivery_message,
 )
 
 
@@ -54,6 +55,16 @@ def test_session_cipher_encrypts_and_round_trips_telegram_session(fernet_key):
 
     assert encrypted != "telegram-string-session"
     assert cipher.decrypt(encrypted) == "telegram-string-session"
+
+
+def test_phone_auth_explains_when_telegram_delivers_code_in_app():
+    sent_code = MagicMock()
+    sent_code.type = type("SentCodeTypeApp", (), {})()
+
+    message = _phone_code_delivery_message(sent_code)
+
+    assert "verified Telegram chat" in message
+    assert "not send this code by SMS" in message
 
 
 def test_signal_validation_rejects_stale_market_signal():

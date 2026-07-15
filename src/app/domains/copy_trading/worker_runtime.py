@@ -57,6 +57,22 @@ _TELEGRAM_REAUTHENTICATION_REASON = (
 )
 
 
+def _phone_code_delivery_message(sent_code) -> str:
+    delivery_type = type(getattr(sent_code, "type", None)).__name__.lower()
+    if "app" in delivery_type:
+        return (
+            "Open Telegram and enter the code from the verified Telegram chat. "
+            "Telegram did not send this code by SMS."
+        )
+    if "sms" in delivery_type:
+        return "Enter the code Telegram sent by SMS."
+    if "call" in delivery_type:
+        return "Enter the code Telegram provides by phone call."
+    if "email" in delivery_type:
+        return "Enter the code Telegram sent to your login email."
+    return "Enter the login code from Telegram. Check the Telegram app before SMS."
+
+
 class StreamWorker:
     # One automatic retry after the first delivery. Longer retry loops increase
     # latency and can hide persistent configuration or broker failures.
@@ -666,7 +682,14 @@ class TelegramSessionRuntime:
             sent = await client.send_code_request(event.payload["phone"])
             self.clients[auth_id] = (client, event.payload["phone"], sent.phone_code_hash)
             from telethon.sessions import StringSession
-            self._auth_update(auth_id, state="code_required", message="Enter the code Telegram sent", phone=event.payload["phone"], phone_code_hash=sent.phone_code_hash, session=StringSession.save(client.session))
+            self._auth_update(
+                auth_id,
+                state="code_required",
+                message=_phone_code_delivery_message(sent),
+                phone=event.payload["phone"],
+                phone_code_hash=sent.phone_code_hash,
+                session=StringSession.save(client.session),
+            )
         elif event.event_type == "auth.phone.code":
             client, phone, code_hash = self.clients.get(auth_id) or await self._restore_auth_client(auth_id)
             try:
