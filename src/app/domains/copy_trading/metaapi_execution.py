@@ -214,9 +214,18 @@ def _notify_execution(db, *, route, title: str, body: str, success: bool, detail
             logger.exception("Could not enqueue copy-trading email user_id=%s", route.user_id)
 
 
-def _quality_details(policy, broker, selected, payload) -> dict:
+def _quality_details(policy, broker, selected, payload, runtime) -> dict:
+    try:
+        price = runtime.run(broker.ensure_price(selected.name))
+    except Exception as exc:
+        raise ExecutionQualityError(
+            "QUOTE_UNAVAILABLE",
+            "A live broker quote is not available yet.",
+            retryable=True,
+            user_action_required=False,
+        ) from exc
     quality = check_execution_quality(
-        price=broker.price(selected.name),
+        price=price,
         symbol=selected,
         direction=str(payload.get("direction") or "buy"),
         entry=Decimal(str(payload["entry"])) if payload.get("entry") is not None else None,
@@ -504,7 +513,7 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
             if payload["action"] in OPEN_ACTIONS and selected is not None:
                 try:
                     payload["_execution_quality"] = _quality_details(
-                        policy, broker, selected, payload
+                        policy, broker, selected, payload, runtime
                     )
                 except ExecutionQualityError as exc:
                     intent.attempt_count += 1
@@ -513,6 +522,18 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                         intent.last_error_code = exc.code
                         db.commit()
                         return DeliveryResult.retry(exc.code, str(exc))
+                    if not exc.user_action_required:
+                        intent.state = TradeIntentState.failed
+                        intent.last_error_code = exc.code
+                        intent.broker_result = {"message": str(exc)}
+                        record_execution_metric(db, intent=intent, route=route, status="failed")
+                        logger.warning(
+                            "Copy execution stopped after quote recovery failed intent_id=%s code=%s",
+                            intent.id,
+                            exc.code,
+                        )
+                        db.commit()
+                        return DeliveryResult.success()
                     intent.state = TradeIntentState.failed
                     intent.last_error_code = exc.code
                     intent.broker_result = {"message": str(exc)}

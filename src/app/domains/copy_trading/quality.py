@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.domains.copy_trading.symbols import BrokerSymbol
 
@@ -13,10 +13,38 @@ class ExecutionQuality:
 
 
 class ExecutionQualityError(ValueError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        user_action_required: bool = True,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.user_action_required = user_action_required
+
+
+def _quote_decimal(value) -> Decimal:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ExecutionQualityError(
+            "QUOTE_UNAVAILABLE",
+            "A live broker quote is not available yet.",
+            retryable=True,
+            user_action_required=False,
+        ) from exc
+    if not number.is_finite():
+        raise ExecutionQualityError(
+            "QUOTE_UNAVAILABLE",
+            "A live broker quote is not available yet.",
+            retryable=True,
+            user_action_required=False,
+        )
+    return number
 
 
 def within_trading_hours(now: datetime, start: int | None, end: int | None) -> bool:
@@ -45,19 +73,37 @@ def check_execution_quality(
     now = now or datetime.now(timezone.utc)
     if not within_trading_hours(now, trading_start_hour_utc, trading_end_hour_utc):
         raise ExecutionQualityError("OUTSIDE_TRADING_HOURS", "This account is outside its allowed trading hours.")
-    bid = Decimal(str(price.get("bid")))
-    ask = Decimal(str(price.get("ask")))
+    bid = _quote_decimal(price.get("bid"))
+    ask = _quote_decimal(price.get("ask"))
     point = symbol.point if symbol.point > 0 else Decimal("0.00001")
     timestamp = price.get("time") or price.get("brokerTime")
     if isinstance(timestamp, str):
-        quote_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        try:
+            quote_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ExecutionQualityError(
+                "QUOTE_UNAVAILABLE",
+                "A live broker quote is not available yet.",
+                retryable=True,
+                user_action_required=False,
+            ) from exc
     elif isinstance(timestamp, datetime):
         quote_at = timestamp
     else:
-        raise ExecutionQualityError("QUOTE_TIME_MISSING", "The broker quote has no timestamp.", retryable=True)
+        raise ExecutionQualityError(
+            "QUOTE_TIME_MISSING",
+            "A live broker quote is not available yet.",
+            retryable=True,
+            user_action_required=False,
+        )
     quote_age = max(0.0, (now - quote_at.astimezone(timezone.utc)).total_seconds())
     if quote_age > max_quote_age_seconds:
-        raise ExecutionQualityError("STALE_QUOTE", f"The broker quote is {quote_age:.1f}s old.", retryable=True)
+        raise ExecutionQualityError(
+            "STALE_QUOTE",
+            "A fresh broker quote is not available yet.",
+            retryable=True,
+            user_action_required=False,
+        )
     spread = (ask - bid) / point
     if max_spread_points is not None and spread > max_spread_points:
         raise ExecutionQualityError(

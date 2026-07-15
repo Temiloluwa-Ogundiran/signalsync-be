@@ -45,6 +45,18 @@ class MetaApiBroker:
     def price(self, symbol: str) -> dict:
         return dict(self.connection.terminal_state.price(symbol) or {})
 
+    async def ensure_price(self, symbol: str, *, timeout_seconds: float = 2) -> dict:
+        price = self.price(symbol)
+        if price.get("bid") is not None and price.get("ask") is not None:
+            return price
+        await self.connection.subscribe_to_market_data(
+            symbol,
+            [{"type": "quotes"}],
+            timeout_seconds,
+            True,
+        )
+        return self.price(symbol)
+
     def find_order(self, *, client_id: str, order_id: str | None = None):
         return next(
             (

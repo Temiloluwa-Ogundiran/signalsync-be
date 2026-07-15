@@ -1,8 +1,10 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
+from app.domains.copy_trading.metaapi_broker import MetaApiBroker
 from app.domains.copy_trading.quality import ExecutionQualityError, check_execution_quality, within_trading_hours
 from app.domains.copy_trading.symbols import BrokerSymbol
 from app.domains.copy_trading.telemetry import percentile
@@ -41,6 +43,48 @@ def test_stale_quote_is_retryable() -> None:
         quality(price={"bid": 1.1, "ask": 1.1001, "time": NOW - timedelta(seconds=11)})
     assert caught.value.code == "STALE_QUOTE"
     assert caught.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    "price",
+    [
+        {},
+        {"bid": None, "ask": 1.1001, "time": NOW},
+        {"bid": "not-a-price", "ask": 1.1001, "time": NOW},
+    ],
+)
+def test_missing_or_invalid_quote_is_a_safe_retryable_error(price) -> None:
+    with pytest.raises(ExecutionQualityError) as caught:
+        quality(price=price)
+
+    assert caught.value.code == "QUOTE_UNAVAILABLE"
+    assert caught.value.retryable is True
+    assert caught.value.user_action_required is False
+    assert "decimal" not in str(caught.value).lower()
+
+
+def test_broker_subscribes_before_returning_an_uncached_quote() -> None:
+    class TerminalState:
+        def __init__(self):
+            self.value = None
+
+        def price(self, _symbol):
+            return self.value
+
+    class Connection:
+        def __init__(self):
+            self.terminal_state = TerminalState()
+            self.calls = []
+
+        async def subscribe_to_market_data(self, symbol, subscriptions, timeout_in_seconds, wait_for_quote):
+            self.calls.append((symbol, subscriptions, timeout_in_seconds, wait_for_quote))
+            self.terminal_state.value = {"bid": 1.1, "ask": 1.1001, "time": NOW}
+
+    connection = Connection()
+    result = asyncio.run(MetaApiBroker(connection).ensure_price("EURUSD", timeout_seconds=2))
+
+    assert result["bid"] == 1.1
+    assert connection.calls == [("EURUSD", [{"type": "quotes"}], 2, True)]
 
 
 def test_wide_spread_waits_only_when_user_selected_wait() -> None:

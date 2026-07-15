@@ -521,16 +521,6 @@ def copy_launch_readiness(
         metaapi_enabled=settings.COPY_TRADING_METAAPI_ENABLED,
         token_configured=bool(settings.METAAPI_TOKEN),
     )
-    dead_letter_count = len(
-        list(
-            db.execute(
-                select(CopyDeadLetter.id).where(
-                    CopyDeadLetter.user_id == current_user.id,
-                    CopyDeadLetter.state == DeadLetterState.pending,
-                )
-            ).all()
-        )
-    )
     uncertain_created_at = list(
         db.execute(
             select(TradeIntent.created_at).where(
@@ -560,7 +550,9 @@ def copy_launch_readiness(
     )
     readiness = build_launch_readiness(
         health,
-        dead_letter_count=dead_letter_count,
+        # Dead letters are internal recovery records. User-actionable ambiguity
+        # is exposed separately through signal reviews.
+        dead_letter_count=0,
         uncertain_intent_ages=[
             max(0, int((now - created_at).total_seconds()))
             for created_at in uncertain_created_at
@@ -579,7 +571,15 @@ def copy_launch_readiness(
 @router.get("/dead-letters", response_model=list[CopyDeadLetterResponse])
 def list_dead_letters(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     items = list(db.execute(select(CopyDeadLetter).where(CopyDeadLetter.user_id == current_user.id).order_by(CopyDeadLetter.created_at.desc()).limit(100)).scalars())
-    return [CopyDeadLetterResponse.model_validate(item) for item in items]
+    return [
+        CopyDeadLetterResponse.model_validate(item).model_copy(
+            update={
+                "error_code": "AUTOMATION_RECOVERY",
+                "error_message": "TradePartna is handling this issue automatically.",
+            }
+        )
+        for item in items
+    ]
 
 
 @router.post("/dead-letters/{dead_letter_id}/replay", response_model=CopyDeadLetterResponse)
@@ -615,7 +615,12 @@ def replay_dead_letter(dead_letter_id: uuid.UUID, db: Session = Depends(get_db),
         },
     )
     db.commit(); db.refresh(item)
-    return CopyDeadLetterResponse.model_validate(item)
+    return CopyDeadLetterResponse.model_validate(item).model_copy(
+        update={
+            "error_code": "AUTOMATION_RECOVERY",
+            "error_message": "TradePartna is handling this issue automatically.",
+        }
+    )
 
 
 @router.post("/telegram/auth/phone", response_model=TelegramAuthResponse, status_code=202)
