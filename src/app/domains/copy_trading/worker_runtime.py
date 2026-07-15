@@ -6,8 +6,6 @@ import socket
 import time
 import threading
 import uuid
-import base64
-import io
 from datetime import datetime, timezone
 
 import redis
@@ -71,6 +69,22 @@ def _phone_code_delivery_message(sent_code) -> str:
     if "email" in delivery_type:
         return "Enter the code Telegram sent to your login email."
     return "Enter the login code from Telegram. Check the Telegram app before SMS."
+
+
+def _telegram_qr_payload(url: str) -> str:
+    value = str(url).strip()
+    if not value.startswith("tg://login?token="):
+        raise ValueError("Telegram returned an invalid QR login URL")
+    return value
+
+
+def _telegram_auth_failure_message(exc: Exception) -> str:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "This QR code expired. Generate a new code and scan it within two minutes."
+    detail = str(exc).strip()
+    if detail:
+        return f"Telegram sign-in failed: {detail}"
+    return "Telegram sign-in failed. Generate a new code and try again."
 
 
 class StreamWorker:
@@ -416,6 +430,15 @@ class TelegramSessionRuntime:
                 public_state = str(values.get("state", merged.get("state", "starting")))
                 attempt.state = auth_state_from_public(public_state)
                 attempt.message = values.get("message", attempt.message)
+                if public_state == "failed" and attempt.connection_id is not None:
+                    connection = db.get(TelegramConnection, attempt.connection_id)
+                    if (
+                        connection is not None
+                        and connection.state == TelegramConnectionState.pending
+                    ):
+                        attempt.connection_id = None
+                        db.flush()
+                        db.delete(connection)
                 db.commit()
         key = f"copy:telegram:auth:{auth_id}"
         self.redis.hset(key, mapping={name: str(value) for name, value in values.items() if value is not None})
@@ -783,13 +806,14 @@ class TelegramSessionRuntime:
             qr_login = await client.qr_login()
             self.clients[auth_id] = (client, None, None)
             self.qr_logins[auth_id] = qr_login
-            import qrcode
-            image = qrcode.make(qr_login.url)
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            qr_data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
             from telethon.sessions import StringSession
-            self._auth_update(auth_id, state="qr_required", qr_url=qr_data_url, session=StringSession.save(client.session), message="Scan this QR code in Telegram")
+            self._auth_update(
+                auth_id,
+                state="qr_required",
+                qr_url=_telegram_qr_payload(qr_login.url),
+                session=StringSession.save(client.session),
+                message="Scan this QR code in Telegram",
+            )
             asyncio.create_task(self._wait_qr(auth_id, client, qr_login))
         elif event.event_type == "dialogs.refresh":
             connection_id = event.payload["connection_id"]
@@ -830,7 +854,17 @@ class TelegramSessionRuntime:
         except SessionPasswordNeededError:
             self._auth_update(auth_id, state="password_required", message="Enter your Telegram two-step password")
         except Exception as exc:
-            self._auth_update(auth_id, state="failed", message=f"Telegram sign-in failed: {exc}")
+            self.clients.pop(auth_id, None)
+            self.qr_logins.pop(auth_id, None)
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.debug("Could not close failed Telegram auth client", exc_info=True)
+            self._auth_update(
+                auth_id,
+                state="failed",
+                message=_telegram_auth_failure_message(exc),
+            )
 
     async def restore(self) -> None:
         from telethon import TelegramClient

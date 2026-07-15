@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 import uuid
@@ -43,6 +44,10 @@ from app.domains.copy_trading.metaapi_execution import (
     _connection_lock,
     _release_connection_lock,
     warm_active_copy_connections,
+)
+from app.domains.copy_trading.worker_runtime import (
+    _telegram_auth_failure_message,
+    _telegram_qr_payload,
 )
 from redis.exceptions import LockNotOwnedError
 
@@ -113,6 +118,23 @@ def test_expired_source_lock_does_not_turn_success_into_retry() -> None:
     _release_source_lock(lock, source_id=uuid.uuid4())
 
     lock.release.assert_called_once()
+
+
+def test_telegram_qr_uses_login_url_instead_of_encoded_image() -> None:
+    url = "tg://login?token=real-telegram-token"
+
+    assert _telegram_qr_payload(url) == url
+
+
+def test_telegram_qr_rejects_image_data_url() -> None:
+    with pytest.raises(ValueError, match="invalid QR login URL"):
+        _telegram_qr_payload("data:image/png;base64,not-a-login-token")
+
+
+def test_telegram_qr_timeout_has_actionable_message() -> None:
+    assert _telegram_auth_failure_message(asyncio.TimeoutError()) == (
+        "This QR code expired. Generate a new code and scan it within two minutes."
+    )
 
 
 @patch("app.domains.copy_trading.metaapi_execution.get_metaapi_runtime")

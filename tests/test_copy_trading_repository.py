@@ -59,3 +59,13 @@ def test_create_activity_flushes_without_committing() -> None:
     db.add.assert_called_once_with(event)
     db.flush.assert_called_once_with()
     db.commit.assert_not_called()
+
+
+def test_list_telegram_connections_hides_temporary_auth_rows() -> None:
+    db = MagicMock()
+    db.execute.return_value.scalars.return_value.all.return_value = []
+
+    repository.list_connections_for_user(db, user_id=uuid.uuid4())
+
+    statement = str(db.execute.call_args.args[0])
+    assert "telegram_connections.state !=" in statement

@@ -14,6 +14,7 @@ from app.domains.copy_trading.models import (
     CopyRouteState,
     CopyTradingUserSettings,
     CopyTradingConnection,
+    TelegramConnectionState,
     TelegramSource,
     TelegramConnection,
     ChannelProfile,
@@ -200,7 +201,14 @@ def list_activity_for_user(
 
 
 def list_connections_for_user(db: Session, *, user_id: uuid.UUID) -> list[TelegramConnection]:
-    stmt = select(TelegramConnection).where(TelegramConnection.user_id == user_id).order_by(TelegramConnection.created_at.desc())
+    stmt = (
+        select(TelegramConnection)
+        .where(
+            TelegramConnection.user_id == user_id,
+            TelegramConnection.state != TelegramConnectionState.pending,
+        )
+        .order_by(TelegramConnection.created_at.desc())
+    )
     return list(db.execute(stmt).scalars().all())
 
 
