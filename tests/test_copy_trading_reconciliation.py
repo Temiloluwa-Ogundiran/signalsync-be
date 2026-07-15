@@ -36,6 +36,62 @@ def test_reconciliation_rejects_a_different_client_order_id() -> None:
     ) is False
 
 
+def test_reconciliation_treats_missing_protective_level_as_not_confirmed() -> None:
+    intent = SimpleNamespace(
+        client_order_id="expected",
+        request_payload={"action": "modify_sl_tp", "stop_loss": "1.08"},
+    )
+    copied = SimpleNamespace(broker_position_id="42", broker_order_id=None)
+
+    assert broker_result_matches_intent(
+        intent,
+        {
+            "client_order_id": "expected",
+            "positions": [{"id": "42", "stopLoss": None}],
+        },
+        copied,
+    ) is False
+
+
+def test_reconciliation_treats_malformed_protective_level_as_not_confirmed() -> None:
+    intent = SimpleNamespace(
+        client_order_id="expected",
+        request_payload={"action": "modify_sl_tp", "stop_loss": "1.08"},
+    )
+    copied = SimpleNamespace(broker_position_id="42", broker_order_id=None)
+
+    assert broker_result_matches_intent(
+        intent,
+        {
+            "client_order_id": "expected",
+            "positions": [{"id": "42", "stopLoss": "not-a-price"}],
+        },
+        copied,
+    ) is False
+
+
+def test_snapshot_ignores_malformed_volume_without_losing_known_exposure() -> None:
+    trade = SimpleNamespace(
+        broker_position_id="42",
+        broker_order_id=None,
+        lifecycle_state="open",
+        current_volume=Decimal("0.10"),
+        stop_loss=None,
+        take_profit=None,
+        broker_synced_at=None,
+    )
+
+    apply_broker_snapshot(
+        trade,
+        positions=[{"id": "42", "volume": "unknown"}],
+        orders=[],
+        observed_at=datetime.now(timezone.utc),
+    )
+
+    assert trade.lifecycle_state == "open"
+    assert trade.current_volume == Decimal("0.10")
+
+
 def test_snapshot_updates_current_volume_and_protective_levels() -> None:
     trade = SimpleNamespace(
         broker_position_id="42",

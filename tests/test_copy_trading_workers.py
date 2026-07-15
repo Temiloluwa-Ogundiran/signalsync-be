@@ -33,7 +33,9 @@ from app.domains.copy_trading.workers import (
     _safe_activity_title,
     _reconciliation_accepts,
     _route_accepts_message,
+    _release_source_lock,
     _select_copied_trade,
+    _source_lock,
     expire_signal_threads,
 )
 from app.domains.copy_trading.metaapi_execution import execution_handler
@@ -80,6 +82,35 @@ def test_expired_connection_lock_does_not_fail_completed_delivery() -> None:
     lock.release.side_effect = LockNotOwnedError("expired")
 
     _release_connection_lock(lock, connection_id=uuid.uuid4())
+
+    lock.release.assert_called_once()
+
+
+def test_source_lock_has_enough_lease_for_parser_and_database_work() -> None:
+    client = MagicMock()
+    source_id = uuid.uuid4()
+
+    _source_lock(client, source_id)
+
+    client.lock.assert_called_once_with(
+        f"copy:source-lock:{source_id}",
+        timeout=max(
+            120,
+            int(
+                settings.COPY_TRADING_AI_TIMEOUT_SECONDS
+                * (settings.COPY_TRADING_AI_MAX_RETRIES + 1)
+                + 30
+            ),
+        ),
+        blocking_timeout=5,
+    )
+
+
+def test_expired_source_lock_does_not_turn_success_into_retry() -> None:
+    lock = MagicMock()
+    lock.release.side_effect = LockNotOwnedError("expired")
+
+    _release_source_lock(lock, source_id=uuid.uuid4())
 
     lock.release.assert_called_once()
 

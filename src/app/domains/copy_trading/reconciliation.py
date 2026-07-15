@@ -1,7 +1,14 @@
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.domains.copy_trading.engine import SignalAction
+
+
+OPEN_ACTIONS = {
+    SignalAction.open_market.value,
+    SignalAction.place_pending.value,
+    SignalAction.additional_tp.value,
+}
 
 
 def _broker_id(item: dict):
@@ -11,6 +18,26 @@ def _broker_id(item: dict):
 def _broker_value(item: dict, metaapi_key: str, legacy_key: str):
     value = item.get(metaapi_key)
     return value if value is not None else item.get(legacy_key)
+
+
+def _safe_decimal(value) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
+
+
+def _decimal_matches(actual, expected) -> bool:
+    actual_number = _safe_decimal(actual)
+    expected_number = _safe_decimal(expected)
+    return (
+        actual_number is not None
+        and expected_number is not None
+        and actual_number == expected_number
+    )
 
 
 def broker_result_matches_intent(intent, data: dict, copied) -> bool:
@@ -41,8 +68,8 @@ def broker_result_matches_intent(intent, data: dict, copied) -> bool:
                 continue
             actual_sl = _broker_value(position, "stopLoss", "sl")
             actual_tp = _broker_value(position, "takeProfit", "tp")
-            sl_matches = expected_sl is None or Decimal(str(actual_sl)) == Decimal(str(expected_sl))
-            tp_matches = expected_tp is None or Decimal(str(actual_tp)) == Decimal(str(expected_tp))
+            sl_matches = expected_sl is None or _decimal_matches(actual_sl, expected_sl)
+            tp_matches = expected_tp is None or _decimal_matches(actual_tp, expected_tp)
             return sl_matches and tp_matches
         return False
     if action == SignalAction.full_close.value:
@@ -77,15 +104,16 @@ def apply_broker_snapshot(
             trade.current_volume = Decimal("0")
             changed = True
         else:
-            values = {
-                "current_volume": Decimal(str(position.get("volume", 0))),
-                "stop_loss": Decimal(str(_broker_value(position, "stopLoss", "sl")))
-                if _broker_value(position, "stopLoss", "sl")
-                else None,
-                "take_profit": Decimal(str(_broker_value(position, "takeProfit", "tp")))
-                if _broker_value(position, "takeProfit", "tp")
-                else None,
-            }
+            values = {}
+            volume = _safe_decimal(position.get("volume"))
+            if volume is not None and volume >= Decimal("0"):
+                values["current_volume"] = volume
+            values["stop_loss"] = _safe_decimal(
+                _broker_value(position, "stopLoss", "sl")
+            )
+            values["take_profit"] = _safe_decimal(
+                _broker_value(position, "takeProfit", "tp")
+            )
             for field, value in values.items():
                 if getattr(trade, field) != value:
                     setattr(trade, field, value)
@@ -115,11 +143,13 @@ def apply_broker_snapshot(
             if activated:
                 trade.lifecycle_state = "open"
                 trade.broker_position_id = str(_broker_id(activated))
-                trade.current_volume = Decimal(str(activated.get("volume", 0)))
+                activated_volume = _safe_decimal(activated.get("volume"))
+                if activated_volume is not None and activated_volume >= Decimal("0"):
+                    trade.current_volume = activated_volume
                 stop_loss = _broker_value(activated, "stopLoss", "sl")
                 take_profit = _broker_value(activated, "takeProfit", "tp")
-                trade.stop_loss = Decimal(str(stop_loss)) if stop_loss else None
-                trade.take_profit = Decimal(str(take_profit)) if take_profit else None
+                trade.stop_loss = _safe_decimal(stop_loss)
+                trade.take_profit = _safe_decimal(take_profit)
             else:
                 trade.lifecycle_state = "cancelled"
             changed = True

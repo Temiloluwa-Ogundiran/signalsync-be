@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import json
 import logging
@@ -7,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from redis.exceptions import LockNotOwnedError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -36,7 +36,7 @@ from app.domains.copy_trading.generations import (
     merge_generation_context,
 )
 from app.domains.copy_trading.reconciliation import (
-    apply_broker_snapshot,
+    _decimal_matches,
     broker_result_matches_intent,
 )
 from app.domains.copy_trading.models import (
@@ -72,6 +72,32 @@ _AI_SIGNAL_CUE = re.compile(
     r"CANCEL|DELETE|BE|BREAK[ -]?EVEN|SECURE|RISK[ -]?FREE)\b",
     re.IGNORECASE,
 )
+
+
+def _source_lock(client, source_id):
+    lease_seconds = max(
+        120,
+        int(
+            settings.COPY_TRADING_AI_TIMEOUT_SECONDS
+            * (settings.COPY_TRADING_AI_MAX_RETRIES + 1)
+            + 30
+        ),
+    )
+    return client.lock(
+        f"copy:source-lock:{source_id}",
+        timeout=lease_seconds,
+        blocking_timeout=5,
+    )
+
+
+def _release_source_lock(lock, *, source_id) -> None:
+    try:
+        lock.release()
+    except LockNotOwnedError:
+        logger.warning(
+            "Source lock expired before release source_id=%s",
+            source_id,
+        )
 
 
 def _semantic_fingerprint(route: CopyRoute, payload: dict) -> str:
@@ -341,8 +367,12 @@ def _reconciliation_accepts(
         for position in positions:
             if str(position.get("ticket")) != position_id:
                 continue
-            sl_matches = expected_sl is None or Decimal(str(position.get("sl"))) == Decimal(str(expected_sl))
-            tp_matches = expected_tp is None or Decimal(str(position.get("tp"))) == Decimal(str(expected_tp))
+            sl_matches = expected_sl is None or _decimal_matches(
+                position.get("sl"), expected_sl
+            )
+            tp_matches = expected_tp is None or _decimal_matches(
+                position.get("tp"), expected_tp
+            )
             return sl_matches and tp_matches
         return False
     if action == SignalAction.full_close.value:
@@ -363,9 +393,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
     if settings.COPY_TRADING_GLOBAL_PAUSED:
         return DeliveryResult.success()
     source_id = uuid.UUID(event.payload["source_id"])
-    lock = client.lock(
-        f"copy:source-lock:{source_id}", timeout=30, blocking_timeout=5
-    )
+    lock = _source_lock(client, source_id)
     if not lock.acquire(blocking=True):
         return DeliveryResult.retry("SOURCE_BUSY", "Signal source is busy.")
     try:
@@ -795,7 +823,7 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
             db.commit()
             return DeliveryResult.success()
     finally:
-        lock.release()
+        _release_source_lock(lock, source_id=source_id)
 
 
 def _handle_deleted_message(event: CopyEvent) -> None:

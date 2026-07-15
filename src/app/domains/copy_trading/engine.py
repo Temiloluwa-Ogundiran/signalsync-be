@@ -81,16 +81,45 @@ def validate_signal(signal: ParsedSignal, policy: RouteExecutionPolicy) -> Valid
             "Additional take profit is waiting for a target price.",
             advisory,
         )
+    prices = [
+        value
+        for value in (
+            signal.entry,
+            signal.entry_high,
+            signal.stop_loss,
+            *signal.take_profits,
+        )
+        if value is not None
+    ]
+    if any(not value.is_finite() or value <= Decimal("0") for value in prices):
+        return ValidationResult(
+            False,
+            "Trade prices must be positive finite numbers.",
+            advisory,
+        )
     if (
-        signal.action == SignalAction.partial_close
-        and signal.close_fraction is not None
-        and not (Decimal("0") < signal.close_fraction <= Decimal("1"))
+        signal.entry is not None
+        and signal.entry_high is not None
+        and signal.entry > signal.entry_high
     ):
         return ValidationResult(
             False,
-            "Partial close must be greater than 0% and at most 100%.",
+            "Entry range minimum cannot exceed its maximum.",
             advisory,
         )
+    if signal.action == SignalAction.partial_close:
+        if signal.close_fraction is None or not signal.close_fraction.is_finite():
+            return ValidationResult(
+                False,
+                "Partial close needs a percentage between 0% and 100%.",
+                advisory,
+            )
+        if not (Decimal("0") < signal.close_fraction <= Decimal("1")):
+            return ValidationResult(
+                False,
+                "Partial close must be greater than 0% and at most 100%.",
+                advisory,
+            )
     if signal.action == SignalAction.open_market and signal.age_seconds > policy.market_freshness_seconds:
         return ValidationResult(False, "Signal is too old for immediate entry.", advisory)
     if signal.action == SignalAction.place_pending and not policy.pending_orders_enabled:

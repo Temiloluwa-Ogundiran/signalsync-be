@@ -10,6 +10,7 @@ from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
     CopyDeadLetter,
+    CopiedTrade,
     CopyRoute,
     CopyExecutionMetric,
     CopySignalReview,
@@ -27,6 +28,7 @@ _USER_MODELS = (
     CopyAccountPolicy,
     CopyActivityEvent,
     CopyDeadLetter,
+    CopiedTrade,
     CopyRoute,
     CopyExecutionMetric,
     CopySignalReview,
@@ -38,12 +40,22 @@ _USER_MODELS = (
 )
 
 
+def _update_user_id(session, item):
+    user_id = getattr(item, "user_id", None)
+    if user_id is not None:
+        return user_id
+    if isinstance(item, CopiedTrade):
+        route = session.get(CopyRoute, item.route_id)
+        return route.user_id if route is not None else None
+    return None
+
+
 @event.listens_for(Session, "before_flush")
 def _collect_copy_trading_updates(session, _flush_context, _instances) -> None:
     user_ids = session.info.setdefault("copy_live_user_ids", set())
     for item in {*session.new, *session.dirty, *session.deleted}:
         if isinstance(item, _USER_MODELS):
-            user_id = getattr(item, "user_id", None)
+            user_id = _update_user_id(session, item)
             if user_id is not None:
                 user_ids.add(str(user_id))
 

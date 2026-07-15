@@ -80,19 +80,34 @@ def _decimal(value: str | None) -> Decimal | None:
         return None
 
 
-def _symbol(text: str) -> str | None:
+def _symbols(text: str) -> list[str]:
     upper = text.upper()
+    found: list[str] = []
+
+    def add(value: str) -> None:
+        if value not in found:
+            found.append(value)
+
+    for base, quote in re.findall(r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b", upper):
+        candidate = f"{base}{quote}"
+        if _looks_like_symbol(candidate):
+            add(candidate)
     for alias, canonical in _SYMBOL_ALIASES.items():
         if re.search(rf"\b{alias}\b", upper):
-            return canonical
+            add(canonical)
     candidates = re.findall(r"\b[A-Z][A-Z0-9._-]{2,15}\b", upper)
     for candidate in candidates:
         normalized = re.sub(r"[^A-Z0-9]", "", candidate)
         if normalized in _RESERVED_TOKENS or normalized.startswith(("TP", "SL")):
             continue
         if _looks_like_symbol(normalized):
-            return normalized
-    return None
+            add(normalized)
+    return found
+
+
+def _symbol(text: str) -> str | None:
+    symbols = _symbols(text)
+    return symbols[0] if symbols else None
 
 
 def _labelled_number(text: str, labels: str) -> Decimal | None:
@@ -182,6 +197,20 @@ def deterministic_parse(text: str) -> AiAction | None:
     ):
         return AiAction(action=SignalAction.status_only, symbol=symbol, confidence=1)
 
+    non_actionable_context = re.search(
+        r"\b(?:DO\s+NOT|DON['\u2019]?T|IGNORE|AVOID)\s+(?:BUY|SELL|LONG|SHORT)\b"
+        r"|\bCANCEL\s+(?:THE\s+)?(?:BUY|SELL|LONG|SHORT)\b"
+        r"|\b(?:YESTERDAY|RESULTS?|EXAMPLE|BACKTEST)\b"
+        r"|\b(?:WE\s+)?(?:BOUGHT|SOLD)\b",
+        upper,
+    )
+    has_trade_details = re.search(
+        r"\b(?:BUY|SELL|LONG|SHORT|BOUGHT|SOLD|SL|TP\d*|ENTRY)\b",
+        upper,
+    )
+    if non_actionable_context and has_trade_details:
+        return AiAction(action=SignalAction.status_only, symbol=symbol, confidence=0)
+
     if re.search(r"\b(?:MOVE\s+SL\s+TO\s+)?(?:BE|BREAK[ -]?EVEN)\b", upper):
         return AiAction(action=SignalAction.break_even, symbol=symbol, confidence=1)
 
@@ -235,6 +264,14 @@ def deterministic_parse(text: str) -> AiAction | None:
 
     if not has_direction or symbol is None:
         return None
+
+    direction_words = re.findall(r"\b(BUY|SELL|LONG|SHORT)\b", upper)
+    direction_sides = {
+        "buy" if value in {"BUY", "LONG"} else "sell"
+        for value in direction_words
+    }
+    if len(direction_sides) > 1 or len(_symbols(compact)) > 1:
+        return AiAction(action=SignalAction.status_only, confidence=0)
 
     direction = {
         "BUY": "buy",
