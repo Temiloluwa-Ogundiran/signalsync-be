@@ -1,5 +1,6 @@
 from decimal import Decimal
 import inspect
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -65,6 +66,64 @@ def test_phone_auth_explains_when_telegram_delivers_code_in_app():
 
     assert "verified Telegram chat" in message
     assert "not send this code by SMS" in message
+
+
+@patch("telethon.sessions.StringSession.save", return_value="new-session")
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_reauthentication_keeps_auth_status_when_temporary_connection_is_removed(
+    session_local,
+    _save_session,
+    fernet_key,
+):
+    auth_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    existing_id = uuid.uuid4()
+    temporary = SimpleNamespace(id=auth_id, user_id=user_id)
+    existing = SimpleNamespace(
+        id=existing_id,
+        user_id=user_id,
+        telegram_user_id=123,
+        display_name=None,
+        username=None,
+        encrypted_session=None,
+        state=TelegramConnectionState.reauthentication_required,
+        reauthentication_reason="expired",
+        last_heartbeat_at=None,
+    )
+    attempt = SimpleNamespace(connection_id=auth_id)
+    db = session_local.return_value.__enter__.return_value
+    db.get.return_value = temporary
+    db.execute.side_effect = [
+        MagicMock(scalar_one_or_none=MagicMock(return_value=existing)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=attempt)),
+    ]
+
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.cipher = SessionCipher(fernet_key)
+    runtime._auth_update = MagicMock()
+    runtime._attach_updates = AsyncMock()
+    runtime._refresh_dialog_cache = AsyncMock()
+    client = MagicMock()
+    client.get_me = AsyncMock(
+        return_value=SimpleNamespace(
+            id=123,
+            first_name="Temiloluwa",
+            last_name=None,
+            username="nerdit0",
+        )
+    )
+
+    __import__("asyncio").run(runtime._finalize(str(auth_id), client))
+
+    assert attempt.connection_id == existing_id
+    db.flush.assert_called_once()
+    db.delete.assert_called_once_with(temporary)
+    runtime._auth_update.assert_called_once_with(
+        str(auth_id),
+        state="ready",
+        message="Telegram connected",
+        connection_id=str(existing_id),
+    )
 
 
 def test_signal_validation_rejects_stale_market_signal():

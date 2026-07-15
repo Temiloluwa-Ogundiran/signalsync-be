@@ -404,7 +404,17 @@ class TelegramSessionRuntime:
 
             if existing is not None:
                 # Drop the throwaway row created for this auth attempt so we
-                # don't leak orphan pending connections.
+                # don't leak orphan pending connections. Move the auth attempt
+                # first so the temporary connection's ON DELETE CASCADE does
+                # not erase the completion state while the browser is polling.
+                attempt = db.execute(
+                    select(TelegramAuthAttempt).where(
+                        TelegramAuthAttempt.auth_id == auth_id
+                    )
+                ).scalar_one_or_none()
+                if attempt is not None:
+                    attempt.connection_id = existing.id
+                    db.flush()
                 db.delete(connection)
 
             db.commit()
