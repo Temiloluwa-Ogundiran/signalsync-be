@@ -502,6 +502,7 @@ async def sync_account_deals_mt5(
     # 3. Call mt5-core client
     client = client or Mt5CoreClient(
         poll_interval=settings.MT5_CORE_SYNC_POLL_INTERVAL_SECONDS,
+        worker_wait_timeout=settings.MT5_CORE_SYNC_WORKER_WAIT_TIMEOUT_SECONDS,
     )
     previous_balance = account_repo.get_latest_account_snapshot_balance(
         db,

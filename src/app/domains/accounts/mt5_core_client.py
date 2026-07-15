@@ -76,6 +76,7 @@ class Mt5CoreClient:
         poll_timeout: Optional[int] = None,
         poll_interval: Optional[float] = None,
         admission_retry_interval: Optional[float] = None,
+        worker_wait_timeout: Optional[float] = None,
     ) -> None:
         self.base_url = (base_url or settings.MT5_CORE_URL).rstrip("/")
         self.shared_secret = shared_secret or settings.MT5_CORE_INTERNAL_SHARED_SECRET
@@ -85,6 +86,11 @@ class Mt5CoreClient:
             admission_retry_interval
             if admission_retry_interval is not None
             else settings.MT5_CORE_POLL_INTERVAL_SECONDS
+        )
+        self.worker_wait_timeout = (
+            worker_wait_timeout
+            if worker_wait_timeout is not None
+            else settings.MT5_CORE_POLL_TIMEOUT_SECONDS
         )
 
     def _headers(self) -> dict[str, str]:
@@ -274,7 +280,7 @@ class Mt5CoreClient:
                 raise Mt5CoreClientError(f"Failed to submit history sync job: {e}") from e
 
             job_id = data["job_id"]
-            return await self._poll_job(client, job_id)
+            return await self._poll_job(client, job_id, wait_for_worker=True)
 
     async def get_open_positions(
         self,
@@ -323,7 +329,13 @@ class Mt5CoreClient:
             except (httpx.HTTPError, ValueError, KeyError) as exc:
                 raise Mt5CoreClientError(f"Failed to submit broker action: {exc}") from exc
 
-    async def _poll_job(self, client: httpx.AsyncClient, job_id: str) -> dict[str, Any]:
+    async def _poll_job(
+        self,
+        client: httpx.AsyncClient,
+        job_id: str,
+        *,
+        wait_for_worker: bool = False,
+    ) -> dict[str, Any]:
         """Poll the status of a job until succeeded or failed.
 
         Stale keep-alive connections are treated as transient RemoteProtocolError
@@ -331,6 +343,7 @@ class Mt5CoreClient:
         between polls.
         """
         processing_started_at: float | None = None
+        worker_wait_started_at = time.monotonic()
         
         while True:
             try:
@@ -364,9 +377,14 @@ class Mt5CoreClient:
                     )
                 elif status == "queued":
                     if job_status_resp.get("worker_available") is False:
-                        raise Mt5CoreClientWorkerUnavailable(
-                            f"No MT5 worker is available for queued job {job_id}"
-                        )
+                        if not wait_for_worker:
+                            raise Mt5CoreClientWorkerUnavailable(
+                                f"No MT5 worker is available for queued job {job_id}"
+                            )
+                        if time.monotonic() - worker_wait_started_at >= self.worker_wait_timeout:
+                            raise Mt5CoreClientWorkerUnavailable(
+                                f"No MT5 worker became available for queued job {job_id}"
+                            )
                 elif status == "running" and processing_started_at is None:
                     processing_started_at = time.monotonic()
             

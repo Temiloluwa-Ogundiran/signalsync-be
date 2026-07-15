@@ -450,6 +450,37 @@ async def test_submit_history_sync_success(client: Mt5CoreClient, httpx_mock) ->
 
 
 @pytest.mark.anyio
+async def test_submit_history_sync_waits_for_temporarily_unavailable_worker(
+    client: Mt5CoreClient,
+    httpx_mock,
+) -> None:
+    client.poll_interval = 0.01
+    client.worker_wait_timeout = 1
+    httpx_mock.add_response(
+        method="POST",
+        url="http://mt5-core-test/history/sync",
+        json={"job_id": "sync-warming", "status": "queued"},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/sync-warming",
+        json={"status": "queued", "worker_available": False},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url="http://mt5-core-test/jobs/sync-warming",
+        json={"status": "succeeded", "result": {"deals": []}},
+    )
+
+    result = await client.submit_history_sync(
+        account_id="acct-1",
+        credentials={"login": "10001", "password": "p", "server": "s"},
+    )
+
+    assert result == {"deals": []}
+
+
+@pytest.mark.anyio
 async def test_submit_history_sync_raises_rate_limited_error(client: Mt5CoreClient, httpx_mock) -> None:
     httpx_mock.add_response(
         method="POST",

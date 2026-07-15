@@ -199,6 +199,7 @@ async def test_manual_mt5_sync_default_window_matches_journal_range(
     assert sync_kwargs["known_latest_closed_at"] == latest_closed_at
     mock_client_cls.assert_called_once_with(
         poll_interval=settings.MT5_CORE_SYNC_POLL_INTERVAL_SECONDS,
+        worker_wait_timeout=settings.MT5_CORE_SYNC_WORKER_WAIT_TIMEOUT_SECONDS,
     )
 
 
