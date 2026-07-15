@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -67,6 +68,12 @@ from app.domains.copy_trading.symbols import normalize_symbol
 
 logger = logging.getLogger("copy-trading.signal")
 
+_AI_SIGNAL_CUE = re.compile(
+    r"\b(?:BUY|SELL|LONG|SHORT|SL|TP\d*|ENTRY|LIMIT|STOP|CLOSE|EXIT|"
+    r"CANCEL|DELETE|BE|BREAK[ -]?EVEN|SECURE|RISK[ -]?FREE)\b",
+    re.IGNORECASE,
+)
+
 
 def _semantic_fingerprint(route: CopyRoute, payload: dict) -> str:
     meaningful = {
@@ -98,6 +105,10 @@ def _parse_message(text: str, context: dict) -> AiAction:
     deterministic = deterministic_parse(text)
     if deterministic is not None:
         return deterministic
+    if not _AI_SIGNAL_CUE.search(text or "") and not (
+        context and re.search(r"\d", text or "")
+    ):
+        return AiAction(action=SignalAction.status_only, confidence=0)
     from langchain_openai import ChatOpenAI
 
     model = ChatOpenAI(
@@ -111,6 +122,14 @@ def _parse_message(text: str, context: dict) -> AiAction:
         ("system", "Parse one Telegram trading instruction. Return only the action described. Preserve exact prices. TP hit and SL hit are status_only. Never invent missing fields."),
         ("human", json.dumps({"known_signal_context": context, "message": text}, default=str)),
     ])
+
+
+def _is_user_visible_status(parsed: AiAction) -> bool:
+    return (
+        parsed.action == SignalAction.status_only
+        and parsed.confidence >= 1
+        and parsed.symbol is not None
+    )
 
 
 def _safe_activity_title(title: str) -> str:
@@ -421,6 +440,22 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     exc,
                 )
                 return DeliveryResult.retry(type(exc).__name__.upper(), str(exc))
+
+            if parsed.action == SignalAction.status_only:
+                if _is_user_visible_status(parsed):
+                    for route in routes:
+                        _activity(
+                            db,
+                            route=route,
+                            correlation_id=event.correlation_id,
+                            action="signal.status",
+                            title="Channel status update",
+                            level=CopyActivityLevel.info,
+                            details=parsed.model_dump(mode="json"),
+                            raw_message=event.payload.get("text"),
+                        )
+                    db.commit()
+                return DeliveryResult.success()
 
             existing_conversation = _load_existing_conversation_for_correlation(
                 db,

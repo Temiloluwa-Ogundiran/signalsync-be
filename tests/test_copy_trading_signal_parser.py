@@ -12,7 +12,12 @@ from app.domains.copy_trading.engine import (
     validate_signal,
 )
 from app.domains.copy_trading.models import CopyActivityLevel
-from app.domains.copy_trading.workers import AiAction, _activity, _parse_message
+from app.domains.copy_trading.workers import (
+    AiAction,
+    _activity,
+    _is_user_visible_status,
+    _parse_message,
+)
 
 
 @patch("langchain_openai.ChatOpenAI")
@@ -41,6 +46,25 @@ def test_parser_skips_remote_ai_for_explicit_signal(model_class):
     assert parsed.stop_loss == Decimal("2310")
     assert parsed.take_profits == [Decimal("2350")]
     model_class.assert_not_called()
+
+
+@patch("langchain_openai.ChatOpenAI")
+def test_parser_skips_remote_ai_for_ordinary_channel_commentary(model_class):
+    parsed = _parse_message("EURUSD looks interesting, but this is not a signal.", {})
+
+    assert parsed.action == SignalAction.status_only
+    assert parsed.confidence == 0
+    assert _is_user_visible_status(parsed) is False
+    model_class.assert_not_called()
+
+
+def test_only_explicit_symbol_status_updates_are_user_visible() -> None:
+    assert _is_user_visible_status(
+        AiAction(action="status_only", symbol="EURUSD", confidence=1)
+    )
+    assert not _is_user_visible_status(
+        AiAction(action="status_only", symbol=None, confidence=0.2)
+    )
 
 
 @patch("app.domains.copy_trading.workers.SessionCipher")
