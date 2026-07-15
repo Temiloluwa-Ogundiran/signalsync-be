@@ -52,6 +52,10 @@ from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamNa
 
 logger = logging.getLogger("copy-trading.worker")
 
+_TELEGRAM_REAUTHENTICATION_REASON = (
+    "Telegram disconnected this session. Reconnect Telegram to resume copying signals."
+)
+
 
 class StreamWorker:
     # One automatic retry after the first delivery. Longer retry loops increase
@@ -319,10 +323,7 @@ class TelegramSessionRuntime:
                 connection = db.get(TelegramConnection, uuid.UUID(connection_id))
                 if connection is not None:
                     connection.state = TelegramConnectionState.reauthentication_required
-                    connection.reauthentication_reason = (
-                        "Telegram disconnected this session. Reconnect Telegram to resume "
-                        "copying signals."
-                    )
+                    connection.reauthentication_reason = _TELEGRAM_REAUTHENTICATION_REASON
                     db.commit()
             logger.warning(
                 "Telegram connection requires reauthentication connection_id=%s",
@@ -754,7 +755,7 @@ class TelegramSessionRuntime:
                 with SessionLocal() as db:
                     item = db.get(TelegramConnection, connection.id)
                     item.state = TelegramConnectionState.reauthentication_required
-                    item.reauthentication_reason = str(exc)
+                    item.reauthentication_reason = _TELEGRAM_REAUTHENTICATION_REASON
                     db.commit()
 
     async def run(self) -> None:
