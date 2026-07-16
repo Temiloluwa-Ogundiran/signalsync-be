@@ -77,9 +77,20 @@ def test_product_events_require_timezone_and_whitelisted_metadata():
 
 def test_metrics_endpoint_requires_configured_bearer_token(monkeypatch):
     monkeypatch.setattr("app.domains.admin.metrics.settings.METRICS_BEARER_TOKEN", "x" * 32)
+    monkeypatch.setattr("app.domains.admin.metrics.settings.MT5_CORE_INTERNAL_SHARED_SECRET", "")
     with pytest.raises(HTTPException) as exc:
         render_metrics(request_with_token("wrong"))
     assert exc.value.status_code == 401
     response = render_metrics(request_with_token("x" * 32))
     assert response.status_code == 200
     assert b"tradepartna_http_requests_total" in response.body
+
+
+def test_metrics_endpoint_accepts_existing_service_secret(monkeypatch):
+    monkeypatch.setattr("app.domains.admin.metrics.settings.METRICS_BEARER_TOKEN", "x" * 32)
+    monkeypatch.setattr(
+        "app.domains.admin.metrics.settings.MT5_CORE_INTERNAL_SHARED_SECRET",
+        "internal-service-secret",
+    )
+    response = render_metrics(request_with_token("internal-service-secret"))
+    assert response.status_code == 200

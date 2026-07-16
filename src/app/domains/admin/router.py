@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -32,6 +32,7 @@ router = APIRouter(tags=["administration"])
 @limiter.limit(settings.RATE_LIMIT_ANALYTICS)
 def collect_product_event(
     request: Request,
+    response: Response,
     payload: ProductEventCreate,
     current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),

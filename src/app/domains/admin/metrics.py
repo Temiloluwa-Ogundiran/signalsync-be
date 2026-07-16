@@ -41,9 +41,16 @@ async def observe_http_requests(request: Request, call_next):
 
 
 def render_metrics(request: Request) -> Response:
-    expected = settings.METRICS_BEARER_TOKEN
+    accepted = tuple(
+        value
+        for value in (
+            settings.METRICS_BEARER_TOKEN,
+            settings.MT5_CORE_INTERNAL_SHARED_SECRET,
+        )
+        if value
+    )
     supplied = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    if not expected or not hmac.compare_digest(supplied, expected):
+    if not accepted or not any(hmac.compare_digest(supplied, value) for value in accepted):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Metrics credentials are invalid.",
