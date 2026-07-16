@@ -71,7 +71,7 @@ def validate_terminal_account(connection, account_information: dict | None):
 
 
 async def _run_job(connection: CopyTradingConnection, *, delete: bool, db) -> bool:
-    api = build_metaapi(settings.METAAPI_TOKEN, region=settings.METAAPI_REGION)
+    api = build_metaapi(settings.METAAPI_TOKEN)
     control = MetaApiProvisioningHttpClient(
         token=settings.METAAPI_TOKEN,
         timeout_seconds=settings.METAAPI_CONNECTION_TIMEOUT_SECONDS,

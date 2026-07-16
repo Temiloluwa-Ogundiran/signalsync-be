@@ -8,11 +8,10 @@ PROVISIONING_URL = (
 )
 
 
-def build_metaapi(token: str, *, region: str | None = None):
+def build_metaapi(token: str):
     from metaapi_cloud_sdk import MetaApi
 
-    options = {"region": region} if region else None
-    return MetaApi(token=token, opts=options)
+    return MetaApi(token=token)
 
 
 class MetaApiProvisioningHttpClient:

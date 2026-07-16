@@ -1,9 +1,26 @@
 import asyncio
+import sys
+from types import SimpleNamespace
 
 from app.domains.copy_trading.metaapi_connections import (
     MetaApiConnectionManager,
     MetaApiRuntime,
 )
+from app.domains.copy_trading.metaapi_client import build_metaapi
+
+
+def test_python_sdk_client_is_not_pinned_to_an_account_region(monkeypatch) -> None:
+    calls = []
+
+    def metaapi(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setitem(sys.modules, "metaapi_cloud_sdk", SimpleNamespace(MetaApi=metaapi))
+
+    build_metaapi("secret-token")
+
+    assert calls == [{"token": "secret-token"}]
 from tests.fakes.fake_metaapi import FakeStreamingAccount, FakeStreamingApi
 
 

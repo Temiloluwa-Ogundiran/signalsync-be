@@ -226,9 +226,7 @@ def get_metaapi_runtime() -> MetaApiRuntime:
             from app.domains.copy_trading.metaapi_client import build_metaapi
 
             _runtime = MetaApiRuntime(
-                api_factory=lambda: build_metaapi(
-                    settings.METAAPI_TOKEN, region=settings.METAAPI_REGION
-                ),
+                api_factory=lambda: build_metaapi(settings.METAAPI_TOKEN),
                 timeout_seconds=settings.METAAPI_CONNECTION_TIMEOUT_SECONDS,
                 idle_seconds=settings.METAAPI_IDLE_CONNECTION_SECONDS,
             )
