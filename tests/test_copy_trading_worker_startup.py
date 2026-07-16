@@ -43,3 +43,13 @@ def test_worker_runtime_has_no_channel_learning_role() -> None:
     assert "source.learn" not in source
     assert "learning_handler" not in source
     assert '"copy-learning"' not in startup
+
+
+def test_copy_worker_suppresses_transport_logs_that_include_auth_tokens() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    startup = (project_root / "scripts" / "docker_start.py").read_text(
+        encoding="utf-8"
+    )
+
+    for logger_name in ("engineio.client", "socketio.client"):
+        assert f'logging.getLogger("{logger_name}").setLevel(logging.WARNING)' in startup

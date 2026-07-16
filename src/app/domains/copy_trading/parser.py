@@ -22,6 +22,7 @@ class AiAction(BaseModel):
 
 
 _NUMBER = r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)"
+_LABEL_SEPARATOR = r"(?:[:=@]|\b(?:TO|AT|IS)\b)"
 _RESERVED_TOKENS = {
     "ABOVE",
     "ADD",
@@ -111,13 +112,18 @@ def _symbol(text: str) -> str | None:
 
 
 def _labelled_number(text: str, labels: str) -> Decimal | None:
-    match = re.search(rf"(?:{labels})\s*(?:[:=@]|TO)?\s*({_NUMBER})\b", text, re.I)
+    match = re.search(
+        rf"(?:{labels})\s*(?:{_LABEL_SEPARATOR})?\s*({_NUMBER})\b",
+        text,
+        re.I,
+    )
     return _decimal(match.group(1)) if match else None
 
 
 def _take_profits(text: str) -> list[Decimal]:
     values = re.findall(
-        rf"(?:\bTP(?:\d+)?\b|\bTAKE\s+PROFIT\b)\s*(?:[:=@]|TO)?\s*({_NUMBER})\b",
+        rf"(?:\bTP(?:\d+)?\b|\bTAKE\s+PROFIT\b)"
+        rf"\s*(?:{_LABEL_SEPARATOR})?\s*({_NUMBER})\b",
         text,
         re.I,
     )
@@ -143,7 +149,14 @@ def _entry(text: str, *, pending: bool) -> Decimal | None:
     labelled = _labelled_number(text, r"ENTRY")
     if labelled is not None:
         return labelled
-    at_price = re.search(rf"(?:@|\bAT\b)\s*({_NUMBER})\b", text, re.I)
+    entry_text = re.sub(
+        rf"(?:\bSL\b|\bSTOP\s+LOSS\b|\bTP(?:\d+)?\b|\bTAKE\s+PROFIT\b)"
+        rf"\s*(?:{_LABEL_SEPARATOR})?\s*{_NUMBER}\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+    at_price = re.search(rf"(?:@|\bAT\b)\s*({_NUMBER})\b", entry_text, re.I)
     if at_price:
         return _decimal(at_price.group(1))
     if pending:
@@ -161,7 +174,7 @@ def _has_unlabelled_number(text: str, symbol: str | None) -> bool:
     cleaned = text
     cleaned = re.sub(
         rf"(?:\bSL\b|\bSTOP\s+LOSS\b|\bTP(?:\d+)?\b|\bTAKE\s+PROFIT\b)"
-        rf"\s*(?:[:=@]|TO)?\s*{_NUMBER}\b",
+        rf"\s*(?:{_LABEL_SEPARATOR})?\s*{_NUMBER}\b",
         " ",
         cleaned,
         flags=re.I,

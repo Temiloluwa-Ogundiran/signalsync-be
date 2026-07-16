@@ -49,6 +49,19 @@ def test_parser_skips_remote_ai_for_explicit_signal(model_class):
 
 
 @patch("langchain_openai.ChatOpenAI")
+def test_parser_preserves_sl_and_tp_with_at_separator(model_class):
+    parsed = _parse_message("SELL XAUUSD now\nSL at 4024\nTP at 4044", {})
+
+    assert parsed.action == SignalAction.open_market
+    assert parsed.symbol == "XAUUSD"
+    assert parsed.direction == "sell"
+    assert parsed.entry is None
+    assert parsed.stop_loss == Decimal("4024")
+    assert parsed.take_profits == [Decimal("4044")]
+    model_class.assert_not_called()
+
+
+@patch("langchain_openai.ChatOpenAI")
 def test_parser_skips_remote_ai_for_ordinary_channel_commentary(model_class):
     parsed = _parse_message("EURUSD looks interesting, but this is not a signal.", {})
 

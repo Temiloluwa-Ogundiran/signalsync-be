@@ -131,6 +131,10 @@ def start_worker() -> None:
 def start_copy_worker(role: str) -> None:
     wait_for_deps()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", stream=sys.stdout)
+    # Engine.IO logs the full WebSocket URL, including MetaApi's auth token.
+    # Keep application and broker errors visible while suppressing that transport noise.
+    logging.getLogger("engineio.client").setLevel(logging.WARNING)
+    logging.getLogger("socketio.client").setLevel(logging.WARNING)
     from app.domains.copy_trading.worker_runtime import run_process
     run_process(role)
 
