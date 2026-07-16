@@ -22,6 +22,7 @@ from app.domains.admin.schemas import (
 )
 from app.domains.auth import repository as token_repo
 from app.domains.auth.models import TokenType
+from app.domains.copy_trading.health import REQUIRED_WORKER_ROLES
 from app.domains.copy_trading.telemetry import percentile
 from app.domains.users.models import PlatformRole, User
 
@@ -309,9 +310,26 @@ def overview(db: Session, *, days: int) -> AdminOverviewResponse:
 
 def system_overview(db: Session) -> AdminSystemResponse:
     now = datetime.now(timezone.utc)
-    workers = repo.list_latest_worker_health(db)
+    workers = {
+        worker.worker_role: worker
+        for worker in repo.list_latest_worker_health(db)
+        if worker.worker_role in REQUIRED_WORKER_ROLES
+    }
     components = []
-    for worker in workers:
+    for role in REQUIRED_WORKER_ROLES:
+        worker = workers.get(role)
+        if worker is None:
+            components.append(
+                {
+                    "name": role,
+                    "status": "missing",
+                    "heartbeat_age_seconds": None,
+                    "stream_lag": 0,
+                    "pending": 0,
+                    "last_error": None,
+                }
+            )
+            continue
         age = max(0, int((now - worker.heartbeat_at).total_seconds()))
         component_status = (
             "healthy"
