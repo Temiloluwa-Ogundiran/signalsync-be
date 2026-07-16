@@ -73,6 +73,14 @@ _AI_SIGNAL_CUE = re.compile(
     re.IGNORECASE,
 )
 
+_COPIED_TRADE_MANAGEMENT_ACTIONS = {
+    SignalAction.modify_sl_tp.value,
+    SignalAction.break_even.value,
+    SignalAction.partial_close.value,
+    SignalAction.full_close.value,
+    SignalAction.cancel_pending.value,
+}
+
 
 def _source_lock(client, source_id):
     lease_seconds = max(
@@ -212,6 +220,32 @@ def _select_copied_trade(
         if candidate.startswith(target) or target.startswith(candidate):
             return trade
     return None
+
+
+def _management_intent_targets(
+    *,
+    action: str,
+    trades: list[CopiedTrade],
+    route_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    symbol: str | None,
+) -> list[CopiedTrade | None]:
+    if action not in _COPIED_TRADE_MANAGEMENT_ACTIONS:
+        return [None]
+    route_trades = [trade for trade in trades if trade.route_id == route_id]
+    if action == SignalAction.full_close.value and symbol:
+        target = normalize_symbol(symbol)
+        selected = [
+            trade
+            for trade in route_trades
+            if (
+                normalize_symbol(trade.signal_symbol).startswith(target)
+                or target.startswith(normalize_symbol(trade.signal_symbol))
+            )
+        ]
+    else:
+        selected = [trade for trade in route_trades if trade.thread_id == thread_id]
+    return sorted(selected, key=lambda trade: trade.created_at)
 
 
 def _assembly_for_action(db, parsed_action: ParsedAction | None):
@@ -772,6 +806,26 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                             raw_message=event.payload.get("text"),
                         )
                         continue
+                intent_targets = _management_intent_targets(
+                    action=signal.action.value,
+                    trades=active_copied_trades,
+                    route_id=route.id,
+                    thread_id=conversation.legacy_thread_id,
+                    symbol=signal.symbol,
+                )
+                if not intent_targets:
+                    assembly.state = RouteAssemblyState.skipped
+                    _activity(
+                        db,
+                        route=route,
+                        correlation_id=conversation.correlation_id,
+                        action="signal.skipped",
+                        title="No matching copied trade is open",
+                        level=CopyActivityLevel.info,
+                        details=merged,
+                        raw_message=event.payload.get("text"),
+                    )
+                    continue
                 legs = intent_legs_for_action(
                     action=signal.action,
                     fixed_lot=route.fixed_lot,
@@ -780,45 +834,49 @@ def signal_handler(event: CopyEvent, client) -> DeliveryResult:
                     distribution=route.lot_distribution.value,
                 )
                 for index, leg in enumerate(legs):
-                    intent_payload = dict(merged)
-                    intent_payload["volume"] = str(leg.lot if leg else route.fixed_lot)
-                    intent_payload["take_profit"] = (
-                        str(leg.take_profit)
-                        if leg
-                        else str(signal.take_profits[-1])
-                        if signal.take_profits
-                        else None
-                    )
-                    intent_payload["conversation_id"] = str(conversation.id)
-                    intent_payload["_telemetry"] = {
-                        "correlation_id": conversation.correlation_id,
-                        "telegram_at": event.payload.get("occurred_at"),
-                        "ingested_at": event.occurred_at,
-                        "validated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{revision}:{route.id}:{signal.action.value}:{index}"
-                    intent_id = uuid.uuid4()
-                    intent = TradeIntent(
-                        id=intent_id,
-                        user_id=route.user_id,
-                        route_id=route.id,
-                        connection_id=route.target_connection_id,
-                        legacy_account_id=route.legacy_target_account_id,
-                        parsed_action_id=action.id,
-                        idempotency_key=key,
-                        client_order_id=metaapi_client_id(route_id=route.id, intent_id=intent_id),
-                        state=TradeIntentState.created,
-                        request_payload=intent_payload,
-                    )
-                    try:
-                        with db.begin_nested():
-                            db.add(intent)
-                            db.flush()
-                    except IntegrityError:
-                        continue
-                    if signal.action.value in OPEN_ACTIONS:
-                        mark_generation_submitted(assembly, intent.id, now)
-                    RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id), "connection_id": str(route.target_connection_id)}, idempotency_key=key))
+                    for target_index, target_trade in enumerate(intent_targets):
+                        intent_payload = dict(merged)
+                        intent_payload["volume"] = str(leg.lot if leg else route.fixed_lot)
+                        intent_payload["take_profit"] = (
+                            str(leg.take_profit)
+                            if leg
+                            else str(signal.take_profits[-1])
+                            if signal.take_profits
+                            else None
+                        )
+                        intent_payload["conversation_id"] = str(conversation.id)
+                        if target_trade is not None:
+                            intent_payload["copied_trade_id"] = str(target_trade.id)
+                        intent_payload["_telemetry"] = {
+                            "correlation_id": conversation.correlation_id,
+                            "telegram_at": event.payload.get("occurred_at"),
+                            "ingested_at": event.occurred_at,
+                            "validated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        target_key = str(target_trade.id) if target_trade else str(target_index)
+                        key = f"{event.payload['connection_id']}:{event.payload['chat_id']}:{event.payload['message_id']}:{revision}:{route.id}:{signal.action.value}:{index}:{target_key}"
+                        intent_id = uuid.uuid4()
+                        intent = TradeIntent(
+                            id=intent_id,
+                            user_id=route.user_id,
+                            route_id=route.id,
+                            connection_id=route.target_connection_id,
+                            legacy_account_id=route.legacy_target_account_id,
+                            parsed_action_id=action.id,
+                            idempotency_key=key,
+                            client_order_id=metaapi_client_id(route_id=route.id, intent_id=intent_id),
+                            state=TradeIntentState.created,
+                            request_payload=intent_payload,
+                        )
+                        try:
+                            with db.begin_nested():
+                                db.add(intent)
+                                db.flush()
+                        except IntegrityError:
+                            continue
+                        if signal.action.value in OPEN_ACTIONS:
+                            mark_generation_submitted(assembly, intent.id, now)
+                        RedisStreamBus(client).publish(CopyEvent.new(stream=StreamName.execution_intents, event_type="intent.execute", correlation_id=conversation.correlation_id, payload={"intent_id": str(intent.id), "connection_id": str(route.target_connection_id)}, idempotency_key=key))
                 _activity(db, route=route, correlation_id=conversation.correlation_id, action="signal.validated", title="Signal ready", level=CopyActivityLevel.info, details=merged, raw_message=event.payload.get("text"))
             db.commit()
             return DeliveryResult.success()

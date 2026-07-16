@@ -92,6 +92,13 @@ def choose_conversation(
         if len(incomplete_openings) > 1:
             return ConversationChoice(None, ambiguous=True)
 
+    if action in management_actions and message_id is not None:
+        adjacent = [
+            item for item in eligible if item.last_message_id + 1 == message_id
+        ]
+        if len(adjacent) == 1:
+            return ConversationChoice(adjacent[0])
+
     if is_edit and message_id is not None:
         edit_matches = [
             item
@@ -134,6 +141,8 @@ def choose_conversation(
         if len(exact) == 1:
             return ConversationChoice(exact[0])
         if len(exact) > 1:
+            if action == "full_close":
+                return ConversationChoice(exact[0])
             return ConversationChoice(None, ambiguous=True)
         unresolved = [
             item

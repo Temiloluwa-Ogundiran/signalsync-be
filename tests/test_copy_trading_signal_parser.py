@@ -75,6 +75,78 @@ def test_parser_preserves_comma_formatted_signal_prices(model_class):
 
 
 @patch("langchain_openai.ChatOpenAI")
+def test_exness_copytrader_sequence_stays_on_deterministic_parser(model_class):
+    messages = [
+        "SELL XAUUSD now\nSL at 4024\nTP at 4044",
+        "SELL XAUUSD now\nSL at 4024\nTP at 4044",
+        "SELL XAUUSD now\nSL at 4024\nTP at 4044",
+        "SELL XAUUSD now\nSL at 4024\nTP at 4044",
+        "close XAUUSD now",
+        "BUY BTCUSD now",
+        "Set SL @ 64,029",
+        "BUY BTCUSD now , SL @  64,029",
+        "BUY BTCUSD now , SL @  64,029",
+        "BUY BTCUSD now , SL @  64,880",
+        "BUY BTCUSD now , SL @  63,880",
+        "TP @ 64,080",
+        "set tp @ 64,080",
+        "close trade",
+        "BUY BTCUSD now , SL @  63,880",
+        "BUY BTCUSD now , SL @  63,880",
+    ]
+
+    parsed = [_parse_message(message, {}) for message in messages]
+
+    assert [item.action for item in parsed] == [
+        SignalAction.open_market,
+        SignalAction.open_market,
+        SignalAction.open_market,
+        SignalAction.open_market,
+        SignalAction.full_close,
+        SignalAction.open_market,
+        SignalAction.modify_sl_tp,
+        SignalAction.open_market,
+        SignalAction.open_market,
+        SignalAction.open_market,
+        SignalAction.open_market,
+        SignalAction.modify_sl_tp,
+        SignalAction.modify_sl_tp,
+        SignalAction.full_close,
+        SignalAction.open_market,
+        SignalAction.open_market,
+    ]
+    assert parsed[0].stop_loss == Decimal("4024")
+    assert parsed[0].take_profits == [Decimal("4044")]
+    assert parsed[6].stop_loss == Decimal("64029")
+    assert parsed[11].take_profits == [Decimal("64080")]
+    assert parsed[13].symbol is None
+    model_class.assert_not_called()
+
+
+def test_contradictory_sell_stop_and_target_are_rejected_before_broker() -> None:
+    parsed = _parse_message(
+        "SELL XAUUSD now\nSL at 4024\nTP at 4044",
+        {},
+    )
+    signal = ParsedSignal(
+        action=parsed.action,
+        symbol=parsed.symbol,
+        direction=parsed.direction,
+        stop_loss=parsed.stop_loss,
+        take_profits=parsed.take_profits,
+        confidence=parsed.confidence,
+    )
+
+    result = validate_signal(
+        signal,
+        RouteExecutionPolicy(minimum_fields="direction_symbol_sl_tp"),
+    )
+
+    assert result.accepted is False
+    assert result.reason == "Stop loss and take profit conflict with trade direction."
+
+
+@patch("langchain_openai.ChatOpenAI")
 def test_parser_skips_remote_ai_for_ordinary_channel_commentary(model_class):
     parsed = _parse_message("EURUSD looks interesting, but this is not a signal.", {})
 

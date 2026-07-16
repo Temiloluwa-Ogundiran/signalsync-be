@@ -97,6 +97,20 @@ def validate_signal(signal: ParsedSignal, policy: RouteExecutionPolicy) -> Valid
             "Trade prices must be positive finite numbers.",
             advisory,
         )
+    if signal.stop_loss is not None and signal.take_profits:
+        prices_conflict = (
+            signal.direction == "buy"
+            and any(target <= signal.stop_loss for target in signal.take_profits)
+        ) or (
+            signal.direction == "sell"
+            and any(target >= signal.stop_loss for target in signal.take_profits)
+        )
+        if prices_conflict:
+            return ValidationResult(
+                False,
+                "Stop loss and take profit conflict with trade direction.",
+                advisory,
+            )
     if (
         signal.entry is not None
         and signal.entry_high is not None

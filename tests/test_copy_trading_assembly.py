@@ -345,6 +345,67 @@ def test_opening_message_does_not_guess_between_symbol_less_conversations() -> N
     assert result.ambiguous is True
 
 
+def test_symbol_close_selects_latest_matching_conversation_for_route_fanout() -> None:
+    older = candidate(
+        symbol="XAUUSD",
+        direction="sell",
+        root=2,
+        opening_submitted=True,
+    )
+    latest = replace(
+        candidate(
+            symbol="XAUUSD",
+            direction="sell",
+            root=5,
+            opening_submitted=True,
+        ),
+        updated_at=NOW + timedelta(minutes=1),
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        message_id=6,
+        symbol="XAUUSD",
+        direction=None,
+        action="full_close",
+        candidates=[older, latest],
+    )
+
+    assert result.selected == latest
+    assert result.ambiguous is False
+
+
+def test_adjacent_symbol_less_management_targets_latest_live_signal() -> None:
+    older = candidate(
+        symbol="XAUUSD",
+        direction="sell",
+        root=5,
+        opening_submitted=True,
+    )
+    latest = replace(
+        candidate(
+            symbol="BTCUSD",
+            direction="buy",
+            root=7,
+            last=7,
+            opening_submitted=True,
+        ),
+        updated_at=NOW + timedelta(minutes=1),
+    )
+
+    result = choose_conversation(
+        reply_to_message_id=None,
+        message_id=8,
+        symbol=None,
+        direction=None,
+        action="modify_sl_tp",
+        candidates=[older, latest],
+    )
+
+    assert result.selected == latest
+    assert result.ambiguous is False
+
+
 def test_edit_reuses_its_submitted_conversation() -> None:
     submitted = candidate(
         symbol="XAUUSD",

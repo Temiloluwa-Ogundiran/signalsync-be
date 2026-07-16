@@ -30,6 +30,7 @@ from app.domains.copy_trading.delivery import DeliveryDisposition
 from app.domains.copy_trading.streams import CopyEvent, StreamName
 from app.domains.copy_trading.workers import (
     _handle_deleted_message,
+    _management_intent_targets,
     _load_existing_conversation_for_correlation,
     _safe_activity_title,
     _reconciliation_accepts,
@@ -43,6 +44,7 @@ from app.domains.copy_trading.metaapi_execution import execution_handler
 from app.domains.copy_trading.metaapi_execution import (
     _connection_lock,
     _release_connection_lock,
+    _select_trade,
     warm_active_copy_connections,
 )
 from app.domains.copy_trading.worker_runtime import (
@@ -345,6 +347,73 @@ def test_management_action_without_symbol_uses_only_available_trade():
     trade = SimpleNamespace(signal_symbol="EURUSD", created_at=1)
 
     assert _select_copied_trade([trade], {}) is trade
+
+
+def test_symbol_close_targets_every_matching_trade_on_only_its_route():
+    route_id = uuid.uuid4()
+    other_route_id = uuid.uuid4()
+    thread_id = uuid.uuid4()
+    gold_1 = SimpleNamespace(
+        id=uuid.uuid4(), route_id=route_id, thread_id=thread_id,
+        signal_symbol="XAUUSD", created_at=1,
+    )
+    gold_2 = SimpleNamespace(
+        id=uuid.uuid4(), route_id=route_id, thread_id=uuid.uuid4(),
+        signal_symbol="XAUUSDm", created_at=2,
+    )
+    other_route_gold = SimpleNamespace(
+        id=uuid.uuid4(), route_id=other_route_id, thread_id=uuid.uuid4(),
+        signal_symbol="XAUUSD", created_at=3,
+    )
+    bitcoin = SimpleNamespace(
+        id=uuid.uuid4(), route_id=route_id, thread_id=uuid.uuid4(),
+        signal_symbol="BTCUSD", created_at=4,
+    )
+
+    targets = _management_intent_targets(
+        action="full_close",
+        trades=[bitcoin, other_route_gold, gold_2, gold_1],
+        route_id=route_id,
+        thread_id=thread_id,
+        symbol="XAUUSD",
+    )
+
+    assert targets == [gold_1, gold_2]
+
+
+def test_symbol_less_update_targets_all_legs_from_selected_signal():
+    route_id = uuid.uuid4()
+    thread_id = uuid.uuid4()
+    first_leg = SimpleNamespace(
+        id=uuid.uuid4(), route_id=route_id, thread_id=thread_id,
+        signal_symbol="BTCUSD", created_at=1,
+    )
+    second_leg = SimpleNamespace(
+        id=uuid.uuid4(), route_id=route_id, thread_id=thread_id,
+        signal_symbol="BTCUSD", created_at=2,
+    )
+
+    targets = _management_intent_targets(
+        action="modify_sl_tp",
+        trades=[second_leg, first_leg],
+        route_id=route_id,
+        thread_id=thread_id,
+        symbol=None,
+    )
+
+    assert targets == [first_leg, second_leg]
+
+
+def test_execution_uses_bound_copied_trade_instead_of_symbol_guessing():
+    intended = SimpleNamespace(id=uuid.uuid4(), signal_symbol="XAUUSD")
+    newer_same_symbol = SimpleNamespace(id=uuid.uuid4(), signal_symbol="XAUUSDm")
+
+    selected = _select_trade(
+        [newer_same_symbol, intended],
+        {"symbol": "XAUUSD", "copied_trade_id": str(intended.id)},
+    )
+
+    assert selected is intended
 
 
 @patch("app.domains.copy_trading.workers._activity")

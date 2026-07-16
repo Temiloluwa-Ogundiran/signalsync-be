@@ -154,6 +154,12 @@ def _resolve_broker_symbol(db, route, connection, broker, requested: str):
 
 
 def _select_trade(trades: list[CopiedTrade], payload: dict) -> CopiedTrade | None:
+    copied_trade_id = payload.get("copied_trade_id")
+    if copied_trade_id:
+        return next(
+            (trade for trade in trades if str(trade.id) == str(copied_trade_id)),
+            None,
+        )
     if payload.get("symbol"):
         target = normalize_symbol(str(payload["symbol"]))
         return next(
