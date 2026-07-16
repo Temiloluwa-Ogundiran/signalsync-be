@@ -37,7 +37,15 @@ class Settings(BaseSettings):
     RATE_LIMIT_DEFAULT: str = "300/minute"
     RATE_LIMIT_UPLOADS: str = "20/minute"
     RATE_LIMIT_SYNC: str = "12/minute"
+    RATE_LIMIT_ANALYTICS: str = "120/minute"
     RATE_LIMIT_REDIS_URL: str = "redis://localhost:6379/2"
+
+    # Administrative access and observability. Email lists are comma-separated.
+    ADMIN_EMAILS: str = ""
+    TECHNICAL_ADMIN_EMAILS: str = ""
+    SUPER_ADMIN_EMAILS: str = ""
+    GRAFANA_URL: str = ""
+    METRICS_BEARER_TOKEN: str = ""
 
     # -------------------------------------------------------------------
     # -------------------------------------------------------------------
@@ -203,6 +211,8 @@ class Settings(BaseSettings):
             raise ValueError("SECRET_KEY must be a random value of at least 32 characters")
         if not self.ENCRYPTION_KEY:
             raise ValueError("ENCRYPTION_KEY is required in production")
+        if not self.METRICS_BEARER_TOKEN or len(self.METRICS_BEARER_TOKEN) < 32:
+            raise ValueError("METRICS_BEARER_TOKEN must contain at least 32 characters")
         origins = self.get_cors_allowed_origins()
         if "*" in origins:
             raise ValueError("Wildcard CORS origins are not allowed in production")

@@ -12,6 +12,9 @@ from app.domains.ai.router import router as ai_router
 from app.domains.ai.checkpointer import init_checkpointer
 from app.domains.ai.agent import build_compiled
 from app.domains.auth.router import router as auth_router
+from app.domains.admin.router import router as admin_router
+from app.domains.admin import service as admin_service
+from app.domains.admin.metrics import observe_http_requests
 from app.domains.users.router import router as users_router
 from app.domains.notifications.router import router as notifications_router
 from app.domains.accounts.router import router as accounts_router
@@ -47,6 +50,9 @@ async def lifespan(app: FastAPI):
             journal_service.seed_system_journal_templates(db)
             seed_system_tags(db)
             db.commit()
+
+    with SessionLocal() as db:
+        admin_service.bootstrap_configured_roles(db)
 
     if settings.AI_ENABLED and settings.OPENAI_API_KEY:
         try:
@@ -87,6 +93,9 @@ app.add_middleware(
 from fastapi.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(RequestIdMiddleware)
+
+
+app.middleware("http")(observe_http_requests)
 
 
 MAX_JSON_BODY = 1 * 1024 * 1024  # 1 MiB
@@ -162,6 +171,7 @@ def health_check():
 
 # ── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(users_router)
 app.include_router(notifications_router)
 app.include_router(accounts_router)

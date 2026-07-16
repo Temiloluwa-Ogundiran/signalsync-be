@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.domains.users.models import AuthProvider
+from app.domains.users.models import AuthProvider, PlatformRole
 from app.shared.utils.timezone import validate_timezone_name
 
 PASSWORD_POLICY_MESSAGE = (
@@ -36,6 +36,7 @@ class UserResponse(BaseModel):
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     is_email_verified: bool
+    platform_role: PlatformRole = PlatformRole.USER
     # How the account signs in, and whether it has a real password yet. The
     # Security page uses these to decide what to show (set vs change password,
     # and whether email is editable in-app or managed by the provider).

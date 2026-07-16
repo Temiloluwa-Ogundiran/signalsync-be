@@ -299,6 +299,11 @@ def login(db: Session, email: str, password: str, response: Response) -> LoginRe
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Please verify your email before logging in.",
         )
+    if user.is_suspended:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is suspended. Contact support for assistance.",
+        )
 
     # ── issue tokens + refresh cookie ────────────────────────────────────────
     access_token, expiry_minutes, _raw_refresh = _issue_session(db, user, response)

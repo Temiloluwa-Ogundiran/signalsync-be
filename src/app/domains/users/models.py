@@ -24,6 +24,13 @@ class AuthProvider(str, PyEnum):
     GOOGLE = "google"
 
 
+class PlatformRole(str, PyEnum):
+    USER = "user"
+    ADMIN = "admin"
+    TECHNICAL_ADMIN = "technical_admin"
+    SUPER_ADMIN = "super_admin"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -66,6 +73,19 @@ class User(Base):
     display_timezone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    platform_role: Mapped[PlatformRole] = mapped_column(
+        as_pg_enum(PlatformRole, name="platformroleenum"),
+        default=PlatformRole.USER,
+        server_default=PlatformRole.USER.value,
+        nullable=False,
+    )
+    is_suspended: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa_false(), nullable=False
+    )
+    suspended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    suspension_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Onboarding — short post-signup questionnaire (data collection). Flag gates
     # the one-time flow; the three answers are free-form short codes.

@@ -38,6 +38,7 @@ from app.domains.ai.models import (
     AiUserMemory,
 )
 from app.domains.notifications.models import Notification, NotificationType
+from app.domains.admin.models import AdminAuditEvent, ProductEvent
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -101,6 +102,8 @@ __all__ = [
     "AiUserMemory",
     "Notification",
     "NotificationType",
+    "AdminAuditEvent",
+    "ProductEvent",
     "CopyTradingUserSettings",
     "TelegramConnection",
     "TelegramConnectionState",
