@@ -238,6 +238,7 @@ def _request_live_dialogs(
     connection_id: uuid.UUID,
     *,
     timeout_seconds: float = 1.5,
+    force_refresh: bool = False,
 ) -> list[dict]:
     request_id = str(uuid_module.uuid4())
     response_key = f"copy:telegram:dialogs-response:{request_id}"
@@ -247,11 +248,12 @@ def _request_live_dialogs(
         {
             "connection_id": str(connection_id),
             "request_id": request_id,
+            "force_refresh": force_refresh,
         },
         f"dialogs-refresh:{request_id}",
     )
     cached = client.get(f"copy:telegram:dialogs:{connection_id}")
-    if cached:
+    if cached and not force_refresh:
         return json.loads(cached)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -266,7 +268,7 @@ def _request_live_dialogs(
                 )
             return result
         time.sleep(0.05)
-    return []
+    return json.loads(cached) if cached else []
 
 
 def _owned_auth(auth_id: uuid.UUID, current_user: User, db: Session) -> dict:
@@ -737,7 +739,12 @@ def disconnect_telegram(connection_id: uuid.UUID, db: Session = Depends(get_db),
 
 
 @router.get("/telegram/connections/{connection_id}/dialogs", response_model=list[TelegramDialogResponse])
-def list_telegram_dialogs(connection_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_telegram_dialogs(
+    connection_id: uuid.UUID,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     connection = repo.get_connection_for_user(db, connection_id=connection_id, user_id=current_user.id)
     if connection is None:
         raise HTTPException(status_code=404, detail="Telegram connection not found.")
@@ -746,7 +753,12 @@ def list_telegram_dialogs(connection_id: uuid.UUID, db: Session = Depends(get_db
             status_code=status.HTTP_409_CONFLICT,
             detail="Reconnect Telegram before searching channels and groups.",
         )
-    dialogs = _request_live_dialogs(_redis_client(), connection_id)
+    dialogs = _request_live_dialogs(
+        _redis_client(),
+        connection_id,
+        force_refresh=refresh,
+        timeout_seconds=50 if refresh else 1.5,
+    )
     return [TelegramDialogResponse.model_validate(item) for item in dialogs]
 
 

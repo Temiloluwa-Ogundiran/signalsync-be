@@ -116,6 +116,41 @@ def test_live_dialog_request_returns_cached_dialogs_without_waiting(publish_comm
     publish_command.assert_called_once()
 
 
+@patch("app.domains.copy_trading.router._publish_command")
+def test_forced_live_dialog_request_waits_for_fresh_worker_response(
+    publish_command,
+) -> None:
+    connection_id = uuid.uuid4()
+    client = MagicMock()
+    cached_key = f"copy:telegram:dialogs:{connection_id}"
+
+    def _get(key):
+        if key == cached_key:
+            return (
+                '[{"chat_id":-1001,"title":"Cached group","username":null,'
+                '"source_type":"group","is_admin":false}]'
+            )
+        if key.startswith("copy:telegram:dialogs-response:"):
+            return (
+                '[{"chat_id":-1002,"title":"Joined today","username":null,'
+                '"source_type":"group","is_admin":false}]'
+            )
+        return None
+
+    client.get.side_effect = _get
+
+    dialogs = _request_live_dialogs(
+        client,
+        connection_id,
+        force_refresh=True,
+        timeout_seconds=0.1,
+    )
+
+    assert dialogs[0]["title"] == "Joined today"
+    payload = publish_command.call_args.args[2]
+    assert payload["force_refresh"] is True
+
+
 @patch("app.domains.copy_trading.router.repo.get_connection_for_user")
 def test_create_source_is_ready_immediately_without_channel_analysis(
     get_connection_for_user,

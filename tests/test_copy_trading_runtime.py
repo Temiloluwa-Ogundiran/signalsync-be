@@ -345,6 +345,58 @@ def test_telegram_worker_refreshes_dialogs_from_live_session():
     assert "Cached group" in value
 
 
+def test_telegram_worker_forced_dialog_refresh_returns_fresh_cache():
+    connection_id = str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.redis = MagicMock()
+    runtime.dialog_refresh_inflight = set()
+    runtime.clients = {
+        f"connection:{connection_id}": MagicMock(),
+    }
+    fresh_dialogs = [
+        {
+            "chat_id": -1002,
+            "title": "Joined today",
+            "username": None,
+            "source_type": "group",
+            "is_admin": False,
+        }
+    ]
+
+    async def _refresh(*_args, **_kwargs):
+        runtime.redis.get.return_value = __import__("json").dumps(fresh_dialogs)
+
+    runtime._refresh_dialog_cache = AsyncMock(side_effect=_refresh)
+    event = CopyEvent.new(
+        stream=StreamName.telegram_commands,
+        event_type="dialogs.refresh",
+        correlation_id=request_id,
+        payload={
+            "connection_id": connection_id,
+            "request_id": request_id,
+            "force_refresh": True,
+        },
+        idempotency_key=f"dialogs-refresh:{request_id}",
+    )
+
+    async def _run():
+        await runtime.handle(event)
+        await __import__("asyncio").sleep(0)
+
+    __import__("asyncio").run(_run())
+
+    runtime._refresh_dialog_cache.assert_awaited_once_with(
+        connection_id,
+        runtime.clients[f"connection:{connection_id}"],
+        force=True,
+    )
+    key, ttl, value = runtime.redis.setex.call_args.args
+    assert key == f"copy:telegram:dialogs-response:{request_id}"
+    assert ttl == 30
+    assert "Joined today" in value
+
+
 @patch("app.domains.copy_trading.worker_runtime.SessionLocal")
 def test_telegram_worker_refreshes_attached_connection_heartbeats(session_local):
     connection_id = uuid.uuid4()

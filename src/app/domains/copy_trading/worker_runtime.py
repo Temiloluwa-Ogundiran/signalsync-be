@@ -550,7 +550,7 @@ class TelegramSessionRuntime:
 
     # How long a cached dialog list is considered fresh. Within this window a
     # dialogs.refresh request serves the cache without re-walking iter_dialogs.
-    DIALOG_CACHE_TTL_SECONDS = 60
+    DIALOG_CACHE_TTL_SECONDS = 300
 
     def _dialog_cache_is_fresh(self, connection_id: str) -> bool:
         return bool(self.redis.get(f"copy:telegram:dialogs-fresh:{connection_id}"))
@@ -579,6 +579,13 @@ class TelegramSessionRuntime:
             return
         # Coalesce: only one walk per connection at a time.
         if connection_id in self.dialog_refresh_inflight:
+            if force:
+                deadline = asyncio.get_running_loop().time() + 45
+                while (
+                    connection_id in self.dialog_refresh_inflight
+                    and asyncio.get_running_loop().time() < deadline
+                ):
+                    await asyncio.sleep(0.1)
             return
         self.dialog_refresh_inflight.add(connection_id)
         try:
@@ -603,6 +610,20 @@ class TelegramSessionRuntime:
             )
         finally:
             self.dialog_refresh_inflight.discard(connection_id)
+
+    async def _respond_to_forced_dialog_refresh(
+        self,
+        connection_id: str,
+        request_id: str,
+        client,
+    ) -> None:
+        await self._refresh_dialog_cache(connection_id, client, force=True)
+        cached = self.redis.get(f"copy:telegram:dialogs:{connection_id}")
+        self.redis.setex(
+            f"copy:telegram:dialogs-response:{request_id}",
+            30,
+            cached or "[]",
+        )
 
     async def _attach_updates(self, connection_id: str, client) -> None:
         from telethon import events
@@ -873,6 +894,15 @@ class TelegramSessionRuntime:
                             )
                         }
                     ),
+                )
+                return
+            if event.payload.get("force_refresh"):
+                asyncio.create_task(
+                    self._respond_to_forced_dialog_refresh(
+                        connection_id,
+                        request_id,
+                        client,
+                    )
                 )
                 return
             cached = self.redis.get(f"copy:telegram:dialogs:{connection_id}")
