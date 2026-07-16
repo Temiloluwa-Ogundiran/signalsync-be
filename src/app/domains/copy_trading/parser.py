@@ -21,7 +21,7 @@ class AiAction(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
-_NUMBER = r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)"
+_NUMBER = r"[-+]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)"
 _LABEL_SEPARATOR = r"(?:[:=@]|\b(?:TO|AT|IS)\b)"
 _RESERVED_TOKENS = {
     "ABOVE",
@@ -76,7 +76,7 @@ def _decimal(value: str | None) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(value)
+        return Decimal(value.replace(",", ""))
     except InvalidOperation:
         return None
 

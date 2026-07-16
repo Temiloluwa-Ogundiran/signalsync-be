@@ -62,6 +62,19 @@ def test_parser_preserves_sl_and_tp_with_at_separator(model_class):
 
 
 @patch("langchain_openai.ChatOpenAI")
+def test_parser_preserves_comma_formatted_signal_prices(model_class):
+    opened = _parse_message("BUY BTCUSD now, SL @ 63,880", {})
+    updated = _parse_message("TP @ 64,080", {"symbol": "BTCUSD"})
+
+    assert opened.action == SignalAction.open_market
+    assert opened.stop_loss == Decimal("63880")
+    assert opened.entry is None
+    assert updated.action == SignalAction.modify_sl_tp
+    assert updated.take_profits == [Decimal("64080")]
+    model_class.assert_not_called()
+
+
+@patch("langchain_openai.ChatOpenAI")
 def test_parser_skips_remote_ai_for_ordinary_channel_commentary(model_class):
     parsed = _parse_message("EURUSD looks interesting, but this is not a signal.", {})
 
