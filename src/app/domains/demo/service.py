@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import random
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -187,6 +187,10 @@ def _seed_demo_tags_and_setups(
             db.add(TradeTag(trade_id=trade.id, tag_id=tid))
 
 
+def latest_trading_day(data: DemoData, *, fallback: date) -> date:
+    return max((day.day for day in data.days if day.trades), default=fallback)
+
+
 def seed_demo_account(
     db: Session,
     user_id: uuid.UUID,
@@ -230,8 +234,8 @@ def seed_demo_account(
     # starting balance + cumulative net). Dated to the last trading day; the
     # account's last_synced_at is set to match so the journal's default 30-day
     # window anchors to the data instead of "today".
-    last_trading_day = max(
-        (d.day for d in data.days if d.trades), default=signup_date
+    last_trading_day = latest_trading_day(
+        data, fallback=datetime.now(timezone.utc).date()
     )
     db.add(AccountSnapshot(
         account_id=account.id,

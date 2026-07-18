@@ -74,6 +74,7 @@ def test_register_swallows_email_delivery_failure() -> None:
     user.trading_experience = None
     user.primary_goal = None
     user.referral_source = None
+    user.platform_role = "user"
     user.created_at = datetime.now(timezone.utc)
     with (
         patch("app.domains.auth.service.user_repo.get_by_email", return_value=None),
