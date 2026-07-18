@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-import app.domains.accounts.mt5_core_client as mt5_core_client_module
 
 # Import the journal models to satisfy SQLAlchemy mapper dependencies in tests
 import app.domains.journal.models  # noqa: F401
@@ -18,8 +17,6 @@ from app.domains.accounts.models import (
 )
 from app.domains.accounts.mt5_core_client import (
     Mt5CoreClientJobFailed,
-    Mt5CoreClientTransientJobFailed,
-    Mt5CoreClientTimeout,
 )
 from app.domains.accounts.schemas import AccountConnectRequest, TraderAccessRequest
 from app.domains.accounts.service import connect_account, enable_trader_access
@@ -70,15 +67,13 @@ def mock_account() -> TradingAccount:
 
 @pytest.mark.anyio
 @patch("app.tasks.journal_sync_tasks.bootstrap_account.delay")
-@patch("app.domains.accounts.service.ingest_mt5_snapshots")
 @patch("app.domains.accounts.service.Mt5CoreClient")
 @patch("app.domains.accounts.service.account_repo")
 @patch("app.domains.accounts.service.encrypt_secret")
-async def test_connect_account_verifies_then_queues_history_import(
+async def test_connect_account_returns_pending_account_before_mt5_verification(
     mock_encrypt_secret,
     mock_repo,
     mock_client_cls,
-    mock_ingest_snapshots,
     mock_bootstrap_delay,
     db_session,
     current_user,
@@ -89,61 +84,15 @@ async def test_connect_account_verifies_then_queues_history_import(
     mock_repo.get_account_by_user_and_meta_id.return_value = None
     mock_repo.create_account.return_value = mock_account
     mock_encrypt_secret.return_value = "encrypted_password"
-    mock_client = AsyncMock()
-    mock_client.verify_credentials.return_value = {
-        "verified": True,
-        "login": int(payload.broker_login),
-        "server": payload.broker_server,
-        "balance": 5000.0,
-        "equity": 5000.0,
-    }
-    mock_client_cls.return_value = mock_client
-
     result = await connect_account(db_session, current_user=current_user, payload=payload)
 
     assert result == mock_account
-    mock_client_cls.assert_called_once_with(
-        poll_timeout=settings.MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS,
-        poll_interval=0.1,
-    )
-    mock_client.verify_credentials.assert_awaited_once()
+    mock_client_cls.assert_not_called()
     mock_repo.create_account.assert_called_once()
     assert mock_repo.create_account.call_args.kwargs["id"] is not None
-    mock_ingest_snapshots.assert_called_once()
-    mock_repo.mark_account_bootstrapping.assert_called_once_with(db_session, mock_account)
     db_session.commit.assert_called_once()
     db_session.refresh.assert_called_once_with(mock_account)
     mock_bootstrap_delay.assert_called_once_with(str(mock_account.id))
-
-
-@pytest.mark.anyio
-@patch("app.tasks.journal_sync_tasks.bootstrap_account.delay")
-@patch("app.domains.accounts.service.Mt5CoreClient")
-@patch("app.domains.accounts.service.account_repo")
-@patch("app.domains.accounts.service.encrypt_secret")
-async def test_connect_account_rejects_invalid_credentials_before_persisting(
-    mock_encrypt_secret,
-    mock_repo,
-    mock_client_cls,
-    mock_bootstrap_delay,
-    db_session,
-    current_user,
-    payload,
-) -> None:
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
-    mock_encrypt_secret.return_value = "encrypted_password"
-    mock_client = AsyncMock()
-    mock_client.verify_credentials.side_effect = Mt5CoreClientJobFailed("Invalid account")
-    mock_client_cls.return_value = mock_client
-
-    with pytest.raises(HTTPException) as exc:
-        await connect_account(db_session, current_user=current_user, payload=payload)
-
-    assert exc.value.status_code == 400
-    assert "MT5 authorization failed" in exc.value.detail
-    mock_repo.create_account.assert_not_called()
-    db_session.commit.assert_not_called()
-    mock_bootstrap_delay.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -221,91 +170,6 @@ async def test_enable_trader_access_stores_verified_trader_password(
     assert mock_account.encrypted_trader_password == "encrypted-trader"
     mock_encrypt_secret.assert_called_once_with("real-password")
     db_session.commit.assert_called_once()
-
-
-@pytest.mark.anyio
-@patch("app.domains.accounts.service.Mt5CoreClient")
-@patch("app.domains.accounts.service.account_repo")
-async def test_connect_account_returns_gateway_timeout_when_processing_expires(
-    mock_repo,
-    mock_client_cls,
-    db_session,
-    current_user,
-    payload,
-) -> None:
-    mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
-
-    mock_client_cls.return_value.verify_credentials.side_effect = Mt5CoreClientTimeout(
-        "processing expired"
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        await connect_account(
-            db_session,
-            current_user=current_user,
-            payload=payload,
-        )
-
-    assert exc.value.status_code == 504
-    assert "did not finish in time" in exc.value.detail
-    mock_repo.create_account.assert_not_called()
-
-
-@pytest.mark.anyio
-@patch("app.domains.accounts.service.Mt5CoreClient")
-@patch("app.domains.accounts.service.account_repo")
-async def test_connect_account_returns_service_error_when_worker_is_unavailable(
-    mock_repo,
-    mock_client_cls,
-    db_session,
-    current_user,
-    payload,
-) -> None:
-    mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
-    mock_client_cls.return_value.verify_credentials.side_effect = (
-        mt5_core_client_module.Mt5CoreClientWorkerUnavailable("worker unavailable")
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        await connect_account(
-            db_session,
-            current_user=current_user,
-            payload=payload,
-        )
-
-    assert exc.value.status_code == 503
-    assert exc.value.detail == "Service Error"
-    mock_repo.create_account.assert_not_called()
-
-
-@pytest.mark.anyio
-@patch("app.domains.accounts.service.Mt5CoreClient")
-@patch("app.domains.accounts.service.account_repo")
-async def test_connect_account_returns_service_error_after_transient_retry_exhausted(
-    mock_repo,
-    mock_client_cls,
-    db_session,
-    current_user,
-    payload,
-) -> None:
-    mock_repo.resolve_mt5_server_name.return_value = payload.broker_server
-    mock_repo.get_account_by_user_and_meta_id.return_value = None
-    mock_client_cls.return_value.verify_credentials.side_effect = (
-        Mt5CoreClientTransientJobFailed("IPC timeout (code=-10005)")
-    )
-
-    with pytest.raises(HTTPException) as exc:
-        await connect_account(
-            db_session,
-            current_user=current_user,
-            payload=payload,
-        )
-
-    assert exc.value.status_code == 503
-    assert exc.value.detail == "Service Error"
-    mock_repo.create_account.assert_not_called()
 
 
 @pytest.mark.anyio
