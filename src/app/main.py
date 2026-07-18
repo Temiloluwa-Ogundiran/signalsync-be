@@ -12,6 +12,7 @@ from app.domains.ai.router import router as ai_router
 from app.domains.ai.checkpointer import init_checkpointer
 from app.domains.ai.agent import build_compiled
 from app.domains.auth.router import router as auth_router
+from app.domains.billing.router import router as billing_router
 from app.domains.admin.router import router as admin_router
 from app.domains.admin import service as admin_service
 from app.domains.admin.metrics import observe_http_requests
@@ -171,6 +172,7 @@ def health_check():
 
 # ── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
+app.include_router(billing_router)
 app.include_router(admin_router)
 app.include_router(users_router)
 app.include_router(notifications_router)

@@ -39,6 +39,7 @@ from app.domains.ai.models import (
 )
 from app.domains.notifications.models import Notification, NotificationType
 from app.domains.admin.models import AdminAuditEvent, ProductEvent
+from app.domains.billing.models import BillingSubscription, BillingWebhookEvent
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -104,6 +105,8 @@ __all__ = [
     "NotificationType",
     "AdminAuditEvent",
     "ProductEvent",
+    "BillingSubscription",
+    "BillingWebhookEvent",
     "CopyTradingUserSettings",
     "TelegramConnection",
     "TelegramConnectionState",

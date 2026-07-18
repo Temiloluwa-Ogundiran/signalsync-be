@@ -20,11 +20,11 @@ def _load_migration_module():
     return module
 
 
-def test_metaapi_copy_revision_is_the_only_head() -> None:
+def test_latest_schema_revision_is_the_only_head() -> None:
     root = Path(__file__).resolve().parents[1]
     script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
 
-    assert script.get_heads() == ["d9f1a3c5e7b9"]
+    assert script.get_heads() == ["f1b2c3d4e5f6"]
     revision = script.get_revision("f2a3b4c5d6e7")
     assert revision is not None
     assert revision.down_revision == "e1f2a3b4c5d6"

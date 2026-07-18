@@ -10,10 +10,12 @@ from app.core.rate_limit import limiter
 from app.domains.csv_import import service
 from app.domains.csv_import.schemas import CSVConfirmResult, CSVPreviewResponse, PlatformInfo
 from app.domains.users.models import User
-from app.shared.deps import get_current_user
+from app.shared.deps import get_current_user, require_journal_access
 from app.shared.utils.uploads import read_upload_within_limit
 
-router = APIRouter(prefix="/csv-import", tags=["csv-import"])
+router = APIRouter(
+    prefix="/csv-import", tags=["csv-import"], dependencies=[Depends(require_journal_access)]
+)
 
 
 @router.get("/platforms", response_model=list[PlatformInfo])

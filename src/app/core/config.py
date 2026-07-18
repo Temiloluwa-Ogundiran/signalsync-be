@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = ""
     EMAIL_FROM_NAME: str = "TradePartna"
 
+    # Bachs subscription billing. Products are fixed monthly USD tiers because
+    # Bachs quantity-based subscription pricing is not available yet.
+    BILLING_ENFORCED: bool = False
+    BACHS_API_KEY: str = ""
+    BACHS_API_BASE_URL: str = "https://sandbox-api.bachs.io"
+    BACHS_WEBHOOK_SECRET: str = ""
+    BACHS_JOURNAL_PRODUCT_ID: str = ""
+    BACHS_COPY_PRODUCT_IDS: str = "{}"
+    BILLING_GRACE_DAYS: int = 3
+
     # S3 key prefixes per media kind (folders within the one bucket).
     S3_PREFIX_USER_AVATARS: str = "user-avatars"
     S3_PREFIX_JOURNAL_VOICE: str = "journal-voice-notes"
@@ -213,6 +223,14 @@ class Settings(BaseSettings):
             raise ValueError("ENCRYPTION_KEY is required in production")
         if not self.METRICS_BEARER_TOKEN or len(self.METRICS_BEARER_TOKEN) < 32:
             raise ValueError("METRICS_BEARER_TOKEN must contain at least 32 characters")
+        if self.BILLING_ENFORCED:
+            if not self.BACHS_API_KEY:
+                raise ValueError("BACHS_API_KEY is required when billing is enforced")
+            if not self.BACHS_WEBHOOK_SECRET:
+                raise ValueError("BACHS_WEBHOOK_SECRET is required when billing is enforced")
+            from app.domains.billing.catalog import ProductCatalog
+
+            ProductCatalog.from_settings()
         origins = self.get_cors_allowed_origins()
         if "*" in origins:
             raise ValueError("Wildcard CORS origins are not allowed in production")

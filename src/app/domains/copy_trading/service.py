@@ -27,6 +27,9 @@ from app.domains.copy_trading.schemas import (
     UNSAFE_MINIMUM_FIELDS,
 )
 from app.domains.users.models import User
+from app.core.config import settings
+from app.domains.billing import service as billing_service
+from app.domains.billing.entitlements import require_copy_account_capacity
 from app.shared.utils.encryption import encrypt_secret
 
 
@@ -47,6 +50,17 @@ def _owned_copy_connection(
 def create_copy_connection(
     db: Session, *, current_user: User, payload: CopyTradingConnectionCreate
 ) -> CopyTradingConnection:
+    if settings.BILLING_ENFORCED:
+        subscription = billing_service.get_subscription(db, user_id=current_user.id)
+        existing_count = sum(
+            connection.state
+            not in {CopyTradingConnectionState.deleting, CopyTradingConnectionState.deleted}
+            for connection in repo.list_copy_connections_for_user(db, user_id=current_user.id)
+        )
+        require_copy_account_capacity(
+            billing_service.effective_subscription(subscription) if subscription else None,
+            current_account_count=existing_count,
+        )
     connection = CopyTradingConnection(
         user_id=current_user.id,
         display_name=payload.display_name.strip(),

@@ -37,11 +37,11 @@ from app.domains.ai.schemas import (
     UsageResponse,
 )
 from app.domains.users.models import User
-from app.shared.deps import get_current_user
+from app.shared.deps import get_current_user, require_journal_access
 
 logger = logging.getLogger("synctrades.ai.router")
 
-router = APIRouter(prefix="/ai", tags=["ai"])
+router = APIRouter(prefix="/ai", tags=["ai"], dependencies=[Depends(require_journal_access)])
 
 
 def _sse(data: dict) -> str:

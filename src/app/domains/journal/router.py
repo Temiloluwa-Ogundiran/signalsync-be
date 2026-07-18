@@ -48,14 +48,15 @@ from app.domains.journal.schemas import (
     TradeTagUpdateRequest,
 )
 from app.domains.users.models import User
-from app.shared.deps import get_current_user
+from app.shared.deps import get_current_user, require_journal_access
 
 # Sub-routers for each journal feature area
-trades_router = APIRouter(prefix="/journal/trades", tags=["journal-trades"])
-daily_router = APIRouter(prefix="/journal/daily", tags=["journal-daily"])
-messages_router = APIRouter(prefix="/journal/messages", tags=["journal-messages"])
-templates_router = APIRouter(prefix="/journal/templates", tags=["journal-templates"])
-analytics_router = APIRouter(prefix="/journal/analytics", tags=["journal-analytics"])
+_journal_dependencies = [Depends(require_journal_access)]
+trades_router = APIRouter(prefix="/journal/trades", tags=["journal-trades"], dependencies=_journal_dependencies)
+daily_router = APIRouter(prefix="/journal/daily", tags=["journal-daily"], dependencies=_journal_dependencies)
+messages_router = APIRouter(prefix="/journal/messages", tags=["journal-messages"], dependencies=_journal_dependencies)
+templates_router = APIRouter(prefix="/journal/templates", tags=["journal-templates"], dependencies=_journal_dependencies)
+analytics_router = APIRouter(prefix="/journal/analytics", tags=["journal-analytics"], dependencies=_journal_dependencies)
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +517,7 @@ def get_dashboard(
 # Tags
 # ---------------------------------------------------------------------------
 
-tags_router = APIRouter(tags=["journal-tags"])
+tags_router = APIRouter(tags=["journal-tags"], dependencies=_journal_dependencies)
 
 
 @tags_router.get("/journal/tags/config", response_model=list[TagGroupResponse])

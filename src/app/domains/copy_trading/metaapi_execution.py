@@ -465,6 +465,18 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
             return DeliveryResult.retry("INTENT_NOT_VISIBLE", "Trade intent is not committed yet.")
         if intent.state not in {TradeIntentState.created, TradeIntentState.retryable}:
             return DeliveryResult.success()
+        if settings.BILLING_ENFORCED:
+            from app.domains.billing import service as billing_service
+            from app.domains.billing.entitlements import has_copy_access
+
+            subscription = billing_service.get_subscription(db, user_id=intent.user_id)
+            if not has_copy_access(
+                billing_service.effective_subscription(subscription) if subscription else None
+            ) and intent.request_payload.get("action") in OPEN_ACTIONS:
+                intent.state = TradeIntentState.failed
+                intent.last_error_code = "SUBSCRIPTION_INACTIVE"
+                db.commit()
+                return DeliveryResult.success()
         route = db.get(CopyRoute, intent.route_id)
         connection = db.get(CopyTradingConnection, intent.connection_id)
         parsed_action = db.get(ParsedAction, intent.parsed_action_id)

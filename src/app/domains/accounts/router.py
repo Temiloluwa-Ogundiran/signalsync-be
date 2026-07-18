@@ -18,10 +18,12 @@ from app.domains.accounts.schemas import (
 from app.domains.accounts.models import ImportMethod, TradingAccountType
 from app.domains.accounts.sync_orchestrator import check_manual_sync_admission
 from app.domains.users.models import User
-from app.shared.deps import get_current_user
+from app.shared.deps import get_current_user, require_journal_access
 from app.tasks.journal_sync_tasks import sync_account as sync_account_task
 
-router = APIRouter(prefix="/accounts", tags=["accounts"])
+router = APIRouter(
+    prefix="/accounts", tags=["accounts"], dependencies=[Depends(require_journal_access)]
+)
 
 
 @router.get("/mt5-servers", response_model=list[Mt5ServerSearchItem])

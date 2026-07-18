@@ -55,10 +55,12 @@ from app.domains.copy_trading.streams import CopyEvent, RedisStreamBus, StreamNa
 from app.domains.copy_trading.security import SessionCipher
 from app.domains.copy_trading import operator_tools
 from app.domains.users.models import User
-from app.shared.deps import get_current_user
+from app.shared.deps import get_current_user, require_copy_access
 
 
-router = APIRouter(prefix="/copy-trading", tags=["copy-trading"])
+router = APIRouter(
+    prefix="/copy-trading", tags=["copy-trading"], dependencies=[Depends(require_copy_access)]
+)
 
 
 def _redis_client():
