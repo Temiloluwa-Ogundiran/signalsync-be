@@ -298,6 +298,14 @@ def process_webhook_event(db: Session, *, event: dict[str, Any]) -> bool:
             subscription = repo.get_subscription_by_provider_id(
                 db, provider_subscription_id=str(provider_subscription_id)
             ) if provider_subscription_id else None
+            if subscription is None and event_type != "customer.subscription.created":
+                logger.warning(
+                    "Ignored unlinked Bachs subscription event type=%s subscription_id=%s",
+                    event_type,
+                    provider_subscription_id,
+                )
+                db.commit()
+                return True
             if subscription is None and event_type == "customer.subscription.created":
                 user = _user_for_new_subscription(db, data)
                 if user is None:

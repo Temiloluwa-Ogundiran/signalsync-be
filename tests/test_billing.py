@@ -281,3 +281,35 @@ def test_duplicate_subscription_webhook_does_not_replace_active_subscription(mon
 
     assert processed
     assert active.provider_subscription_id == "sub_active"
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["customer.subscription.updated", "customer.subscription.deleted"],
+)
+def test_unlinked_subscription_events_are_acknowledged(monkeypatch, event_type):
+    from app.domains.billing import service
+
+    commits = []
+
+    class FakeDb:
+        def commit(self):
+            commits.append(True)
+
+        def rollback(self):
+            pass
+
+    monkeypatch.setattr(service.repo, "claim_webhook_event", lambda *args, **kwargs: True)
+    monkeypatch.setattr(service.repo, "get_subscription_by_provider_id", lambda *args, **kwargs: None)
+
+    processed = service.process_webhook_event(
+        FakeDb(),
+        event={
+            "id": f"evt_{event_type}",
+            "type": event_type,
+            "data": {"subscription_id": "sub_unlinked"},
+        },
+    )
+
+    assert processed
+    assert commits == [True]
