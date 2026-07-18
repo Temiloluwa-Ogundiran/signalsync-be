@@ -19,9 +19,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    billing_plan = postgresql.ENUM("journal", "copy", name="billingplanenum")
+    billing_plan = postgresql.ENUM(
+        "journal", "copy", name="billingplanenum", create_type=False
+    )
     billing_status = postgresql.ENUM(
-        "active", "past_due", "unpaid", "canceled", name="billingstatusenum"
+        "active",
+        "past_due",
+        "unpaid",
+        "canceled",
+        name="billingstatusenum",
+        create_type=False,
     )
     billing_plan.create(op.get_bind(), checkfirst=True)
     billing_status.create(op.get_bind(), checkfirst=True)
