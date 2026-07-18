@@ -219,3 +219,65 @@ def test_pending_downgrade_keeps_current_access_until_period_end():
     assert after.has_journal_access
     assert not after.has_copy_access
     assert after.plan == BillingPlan.journal
+
+
+@pytest.mark.anyio
+async def test_checkout_guard_reuses_an_open_checkout(monkeypatch):
+    from app.domains.billing import checkout_guard
+
+    values: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, *, ex, nx=False):
+            if nx and key in values:
+                return False
+            values[key] = value
+            return True
+
+        async def get(self, key):
+            return values.get(key)
+
+        async def delete(self, key):
+            values.pop(key, None)
+
+    monkeypatch.setattr(checkout_guard, "get_redis", lambda: FakeRedis())
+    user_id = uuid4()
+
+    assert await checkout_guard.acquire(user_id) is None
+    assert await checkout_guard.acquire(user_id) == "creating"
+    await checkout_guard.store(user_id, "https://checkout.bachs.io/c/chk_123")
+    assert await checkout_guard.acquire(user_id) == "https://checkout.bachs.io/c/chk_123"
+
+
+def test_duplicate_subscription_webhook_does_not_replace_active_subscription(monkeypatch):
+    from app.domains.billing import service
+
+    user = SimpleNamespace(id=uuid4())
+    active = SimpleNamespace(
+        status=BillingStatus.active,
+        provider_subscription_id="sub_active",
+    )
+
+    class FakeDb:
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    monkeypatch.setattr(service.repo, "claim_webhook_event", lambda *args, **kwargs: True)
+    monkeypatch.setattr(service.repo, "get_subscription_by_provider_id", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service.repo, "get_subscription_for_user", lambda *args, **kwargs: active)
+    monkeypatch.setattr(service, "_user_for_new_subscription", lambda *args, **kwargs: user)
+
+    processed = service.process_webhook_event(
+        FakeDb(),
+        event={
+            "id": "evt_duplicate",
+            "type": "customer.subscription.created",
+            "data": {"subscription_id": "sub_duplicate"},
+        },
+    )
+
+    assert processed
+    assert active.provider_subscription_id == "sub_active"

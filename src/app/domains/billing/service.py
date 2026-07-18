@@ -1,4 +1,5 @@
 import uuid
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.domains.billing import repository as repo
+from app.domains.billing import checkout_guard
 from app.domains.billing.catalog import ProductCatalog
 from app.domains.billing.client import BachsClient, BachsError
 from app.domains.billing.entitlements import has_copy_access, has_journal_access
@@ -25,6 +27,8 @@ SUBSCRIPTION_EVENTS = {
     "customer.subscription.updated",
     "customer.subscription.deleted",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -120,6 +124,17 @@ async def start_checkout_or_change_plan(
     provider = client or BachsClient()
     if subscription is None or subscription.status in {BillingStatus.canceled, BillingStatus.unpaid}:
         try:
+            open_checkout = await checkout_guard.acquire(current_user.id)
+        except checkout_guard.CheckoutGuardUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if open_checkout == "creating":
+            raise HTTPException(
+                status_code=409,
+                detail="A checkout is already being prepared. Please wait a moment.",
+            )
+        if open_checkout:
+            return "checkout", open_checkout, subscription
+        try:
             result = await provider.create_checkout(
                 product_id=product_id,
                 user_id=current_user.id,
@@ -129,10 +144,16 @@ async def start_checkout_or_change_plan(
                 cancel_url=f"{settings.FRONTEND_URL.rstrip('/')}/settings/subscription?checkout=cancelled",
             )
         except BachsError as exc:
+            await checkout_guard.release(current_user.id)
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
         checkout_url = result.get("checkout_url")
         if not isinstance(checkout_url, str) or not checkout_url.startswith("https://"):
+            await checkout_guard.release(current_user.id)
             raise HTTPException(status_code=502, detail="The billing provider returned no checkout URL")
+        try:
+            await checkout_guard.store(current_user.id, checkout_url)
+        except checkout_guard.CheckoutGuardUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         return "checkout", checkout_url, subscription
 
     if subscription.plan == plan and subscription.copy_account_limit == target_accounts:
@@ -281,11 +302,24 @@ def process_webhook_event(db: Session, *, event: dict[str, Any]) -> bool:
                 user = _user_for_new_subscription(db, data)
                 if user is None:
                     raise ValueError("Bachs subscription customer is not a TradePartna user")
-                catalog = ProductCatalog.from_settings()
-                product_id = data.get("product_id")
-                plan, account_limit = catalog.entitlement_for(str(product_id))
                 subscription = repo.get_subscription_for_user(db, user_id=user.id)
+                if (
+                    subscription is not None
+                    and subscription.status not in {BillingStatus.canceled, BillingStatus.unpaid}
+                    and subscription.provider_subscription_id != str(provider_subscription_id)
+                ):
+                    logger.error(
+                        "Ignored duplicate Bachs subscription user_id=%s active_subscription=%s duplicate_subscription=%s",
+                        user.id,
+                        subscription.provider_subscription_id,
+                        provider_subscription_id,
+                    )
+                    db.commit()
+                    return True
                 if subscription is None:
+                    catalog = ProductCatalog.from_settings()
+                    product_id = data.get("product_id")
+                    plan, account_limit = catalog.entitlement_for(str(product_id))
                     subscription = BillingSubscription(
                         user_id=user.id,
                         provider_subscription_id=str(provider_subscription_id),
