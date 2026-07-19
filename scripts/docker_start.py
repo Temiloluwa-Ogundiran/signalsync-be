@@ -124,6 +124,7 @@ def start_worker() -> None:
             "worker",
             "--loglevel", "info",
             "--concurrency", os.environ.get("CELERY_CONCURRENCY", "8"),
+            "--beat",
         ],
     )
 

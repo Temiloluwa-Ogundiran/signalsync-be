@@ -137,6 +137,7 @@ async def connect_account(
             id=uuid.UUID(account_id_to_verify),
         )
 
+    account_repo.schedule_bootstrap_dispatch(db, account_id=account.id)
     try:
         db.commit()
     except IntegrityError as exc:
@@ -146,9 +147,9 @@ async def connect_account(
         ) from exc
 
     db.refresh(account)
-    from app.tasks.journal_sync_tasks import bootstrap_account
+    from app.tasks.journal_sync_tasks import dispatch_bootstrap_account
 
-    bootstrap_account.delay(str(account.id))
+    dispatch_bootstrap_account(account.id)
 
     return account
 

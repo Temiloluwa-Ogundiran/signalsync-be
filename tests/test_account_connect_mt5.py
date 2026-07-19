@@ -66,7 +66,7 @@ def mock_account() -> TradingAccount:
 
 
 @pytest.mark.anyio
-@patch("app.tasks.journal_sync_tasks.bootstrap_account.delay")
+@patch("app.tasks.journal_sync_tasks.dispatch_bootstrap_account")
 @patch("app.domains.accounts.service.Mt5CoreClient")
 @patch("app.domains.accounts.service.account_repo")
 @patch("app.domains.accounts.service.encrypt_secret")
@@ -74,7 +74,7 @@ async def test_connect_account_returns_pending_account_before_mt5_verification(
     mock_encrypt_secret,
     mock_repo,
     mock_client_cls,
-    mock_bootstrap_delay,
+    mock_dispatch_bootstrap,
     db_session,
     current_user,
     payload,
@@ -89,10 +89,13 @@ async def test_connect_account_returns_pending_account_before_mt5_verification(
     assert result == mock_account
     mock_client_cls.assert_not_called()
     mock_repo.create_account.assert_called_once()
+    mock_repo.schedule_bootstrap_dispatch.assert_called_once_with(
+        db_session, account_id=mock_account.id
+    )
     assert mock_repo.create_account.call_args.kwargs["id"] is not None
     db_session.commit.assert_called_once()
     db_session.refresh.assert_called_once_with(mock_account)
-    mock_bootstrap_delay.assert_called_once_with(str(mock_account.id))
+    mock_dispatch_bootstrap.assert_called_once_with(mock_account.id)
 
 
 @pytest.mark.anyio
@@ -173,11 +176,11 @@ async def test_enable_trader_access_stores_verified_trader_password(
 
 
 @pytest.mark.anyio
-@patch("app.tasks.journal_sync_tasks.bootstrap_account.delay")
+@patch("app.tasks.journal_sync_tasks.dispatch_bootstrap_account")
 @patch("app.domains.accounts.service.account_repo")
 async def test_connect_account_existing_active_account_still_conflicts(
     mock_repo,
-    mock_bootstrap_delay,
+    mock_dispatch_bootstrap,
     db_session,
     current_user,
     payload,
@@ -190,7 +193,7 @@ async def test_connect_account_existing_active_account_still_conflicts(
         await connect_account(db_session, current_user=current_user, payload=payload)
 
     assert exc.value.status_code == 409
-    mock_bootstrap_delay.assert_not_called()
+    mock_dispatch_bootstrap.assert_not_called()
 
 
 @patch("app.tasks.journal_sync_tasks.sync_account_deals_mt5", new_callable=AsyncMock)

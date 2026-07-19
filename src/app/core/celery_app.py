@@ -20,6 +20,12 @@ celery_app.conf.update(
     timezone="UTC",
     task_track_started=True,
     broker_connection_retry_on_startup=True,
+    beat_schedule={
+        "dispatch-pending-journal-bootstraps": {
+            "task": "journal.dispatch_pending_bootstraps",
+            "schedule": 2.0,
+        },
+    },
 )
 
 

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import redis as sync_redis
 
@@ -65,7 +65,52 @@ def _verification_snapshot(result: dict) -> dict:
     }
 
 
-@celery_app.task(name="journal.bootstrap_account", bind=True, max_retries=0)
+def dispatch_bootstrap_account(account_id: uuid.UUID) -> bool:
+    with SessionLocal() as db:
+        rows = account_repo.claim_bootstrap_dispatches(
+            db, limit=1, account_id=account_id
+        )
+        if not rows:
+            return False
+        item = rows[0]
+        try:
+            bootstrap_account.apply_async(
+                args=[str(item.account_id)],
+                task_id=f"journal-bootstrap-{item.account_id}",
+            )
+        except Exception as exc:
+            item.attempt_count += 1
+            item.last_error = str(exc)[:500]
+            delay = min(60, 2 ** min(item.attempt_count, 6))
+            item.available_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            db.commit()
+            logger.exception(
+                "Could not dispatch journal bootstrap account_id=%s",
+                item.account_id,
+            )
+            return False
+        item.attempt_count += 1
+        item.dispatched_at = datetime.now(timezone.utc)
+        item.last_error = None
+        db.commit()
+        return True
+
+
+@celery_app.task(name="journal.dispatch_pending_bootstraps")
+def dispatch_pending_bootstraps(batch_size: int = 100) -> dict:
+    with SessionLocal() as db:
+        account_ids = [
+            row.account_id
+            for row in account_repo.claim_bootstrap_dispatches(db, limit=batch_size)
+        ]
+        db.rollback()
+    dispatched = sum(
+        int(dispatch_bootstrap_account(account_id)) for account_id in account_ids
+    )
+    return {"status": "ok", "dispatched": dispatched}
+
+
+@celery_app.task(name="journal.bootstrap_account", bind=True, max_retries=1)
 def bootstrap_account(self, account_id: str) -> dict:
     """
     Verify a newly connected account, persist a quick account snapshot, then run
@@ -75,7 +120,6 @@ def bootstrap_account(self, account_id: str) -> dict:
     creation returns as soon as encrypted credentials are stored, while MT5/Wine
     latency is reflected through connection_state polling.
     """
-    _ = self
     account_uuid = _account_uuid_or_skip(account_id)
     if account_uuid is None:
         return {"status": "skipped", "reason": "invalid_account_id"}
@@ -86,6 +130,8 @@ def bootstrap_account(self, account_id: str) -> dict:
             return {"status": "skipped", "reason": "account_not_found"}
         if account.is_archived:
             return {"status": "skipped", "reason": "account_archived"}
+        if not account_repo.try_account_bootstrap_lock(db, account_id=account_uuid):
+            return {"status": "skipped", "reason": "bootstrap_in_progress"}
 
         try:
             investor_password = decrypt_secret(account.encrypted_investor_password)
@@ -140,15 +186,19 @@ def bootstrap_account(self, account_id: str) -> dict:
                 db.commit()
                 return {"status": "verification_failed", "reason": "invalid_credentials"}
             except (Mt5CoreClientTimeout, Mt5CoreClientError) as exc:
-                message = f"Credential verification failed: {str(exc)[:450]}"
                 logger.warning(
                     "Account bootstrap verification unavailable | account_id=%s error=%s",
                     account.id,
                     str(exc),
                 )
-                account_repo.mark_account_verification_failed(db, account, message)
+                if self.request.retries < self.max_retries:
+                    db.rollback()
+                    raise self.retry(exc=exc, countdown=2)
+                message = "Service Error: MT5 verification is temporarily unavailable. Please retry."
+                account_repo.mark_account_bootstrap_failed(db, account, message)
+                account_repo.set_account_sync_error(db, account, message)
                 db.commit()
-                return {"status": "verification_failed", "reason": "verification_unavailable"}
+                return {"status": "service_unavailable", "reason": "verification_unavailable"}
 
         try:
             result = asyncio.run(

@@ -60,6 +60,30 @@ def pause_routes_for_connection(db: Session, *, connection_id: uuid.UUID) -> Non
             route.state = CopyRouteState.paused
 
 
+def mark_routes_target_unavailable(db: Session, *, connection_id: uuid.UUID) -> None:
+    routes = db.execute(
+        select(CopyRoute).where(
+            CopyRoute.target_connection_id == connection_id,
+            CopyRoute.state == CopyRouteState.active,
+        )
+    ).scalars()
+    for route in routes:
+        route.paused_from_state = route.state
+        route.state = CopyRouteState.target_unavailable
+
+
+def restore_routes_after_target_recovery(db: Session, *, connection_id: uuid.UUID) -> None:
+    routes = db.execute(
+        select(CopyRoute).where(
+            CopyRoute.target_connection_id == connection_id,
+            CopyRoute.state == CopyRouteState.target_unavailable,
+        )
+    ).scalars()
+    for route in routes:
+        route.state = route.paused_from_state or CopyRouteState.ready
+        route.paused_from_state = None
+
+
 def get_or_create_user_settings(
     db: Session, *, user_id: uuid.UUID
 ) -> CopyTradingUserSettings:

@@ -202,15 +202,22 @@ def test_split_tp_legs_preserves_total_lot():
     assert sum(leg.lot for leg in legs) == Decimal("0.09")
 
 
-def test_symbol_resolution_uses_largest_contract_for_equal_normalized_match():
+def test_symbol_resolution_rejects_ambiguous_suffix_matches():
     symbols = [
         BrokerSymbol(name="XAUUSD.a", contract_size=Decimal("10"), spread=10, trade_mode=4),
         BrokerSymbol(name="XAUUSDm", contract_size=Decimal("100"), spread=20, trade_mode=4),
     ]
 
-    selected = resolve_symbol("XAUUSD", symbols)
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_symbol("XAUUSD", symbols)
 
-    assert selected.name == "XAUUSDm"
+
+def test_symbol_resolution_accepts_a_single_broker_suffix():
+    symbols = [
+        BrokerSymbol(name="XAUUSD.a", contract_size=Decimal("100"), trade_mode=4),
+    ]
+
+    assert resolve_symbol("XAUUSD", symbols).name == "XAUUSD.a"
 
 
 def test_complete_copy_trading_domain_tables_are_declared():

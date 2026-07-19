@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.domains.accounts.models import (
     AccountSnapshot,
     ImportMethod,
+    JournalBootstrapDispatch,
     Trade,
     TradeDirection,
     TradeSession,
@@ -302,6 +303,53 @@ def get_latest_closed_trade_at(
 ) -> Optional[datetime]:
     stmt = select(func.max(Trade.closed_at)).where(Trade.account_id == account_id)
     return db.execute(stmt).scalar_one_or_none()
+
+
+def schedule_bootstrap_dispatch(
+    db: Session, *, account_id: uuid.UUID
+) -> JournalBootstrapDispatch:
+    item = db.execute(
+        select(JournalBootstrapDispatch).where(
+            JournalBootstrapDispatch.account_id == account_id
+        )
+    ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if item is None:
+        item = JournalBootstrapDispatch(account_id=account_id, available_at=now)
+        db.add(item)
+    else:
+        item.available_at = now
+        item.dispatched_at = None
+        item.last_error = None
+    db.flush()
+    return item
+
+
+def claim_bootstrap_dispatches(
+    db: Session, *, limit: int = 100, account_id: uuid.UUID | None = None
+) -> list[JournalBootstrapDispatch]:
+    stmt = (
+        select(JournalBootstrapDispatch)
+        .where(
+            JournalBootstrapDispatch.dispatched_at.is_(None),
+            JournalBootstrapDispatch.available_at <= datetime.now(timezone.utc),
+        )
+        .order_by(JournalBootstrapDispatch.available_at.asc())
+        .with_for_update(skip_locked=True)
+        .limit(limit)
+    )
+    if account_id is not None:
+        stmt = stmt.where(JournalBootstrapDispatch.account_id == account_id)
+    return list(db.execute(stmt).scalars().all())
+
+
+def try_account_bootstrap_lock(db: Session, *, account_id: uuid.UUID) -> bool:
+    key = account_id.int & ((1 << 63) - 1)
+    return bool(
+        db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key}
+        ).scalar_one()
+    )
 
 
 def set_account_last_synced_at(

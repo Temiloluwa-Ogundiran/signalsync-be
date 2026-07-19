@@ -146,13 +146,46 @@ def test_active_copy_connections_are_warmed_before_signal_delivery(
     session_local, get_runtime
 ) -> None:
     db = session_local.return_value.__enter__.return_value
-    db.execute.return_value.scalars.return_value = ["account-1", "account-2"]
+    connection_1 = uuid.uuid4()
+    connection_2 = uuid.uuid4()
+    db.execute.return_value.all.return_value = [
+        (connection_1, "account-1"),
+        (connection_2, "account-2"),
+    ]
     runtime = get_runtime.return_value
 
     count = warm_active_copy_connections()
 
     assert count == 2
     assert runtime.acquire.call_args_list == [call("account-1"), call("account-2")]
+
+
+@patch("app.domains.copy_trading.metaapi_execution.get_metaapi_runtime")
+@patch("app.domains.copy_trading.metaapi_execution.SessionLocal")
+@patch.object(settings, "COPY_TRADING_METAAPI_ENABLED", True)
+def test_failed_warm_connection_is_quarantined_without_stopping_worker(
+    session_local, get_runtime
+) -> None:
+    db = session_local.return_value.__enter__.return_value
+    healthy_id = uuid.uuid4()
+    failed_id = uuid.uuid4()
+    db.execute.return_value.all.return_value = [
+        (healthy_id, "healthy-account"),
+        (failed_id, "failed-account"),
+    ]
+    failed_connection = MagicMock()
+    db.get.side_effect = lambda _model, connection_id: (
+        failed_connection if connection_id == failed_id else MagicMock()
+    )
+    runtime = get_runtime.return_value
+    runtime.acquire.side_effect = [MagicMock(), TimeoutError("not synchronized")]
+
+    count = warm_active_copy_connections()
+
+    assert count == 1
+    assert failed_connection.state.value == "broker_disconnected"
+    assert failed_connection.last_error_code == "broker_connection_unavailable"
+    runtime.mark_unhealthy.assert_called_once_with("failed-account")
 
 
 def test_retried_signal_delivery_reuses_existing_conversation_by_correlation() -> None:

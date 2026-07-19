@@ -5,6 +5,7 @@ from app.domains.users.models import User
 from app.domains.auth.models import Token, TokenType
 from app.domains.accounts.models import (
     AccountSnapshot,
+    JournalBootstrapDispatch,
     Trade,
     TradeDirection,
     TradeSession,
@@ -74,6 +75,7 @@ __all__ = [
     "Token",
     "TokenType",
     "TradingAccount",
+    "JournalBootstrapDispatch",
     "TradingAccountProvisioningStatus",
     "TradingAccountStatus",
     "TradingAccountType",

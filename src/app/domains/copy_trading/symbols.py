@@ -51,15 +51,21 @@ def resolve_symbol(requested: str, symbols: list[BrokerSymbol]) -> BrokerSymbol:
     target = normalize_symbol(requested)
     disabled_modes = {0, 3, "SYMBOL_TRADE_MODE_DISABLED", "SYMBOL_TRADE_MODE_CLOSEONLY"}
     tradable = [symbol for symbol in symbols if symbol.trade_mode not in disabled_modes]
+    exact = [symbol for symbol in tradable if normalize_symbol(symbol.name) == target]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise ValueError(f"Multiple tradable broker symbols exactly match {requested}.")
     matches = [symbol for symbol in tradable if normalize_symbol(symbol.name).startswith(target)]
     if not matches:
         raise ValueError(f"No tradable broker symbol matches {requested}.")
-    return min(
-        matches,
-        key=lambda symbol: (
-            abs(len(normalize_symbol(symbol.name)) - len(target)),
-            -symbol.contract_size,
-            symbol.spread,
-            not symbol.visible,
-        ),
-    )
+    shortest_length = min(len(normalize_symbol(symbol.name)) for symbol in matches)
+    closest = [
+        symbol
+        for symbol in matches
+        if len(normalize_symbol(symbol.name)) == shortest_length
+    ]
+    if len(closest) != 1:
+        names = ", ".join(sorted(symbol.name for symbol in closest))
+        raise ValueError(f"Broker symbol mapping for {requested} is ambiguous: {names}.")
+    return closest[0]

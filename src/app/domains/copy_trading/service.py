@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import HTTPException, status
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.domains.copy_trading import repository as repo
@@ -51,6 +52,12 @@ def create_copy_connection(
     db: Session, *, current_user: User, payload: CopyTradingConnectionCreate
 ) -> CopyTradingConnection:
     if settings.BILLING_ENFORCED:
+        db.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtext('copy-capacity'), hashtext(:user_id))"
+            ),
+            {"user_id": str(current_user.id)},
+        )
         subscription = billing_service.get_subscription(db, user_id=current_user.id)
         existing_count = sum(
             connection.state

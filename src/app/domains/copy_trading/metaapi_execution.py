@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.copy_trading.delivery import DeliveryResult
+from app.domains.copy_trading import repository as copy_repo
 from app.domains.copy_trading.engine import SignalAction
 from app.domains.copy_trading.execution import ensure_account_risk_within_limits
 from app.domains.copy_trading.metaapi_broker import MetaApiBroker
@@ -73,25 +74,67 @@ def warm_active_copy_connections() -> int:
     if not settings.COPY_TRADING_METAAPI_ENABLED:
         return 0
     with SessionLocal() as db:
-        account_ids = list(
+        connections = list(
             db.execute(
-                select(CopyTradingConnection.metaapi_account_id)
+                select(CopyTradingConnection.id, CopyTradingConnection.metaapi_account_id)
                 .join(
                     CopyRoute,
                     CopyRoute.target_connection_id == CopyTradingConnection.id,
                 )
                 .where(
-                    CopyRoute.state == CopyRouteState.active,
-                    CopyTradingConnection.state == CopyTradingConnectionState.ready,
+                    CopyRoute.state.in_(
+                        [CopyRouteState.active, CopyRouteState.target_unavailable]
+                    ),
+                    CopyTradingConnection.state.in_(
+                        [
+                            CopyTradingConnectionState.ready,
+                            CopyTradingConnectionState.broker_disconnected,
+                        ]
+                    ),
                     CopyTradingConnection.metaapi_account_id.is_not(None),
                 )
                 .distinct()
-            ).scalars()
+            ).all()
         )
     runtime = get_metaapi_runtime()
-    for account_id in account_ids:
-        runtime.acquire(account_id)
-    return len(account_ids)
+    warmed = 0
+    for connection_id, account_id in connections:
+        try:
+            runtime.acquire(account_id)
+        except Exception as exc:
+            runtime.mark_unhealthy(account_id)
+            logger.warning(
+                "MetaApi warm-up failed connection_id=%s account_id=%s error=%s",
+                connection_id,
+                account_id,
+                str(exc),
+            )
+            with SessionLocal() as db:
+                connection = db.get(CopyTradingConnection, connection_id)
+                if connection is not None:
+                    connection.state = CopyTradingConnectionState.broker_disconnected
+                    connection.last_error_code = "broker_connection_unavailable"
+                    connection.last_error_message = (
+                        "The trading account is reconnecting to the broker automatically."
+                    )
+                    copy_repo.mark_routes_target_unavailable(
+                        db, connection_id=connection.id
+                    )
+                    db.commit()
+            continue
+        with SessionLocal() as db:
+            connection = db.get(CopyTradingConnection, connection_id)
+            if connection is not None:
+                connection.state = CopyTradingConnectionState.ready
+                connection.last_health_at = datetime.now(timezone.utc)
+                connection.last_error_code = None
+                connection.last_error_message = None
+                copy_repo.restore_routes_after_target_recovery(
+                    db, connection_id=connection.id
+                )
+                db.commit()
+        warmed += 1
+    return warmed
 
 
 def is_permanent_metaapi_error(exc: Exception) -> bool:
@@ -488,13 +531,22 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
             policy = db.execute(
                 select(CopyAccountPolicy).where(CopyAccountPolicy.connection_id == intent.connection_id)
             ).scalar_one_or_none()
+            if route is not None and route.state == CopyRouteState.target_unavailable:
+                return DeliveryResult.retry(
+                    "TARGET_UNAVAILABLE",
+                    "The trading account is reconnecting to the broker automatically.",
+                )
             if (
                 settings.COPY_TRADING_GLOBAL_PAUSED
                 or not settings.COPY_TRADING_METAAPI_ENABLED
                 or route is None
                 or route.state != CopyRouteState.active
                 or connection is None
-                or connection.state != CopyTradingConnectionState.ready
+                or connection.state
+                not in {
+                    CopyTradingConnectionState.ready,
+                    CopyTradingConnectionState.broker_disconnected,
+                }
                 or not connection.metaapi_account_id
                 or (user_settings and user_settings.is_paused)
                 or (policy and policy.is_paused)
@@ -508,7 +560,24 @@ def execution_handler(event: CopyEvent, client) -> DeliveryResult:
                 broker = MetaApiBroker(runtime.acquire(connection.metaapi_account_id))
             except Exception as exc:
                 runtime.mark_unhealthy(connection.metaapi_account_id)
+                connection.state = CopyTradingConnectionState.broker_disconnected
+                connection.last_error_code = "broker_connection_unavailable"
+                connection.last_error_message = (
+                    "The trading account is reconnecting to the broker automatically."
+                )
+                copy_repo.mark_routes_target_unavailable(
+                    db, connection_id=connection.id
+                )
+                db.commit()
                 return DeliveryResult.retry(exc.__class__.__name__.upper(), str(exc))
+            connection.state = CopyTradingConnectionState.ready
+            connection.last_health_at = datetime.now(timezone.utc)
+            connection.last_error_code = None
+            connection.last_error_message = None
+            copy_repo.restore_routes_after_target_recovery(
+                db, connection_id=connection.id
+            )
+            db.flush()
             payload = intent.request_payload
             selected = (
                 _resolve_broker_symbol(db, route, connection, broker, payload["symbol"])

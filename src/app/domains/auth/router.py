@@ -2,6 +2,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, R
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import Optional
+from urllib.parse import urlparse
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -35,8 +36,15 @@ def verify_origin(request: Request) -> None:
     origin = request.headers.get("Origin") or request.headers.get("Referer")
     if origin is None:
         return
+    def normalized(value: str) -> tuple[str, str, int] | None:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname.lower(), port
+
     allowed = set(settings.get_cors_allowed_origins()) | {settings.FRONTEND_URL}
-    if not any(origin.startswith(a) for a in allowed):
+    if normalized(origin) not in {normalized(value) for value in allowed}:
         raise HTTPException(status_code=403, detail="Invalid origin.")
 
 
