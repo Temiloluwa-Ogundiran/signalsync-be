@@ -116,6 +116,7 @@ class StreamWorker:
     # latency and can hide persistent configuration or broker failures.
     max_attempts = 2
     retry_idle_ms = 5_000
+    retry_exhausted_handler = None
 
     def __init__(self, *, stream: StreamName, group: str, handler):
         self.client = redis.Redis.from_url(settings.COPY_TRADING_REDIS_URL, decode_responses=True)
@@ -227,6 +228,21 @@ class StreamWorker:
         attempts = self._pending_attempts(message_id)
         if result.disposition == DeliveryDisposition.retry and attempts < self.max_attempts:
             return
+        if (
+            result.disposition == DeliveryDisposition.retry
+            and self.retry_exhausted_handler is not None
+        ):
+            try:
+                self.retry_exhausted_handler(event, result)
+            except Exception:
+                logger.exception(
+                    "Copy-trading retry exhaustion handler failed stream=%s group=%s "
+                    "event_type=%s correlation_id=%s",
+                    self.stream.value,
+                    self.group,
+                    event.event_type,
+                    event.correlation_id,
+                )
         if result.disposition in {
             DeliveryDisposition.retry,
             DeliveryDisposition.dead_letter,
@@ -1092,16 +1108,24 @@ def run_process(role: str) -> None:
         from app.domains.copy_trading.workers import signal_handler
         provisioning_worker = None
         if role == "copy-execution":
-            from app.domains.copy_trading.metaapi_jobs import provisioning_handler
+            from app.domains.copy_trading.metaapi_jobs import (
+                mark_provisioning_retry_exhausted,
+                provisioning_handler,
+            )
 
             provisioning_worker = StreamWorker(
                 stream=StreamName.metaapi_provisioning,
                 group="copy-provisioning",
                 handler=provisioning_handler,
             )
+            provisioning_worker.max_attempts = max(
+                2, settings.METAAPI_PROVISIONING_MAX_ATTEMPTS
+            )
             provisioning_worker.retry_idle_ms = max(
-                60_000,
-                (settings.METAAPI_CONNECTION_TIMEOUT_SECONDS * 3 + 30) * 1000,
+                5_000, settings.METAAPI_PROVISIONING_POLL_SECONDS * 1000
+            )
+            provisioning_worker.retry_exhausted_handler = (
+                mark_provisioning_retry_exhausted
             )
             threading.Thread(
                 target=provisioning_worker.run,

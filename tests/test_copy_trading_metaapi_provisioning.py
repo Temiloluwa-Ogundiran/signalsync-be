@@ -11,11 +11,14 @@ from app.domains.copy_trading.metaapi_provisioning import (
     classify_metaapi_sdk_error,
     classify_provisioning_error,
 )
-from app.domains.copy_trading.metaapi_jobs import validate_terminal_account
-from app.domains.copy_trading.metaapi_jobs import provisioning_handler
+from app.domains.copy_trading.metaapi_jobs import (
+    mark_provisioning_retry_exhausted,
+    provisioning_handler,
+    validate_terminal_account,
+)
 from app.domains.copy_trading.models import CopyTradingConnectionState
 from app.domains.copy_trading.streams import CopyEvent, StreamName
-from app.domains.copy_trading.delivery import DeliveryDisposition
+from app.domains.copy_trading.delivery import DeliveryDisposition, DeliveryResult
 from tests.fakes.fake_metaapi import FakeMetaApi, FakeMetaApiAccount, FakeProvisioningClient
 
 
@@ -57,6 +60,41 @@ def test_duplicate_provisioning_event_waits_without_calling_provider(monkeypatch
 
     assert result.disposition == DeliveryDisposition.retry
     assert result.error_code == "PROVISIONING_IN_PROGRESS"
+
+
+def test_exhausted_accepted_provisioning_is_marked_failed() -> None:
+    connection_id = uuid.uuid4()
+    target = SimpleNamespace(
+        state=CopyTradingConnectionState.provisioning,
+        metaapi_account_id=None,
+        last_error_code=None,
+        last_error_message=None,
+    )
+    session_local = MagicMock()
+    db = session_local.return_value.__enter__.return_value
+    db.get.return_value = target
+    event = CopyEvent.new(
+        stream=StreamName.metaapi_provisioning,
+        event_type="connection.provision",
+        correlation_id=str(connection_id),
+        payload={"connection_id": str(connection_id)},
+        idempotency_key=f"connection.provision:{connection_id}:transaction",
+    )
+
+    with patch(
+        "app.domains.copy_trading.metaapi_jobs.SessionLocal", session_local
+    ):
+        mark_provisioning_retry_exhausted(
+            event,
+            DeliveryResult.retry(
+                "PROVISIONING_ACCEPTED", "MetaApi is still provisioning the account."
+            ),
+        )
+
+    assert target.state == CopyTradingConnectionState.provisioning_failed
+    assert target.last_error_code == "provisioning_timeout"
+    assert "try again" in target.last_error_message.lower()
+    db.commit.assert_called_once()
 
 
 def test_provisioning_uses_cloud_g2_high_reliability_and_persisted_transaction() -> None:

@@ -171,3 +171,30 @@ def provisioning_handler(event, redis_client) -> DeliveryResult:
             return DeliveryResult.success()
     finally:
         _release_provisioning_lock(redis_client, lock_key, lock_token)
+
+
+def mark_provisioning_retry_exhausted(
+    event, result: DeliveryResult
+) -> None:
+    """Move an unfinished provider transaction out of the provisioning spinner."""
+    connection_id = uuid.UUID(event.payload["connection_id"])
+    with SessionLocal() as db:
+        connection = db.get(CopyTradingConnection, connection_id)
+        if connection is None:
+            return
+        if (
+            connection.state != CopyTradingConnectionState.provisioning
+            or connection.metaapi_account_id
+        ):
+            return
+        connection.state = CopyTradingConnectionState.provisioning_failed
+        connection.last_error_code = "provisioning_timeout"
+        connection.last_error_message = (
+            "The broker connection is taking longer than expected. Please try again."
+        )
+        db.commit()
+        logger.warning(
+            "MetaApi provisioning polling exhausted connection_id=%s provider_code=%s",
+            connection_id,
+            result.error_code,
+        )

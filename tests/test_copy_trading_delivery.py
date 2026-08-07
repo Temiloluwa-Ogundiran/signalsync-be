@@ -71,6 +71,20 @@ def test_retry_exhaustion_becomes_a_dead_letter() -> None:
     worker.client.xack.assert_called_once()
 
 
+def test_retry_exhaustion_notifies_the_handler_before_dead_lettering() -> None:
+    worker = worker_for(DeliveryResult.retry("PROVISIONING_ACCEPTED", "still running"))
+    worker.retry_exhausted_handler = MagicMock()
+    worker._pending_attempts.return_value = worker.max_attempts
+    message = event()
+
+    worker._process_message("1-0", message.to_fields())
+
+    worker.retry_exhausted_handler.assert_called_once()
+    exhausted_event, exhausted_result = worker.retry_exhausted_handler.call_args.args
+    assert exhausted_event.event_id == message.event_id
+    assert exhausted_result.error_code == "PROVISIONING_ACCEPTED"
+
+
 def test_stream_publish_uses_bounded_retention() -> None:
     redis = MagicMock()
     message = event()

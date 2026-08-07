@@ -24,6 +24,8 @@ def test_metaapi_settings_are_disabled_and_bounded_by_default() -> None:
     assert settings.METAAPI_REGION == "london"
     assert settings.METAAPI_ACCOUNT_TYPE == "cloud-g2"
     assert settings.METAAPI_CONNECTION_TIMEOUT_SECONDS == 120
+    assert settings.METAAPI_PROVISIONING_POLL_SECONDS == 60
+    assert settings.METAAPI_PROVISIONING_MAX_ATTEMPTS == 15
     assert settings.METAAPI_IDLE_CONNECTION_SECONDS == 300
     assert settings.COPY_TRADING_METAAPI_ENABLED is False
 
