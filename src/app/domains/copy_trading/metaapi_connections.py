@@ -58,6 +58,7 @@ class MetaApiConnectionManager:
         return await opening
 
     async def _open(self, account_id: str):
+        connection = None
         try:
             account = await self._api.metatrader_account_api.get_account(account_id)
             connection = account.get_streaming_connection()
@@ -70,18 +71,26 @@ class MetaApiConnectionManager:
                     connection=connection, last_used_at=self._clock()
                 )
             return connection
+        except BaseException:
+            if connection is not None:
+                await connection.close()
+            raise
         finally:
             async with self._lock:
                 self._opening.pop(account_id, None)
 
     async def mark_unhealthy(self, account_id: str) -> None:
-        async with self._lock:
-            entry = self._entries.pop(account_id, None)
-        if entry is not None:
-            await entry.connection.close()
+        await self.close_account(account_id)
 
     async def close_account(self, account_id: str) -> None:
-        await self.mark_unhealthy(account_id)
+        async with self._lock:
+            entry = self._entries.pop(account_id, None)
+            opening = self._opening.pop(account_id, None)
+        if opening is not None:
+            opening.cancel()
+            await asyncio.gather(opening, return_exceptions=True)
+        if entry is not None:
+            await entry.connection.close()
 
     async def evict_idle(self) -> int:
         cutoff = self._clock() - self._idle_seconds

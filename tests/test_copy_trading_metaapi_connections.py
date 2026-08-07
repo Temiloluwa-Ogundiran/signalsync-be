@@ -2,6 +2,8 @@ import asyncio
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from app.domains.copy_trading.metaapi_connections import (
     MetaApiConnectionManager,
     MetaApiRuntime,
@@ -62,6 +64,40 @@ def test_unhealthy_connection_is_closed_and_replaced() -> None:
         assert first.close_calls == 1
         assert len(account.created_connections) == 2
         await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_close_account_cancels_an_inflight_connection_attempt() -> None:
+    async def scenario() -> None:
+        release = asyncio.Event()
+        account = FakeStreamingAccount("account-1")
+        api = FakeStreamingApi(account)
+        manager = MetaApiConnectionManager(
+            api=api, timeout_seconds=30, idle_seconds=300
+        )
+
+        async def wait_until_released(_options: dict) -> None:
+            await release.wait()
+
+        original_factory = account.get_streaming_connection
+
+        def blocking_factory():
+            connection = original_factory()
+            connection.wait_synchronized = wait_until_released
+            return connection
+
+        account.get_streaming_connection = blocking_factory
+        opening = asyncio.create_task(manager.acquire("account-1"))
+        while not account.created_connections:
+            await asyncio.sleep(0)
+
+        await manager.close_account("account-1")
+
+        with pytest.raises(asyncio.CancelledError):
+            await opening
+        assert account.created_connections[0].close_calls == 1
+        assert manager.warm_count == 0
 
     asyncio.run(scenario())
 

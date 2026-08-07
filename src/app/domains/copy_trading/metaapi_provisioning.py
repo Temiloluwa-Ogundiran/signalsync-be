@@ -181,6 +181,7 @@ class MetaApiProvisioningService:
             if str(account.state).upper() != "UNDEPLOYED":
                 await account.undeploy()
             await account.remove()
+            connection.metaapi_account_id = None
         connection.encrypted_trader_password = None
         connection.state = CopyTradingConnectionState.deleted
         await _persist(persist)

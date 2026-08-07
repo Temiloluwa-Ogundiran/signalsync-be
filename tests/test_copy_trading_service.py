@@ -11,9 +11,14 @@ from app.domains.copy_trading.models import (
     CopyTradingConnectionState,
     TelegramSourceState,
 )
-from app.domains.copy_trading.schemas import CopyAccountPolicyUpdate, CopyRouteCreate
+from app.domains.copy_trading.schemas import (
+    CopyAccountPolicyUpdate,
+    CopyRouteCreate,
+    CopyTradingConnectionCreate,
+)
 from app.domains.copy_trading.service import (
     activate_route,
+    create_copy_connection,
     create_route,
     delete_route,
     magic_number_for_route,
@@ -21,6 +26,81 @@ from app.domains.copy_trading.service import (
     resume_route,
     update_account_policy,
 )
+
+
+def connection_payload() -> CopyTradingConnectionCreate:
+    return CopyTradingConnectionCreate(
+        display_name="Exness copy",
+        broker_login="436747071",
+        broker_server="Exness-MT5Trial9",
+        trader_password="new-trader-password",
+    )
+
+
+@patch("app.domains.copy_trading.service.repo")
+def test_create_copy_connection_reactivates_deleted_identity(repo) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    existing = MagicMock(
+        id=uuid.uuid4(),
+        user_id=user.id,
+        state=CopyTradingConnectionState.deleted,
+        metaapi_account_id="removed-metaapi-account",
+        last_error_code="broker_connection_timeout",
+        last_error_message="Old failure",
+        symbol_catalog_fingerprint="old-catalog",
+        symbol_catalog_refreshed_at=MagicMock(),
+        last_health_at=MagicMock(),
+        is_paused=True,
+    )
+    repo.get_copy_connection_by_identity.return_value = existing
+    db = MagicMock()
+
+    with patch(
+        "app.domains.copy_trading.service.encrypt_secret",
+        return_value="encrypted-password",
+    ):
+        result = create_copy_connection(
+            db,
+            current_user=user,
+            payload=connection_payload(),
+        )
+
+    assert result is existing
+    assert existing.state == CopyTradingConnectionState.submitted
+    assert existing.metaapi_account_id is None
+    assert existing.last_error_code is None
+    assert existing.last_error_message is None
+    assert existing.symbol_catalog_fingerprint is None
+    assert existing.symbol_catalog_refreshed_at is None
+    assert existing.last_health_at is None
+    assert existing.is_paused is False
+    assert existing.encrypted_trader_password == "encrypted-password"
+    assert len(existing.provisioning_transaction_id) == 32
+    repo.create_copy_connection.assert_not_called()
+    db.commit.assert_called_once()
+    db.refresh.assert_called_once_with(existing)
+
+
+@patch("app.domains.copy_trading.service.repo")
+def test_create_copy_connection_rejects_existing_live_identity(repo) -> None:
+    user = MagicMock(id=uuid.uuid4())
+    existing = MagicMock(
+        id=uuid.uuid4(),
+        state=CopyTradingConnectionState.broker_disconnected,
+    )
+    repo.get_copy_connection_by_identity.return_value = existing
+
+    with pytest.raises(HTTPException) as exc:
+        create_copy_connection(
+            MagicMock(),
+            current_user=user,
+            payload=connection_payload(),
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "copy_account_already_connected"
+    assert exc.value.detail["connection_id"] == str(existing.id)
+    repo.create_copy_connection.assert_not_called()
 
 
 def ready_connection(user_id: uuid.UUID) -> MagicMock:

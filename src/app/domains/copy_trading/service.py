@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domains.copy_trading import repository as repo
@@ -51,6 +52,24 @@ def _owned_copy_connection(
 def create_copy_connection(
     db: Session, *, current_user: User, payload: CopyTradingConnectionCreate
 ) -> CopyTradingConnection:
+    broker_server = payload.broker_server.strip()
+    existing = repo.get_copy_connection_by_identity(
+        db,
+        user_id=current_user.id,
+        broker_login=payload.broker_login,
+        broker_server=broker_server,
+    )
+    if existing is not None and existing.state != CopyTradingConnectionState.deleted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "copy_account_already_connected",
+                "message": "This copy account is already connected. Retry the existing connection instead.",
+                "connection_id": str(existing.id),
+                "state": existing.state.value,
+            },
+        )
+
     if settings.BILLING_ENFORCED:
         db.execute(
             text(
@@ -68,20 +87,49 @@ def create_copy_connection(
             billing_service.effective_subscription(subscription) if subscription else None,
             current_account_count=existing_count,
         )
+
+    encrypted_password = encrypt_secret(payload.trader_password.get_secret_value())
+    if existing is not None:
+        existing.display_name = payload.display_name.strip()
+        existing.broker_login = payload.broker_login
+        existing.broker_server = broker_server
+        existing.platform = payload.platform
+        existing.encrypted_trader_password = encrypted_password
+        existing.metaapi_account_id = None
+        existing.provisioning_transaction_id = uuid.uuid4().hex
+        existing.state = CopyTradingConnectionState.submitted
+        existing.last_error_code = None
+        existing.last_error_message = None
+        existing.symbol_catalog_fingerprint = None
+        existing.symbol_catalog_refreshed_at = None
+        existing.last_health_at = None
+        existing.is_paused = False
+        db.commit()
+        db.refresh(existing)
+        return existing
+
     connection = CopyTradingConnection(
         user_id=current_user.id,
         display_name=payload.display_name.strip(),
         broker_login=payload.broker_login,
-        broker_server=payload.broker_server.strip(),
+        broker_server=broker_server,
         platform=payload.platform,
-        encrypted_trader_password=encrypt_secret(
-            payload.trader_password.get_secret_value()
-        ),
+        encrypted_trader_password=encrypted_password,
         provisioning_transaction_id=uuid.uuid4().hex,
         state=CopyTradingConnectionState.submitted,
     )
-    repo.create_copy_connection(db, connection=connection)
-    db.commit()
+    try:
+        repo.create_copy_connection(db, connection=connection)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "copy_account_already_connected",
+                "message": "This copy account is already connected.",
+            },
+        ) from exc
     db.refresh(connection)
     return connection
 

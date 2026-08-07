@@ -229,6 +229,7 @@ def test_cleanup_is_idempotent_and_removes_credentials() -> None:
     assert account.undeploy_calls == 1
     assert account.remove_calls == 1
     assert target.encrypted_trader_password is None
+    assert target.metaapi_account_id is None
     assert target.state == CopyTradingConnectionState.deleted
 
 

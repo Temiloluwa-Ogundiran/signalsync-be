@@ -39,6 +39,21 @@ def get_copy_connection_for_user(
     return db.execute(stmt).scalar_one_or_none()
 
 
+def get_copy_connection_by_identity(
+    db: Session,
+    *,
+    user_id: uuid.UUID,
+    broker_login: str,
+    broker_server: str,
+) -> Optional[CopyTradingConnection]:
+    stmt = select(CopyTradingConnection).where(
+        CopyTradingConnection.user_id == user_id,
+        CopyTradingConnection.broker_login == broker_login,
+        func.lower(CopyTradingConnection.broker_server) == broker_server.casefold(),
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def list_copy_connections_for_user(
     db: Session, *, user_id: uuid.UUID
 ) -> list[CopyTradingConnection]:
