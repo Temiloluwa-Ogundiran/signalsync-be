@@ -186,6 +186,7 @@ def test_failed_warm_connection_is_quarantined_without_stopping_worker(
     assert count == 1
     assert failed_connection.state.value == "broker_disconnected"
     assert failed_connection.last_error_code == "broker_connection_unavailable"
+    assert failed_connection.last_health_at is not None
     runtime.mark_unhealthy.assert_called_once_with("failed-account")
 
 

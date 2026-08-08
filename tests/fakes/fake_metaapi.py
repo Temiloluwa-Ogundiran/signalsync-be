@@ -75,8 +75,9 @@ class FakeStreamingConnection:
 
 
 class FakeStreamingAccount:
-    def __init__(self, account_id: str) -> None:
+    def __init__(self, account_id: str, *, state: str = "DEPLOYED") -> None:
         self.id = account_id
+        self.state = state
         self.created_connections: list[FakeStreamingConnection] = []
 
     def get_streaming_connection(self) -> FakeStreamingConnection:

@@ -61,6 +61,11 @@ class MetaApiConnectionManager:
         connection = None
         try:
             account = await self._api.metatrader_account_api.get_account(account_id)
+            account_state = str(getattr(account, "state", "")).upper()
+            if account_state != "DEPLOYED":
+                raise ConnectionError(
+                    f"MetaApi account is not deployed (state={account_state or 'UNKNOWN'})."
+                )
             connection = account.get_streaming_connection()
             await connection.connect()
             await connection.wait_synchronized(

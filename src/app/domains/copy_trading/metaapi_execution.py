@@ -2,11 +2,11 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from redis.exceptions import LockNotOwnedError
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -73,6 +73,9 @@ def _release_connection_lock(lock, *, connection_id) -> None:
 def warm_active_copy_connections() -> int:
     if not settings.COPY_TRADING_METAAPI_ENABLED:
         return 0
+    reconnect_cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.METAAPI_RECONNECT_BACKOFF_SECONDS
+    )
     with SessionLocal() as db:
         connections = list(
             db.execute(
@@ -90,6 +93,17 @@ def warm_active_copy_connections() -> int:
                             CopyTradingConnectionState.ready,
                             CopyTradingConnectionState.broker_disconnected,
                         ]
+                    ),
+                    or_(
+                        CopyTradingConnection.state == CopyTradingConnectionState.ready,
+                        and_(
+                            CopyTradingConnection.state
+                            == CopyTradingConnectionState.broker_disconnected,
+                            or_(
+                                CopyTradingConnection.last_health_at.is_(None),
+                                CopyTradingConnection.last_health_at < reconnect_cutoff,
+                            ),
+                        ),
                     ),
                     CopyTradingConnection.metaapi_account_id.is_not(None),
                 )
@@ -113,6 +127,7 @@ def warm_active_copy_connections() -> int:
                 connection = db.get(CopyTradingConnection, connection_id)
                 if connection is not None:
                     connection.state = CopyTradingConnectionState.broker_disconnected
+                    connection.last_health_at = datetime.now(timezone.utc)
                     connection.last_error_code = "broker_connection_unavailable"
                     connection.last_error_message = (
                         "The trading account is reconnecting to the broker automatically."

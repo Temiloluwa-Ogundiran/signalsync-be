@@ -49,6 +49,22 @@ def test_concurrent_acquire_opens_and_synchronizes_once() -> None:
     asyncio.run(scenario())
 
 
+def test_undeployed_account_is_rejected_before_opening_stream() -> None:
+    async def scenario() -> None:
+        account = FakeStreamingAccount("account-1", state="UNDEPLOYED")
+        manager = MetaApiConnectionManager(
+            api=FakeStreamingApi(account), timeout_seconds=30, idle_seconds=300
+        )
+
+        with pytest.raises(ConnectionError, match="not deployed"):
+            await manager.acquire("account-1")
+
+        assert account.created_connections == []
+        await manager.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_unhealthy_connection_is_closed_and_replaced() -> None:
     async def scenario() -> None:
         account = FakeStreamingAccount("account-1")
