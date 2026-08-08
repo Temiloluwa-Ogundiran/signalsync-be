@@ -71,7 +71,7 @@ def require_journal_access(
 
     if not settings.BILLING_ENFORCED or _is_billing_admin(current_user):
         return current_user
-    if request.method in {"GET", "HEAD", "OPTIONS", "DELETE"} or request.url.path.endswith("/disconnect"):
+    if request.method in {"OPTIONS", "DELETE"} or request.url.path.endswith("/disconnect"):
         return current_user
     subscription = billing_service.get_subscription(db, user_id=current_user.id)
     if not billing_service.subscription_response(subscription).has_journal_access:
@@ -94,7 +94,7 @@ def require_copy_access(
     if not settings.BILLING_ENFORCED or _is_billing_admin(current_user):
         return current_user
     if (
-        request.method in {"GET", "HEAD", "OPTIONS", "DELETE"}
+        request.method in {"OPTIONS", "DELETE"}
         or request.url.path.endswith("/pause")
         or request.url.path.endswith("/emergency")
     ):

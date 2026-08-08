@@ -255,7 +255,7 @@ def _request_live_dialogs(
         f"dialogs-refresh:{request_id}",
     )
     cached = client.get(f"copy:telegram:dialogs:{connection_id}")
-    if cached and not force_refresh:
+    if cached:
         return json.loads(cached)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -759,7 +759,7 @@ def list_telegram_dialogs(
         _redis_client(),
         connection_id,
         force_refresh=refresh,
-        timeout_seconds=50 if refresh else 1.5,
+        timeout_seconds=2.0 if refresh else 1.5,
     )
     return [TelegramDialogResponse.model_validate(item) for item in dialogs]
 

@@ -117,7 +117,7 @@ def test_live_dialog_request_returns_cached_dialogs_without_waiting(publish_comm
 
 
 @patch("app.domains.copy_trading.router._publish_command")
-def test_forced_live_dialog_request_waits_for_fresh_worker_response(
+def test_forced_live_dialog_request_serves_cache_while_worker_refreshes(
     publish_command,
 ) -> None:
     connection_id = uuid.uuid4()
@@ -146,7 +146,8 @@ def test_forced_live_dialog_request_waits_for_fresh_worker_response(
         timeout_seconds=0.1,
     )
 
-    assert dialogs[0]["title"] == "Joined today"
+    assert dialogs[0]["title"] == "Cached group"
+    publish_command.assert_called_once()
     payload = publish_command.call_args.args[2]
     assert payload["force_refresh"] is True
 

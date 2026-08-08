@@ -48,6 +48,7 @@ from app.domains.copy_trading.metaapi_execution import (
     warm_active_copy_connections,
 )
 from app.domains.copy_trading.worker_runtime import (
+    StreamWorker,
     _telegram_auth_failure_message,
     _telegram_qr_payload,
 )
@@ -186,6 +187,22 @@ def test_failed_warm_connection_is_quarantined_without_stopping_worker(
     assert failed_connection.state.value == "broker_disconnected"
     assert failed_connection.last_error_code == "broker_connection_unavailable"
     runtime.mark_unhealthy.assert_called_once_with("failed-account")
+
+
+def test_copy_execution_maintenance_is_scheduled_off_consumer_loop(monkeypatch) -> None:
+    submitted = []
+    worker = StreamWorker.__new__(StreamWorker)
+    worker.group = "copy-execution"
+    worker.last_maintenance_at = 0.0
+    worker.maintenance_future = None
+    worker.maintenance_executor = SimpleNamespace(
+        submit=lambda callback: submitted.append(callback) or SimpleNamespace(done=lambda: False)
+    )
+
+    worker._run_maintenance()
+
+    assert len(submitted) == 1
+    assert worker.maintenance_future is not None
 
 
 def test_retried_signal_delivery_reuses_existing_conversation_by_correlation() -> None:

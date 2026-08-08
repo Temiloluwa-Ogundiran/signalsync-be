@@ -6,6 +6,7 @@ import socket
 import time
 import threading
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import redis
@@ -129,18 +130,14 @@ class StreamWorker:
         self.last_maintenance_at = 0.0
         self.last_health_at = 0.0
         self.executor = KeyedSerialExecutor(max_workers=8)
+        self.maintenance_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"{group}-maintenance",
+        )
+        self.maintenance_future: Future | None = None
 
     def run(self) -> None:
         self.bus.ensure_group(self.stream, self.group)
-        if self.group == "copy-execution":
-            from app.domains.copy_trading.metaapi_execution import (
-                publish_unresolved_intents,
-                warm_active_copy_connections,
-            )
-
-            warmed = warm_active_copy_connections()
-            logger.info("Warmed active MetaApi connections count=%s", warmed)
-            publish_unresolved_intents(self.client)
         self.client.setex(f"copy:heartbeat:{self.group}:{self.consumer}", 30, datetime.now(timezone.utc).isoformat())
         while self.running:
             self._run_maintenance()
@@ -190,20 +187,35 @@ class StreamWorker:
             if expired_count:
                 logger.info("Expired incomplete signal threads count=%s", expired_count)
         else:
-            from app.domains.copy_trading.metaapi_execution import (
-                publish_unresolved_intents,
-                reconcile_copied_trades,
-                warm_active_copy_connections,
-            )
-
-            warmed = warm_active_copy_connections()
-            if warmed:
-                logger.debug("Refreshed active MetaApi connections count=%s", warmed)
-            publish_unresolved_intents(self.client)
-            updated = reconcile_copied_trades()
-            if updated:
-                logger.info("Reconciled copied trade state count=%s", updated)
+            self._schedule_execution_maintenance()
         self.last_maintenance_at = now
+
+    def _schedule_execution_maintenance(self) -> None:
+        if self.maintenance_future is not None:
+            if not self.maintenance_future.done():
+                return
+            try:
+                self.maintenance_future.result()
+            except Exception:
+                logger.exception("Copy execution maintenance failed")
+        self.maintenance_future = self.maintenance_executor.submit(
+            self._perform_execution_maintenance
+        )
+
+    def _perform_execution_maintenance(self) -> None:
+        from app.domains.copy_trading.metaapi_execution import (
+            publish_unresolved_intents,
+            reconcile_copied_trades,
+            warm_active_copy_connections,
+        )
+
+        warmed = warm_active_copy_connections()
+        if warmed:
+            logger.debug("Refreshed active MetaApi connections count=%s", warmed)
+        publish_unresolved_intents(self.client)
+        updated = reconcile_copied_trades()
+        if updated:
+            logger.info("Reconciled copied trade state count=%s", updated)
 
     def _process_message(self, message_id: str, fields: dict) -> None:
         event = CopyEvent.from_fields(fields)
@@ -1149,8 +1161,13 @@ def run_process(role: str) -> None:
             worker.run()
         finally:
             worker.executor.shutdown(wait=True)
+            worker.maintenance_executor.shutdown(wait=False, cancel_futures=True)
             if provisioning_worker is not None:
                 provisioning_worker.executor.shutdown(wait=True)
+                provisioning_worker.maintenance_executor.shutdown(
+                    wait=False,
+                    cancel_futures=True,
+                )
                 from app.domains.copy_trading.metaapi_connections import (
                     shutdown_metaapi_runtime,
                 )

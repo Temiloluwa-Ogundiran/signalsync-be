@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.domains.billing.entitlements import (
     BillingPlan,
@@ -66,6 +66,39 @@ def test_canceled_subscription_has_no_access():
 
     assert not has_journal_access(item, now=NOW)
     assert not has_copy_access(item, now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("dependency_name", "path", "access_field"),
+    [
+        ("require_journal_access", "/journal/trades", "has_journal_access"),
+        ("require_copy_access", "/copy-trading/routes", "has_copy_access"),
+    ],
+)
+def test_paid_feature_reads_require_an_active_subscription(
+    monkeypatch, dependency_name, path, access_field
+):
+    from app.shared import deps
+
+    user = SimpleNamespace(id=uuid4(), platform_role="USER")
+    response = SimpleNamespace(**{access_field: False})
+    monkeypatch.setattr("app.core.config.settings.BILLING_ENFORCED", True)
+    monkeypatch.setattr(deps, "_is_billing_admin", lambda _user: False)
+    monkeypatch.setattr(
+        "app.domains.billing.service.get_subscription",
+        lambda db, *, user_id: None,
+    )
+    monkeypatch.setattr(
+        "app.domains.billing.service.subscription_response",
+        lambda _subscription: response,
+    )
+    dependency = getattr(deps, dependency_name)
+    request = Request({"type": "http", "method": "GET", "path": path, "headers": []})
+
+    with pytest.raises(HTTPException) as exc_info:
+        dependency(request, current_user=user, db=SimpleNamespace())
+
+    assert exc_info.value.status_code == 402
 
 
 def test_copy_account_capacity_rejects_the_next_account_at_the_plan_limit():

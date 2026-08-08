@@ -194,6 +194,7 @@ def test_quota_check_falls_back_to_db_when_redis_is_unavailable(monkeypatch) -> 
 
     monkeypatch.setattr(quota.settings, "AI_ENABLED", True)
     monkeypatch.setitem(quota.PLAN_CREDITS, "free", 1)
+    monkeypatch.setattr(quota, "_plan_for_user", lambda db, user_id: "free")
     monkeypatch.setattr(quota, "get_redis", lambda: (_ for _ in ()).throw(RuntimeError("redis down")))
     monkeypatch.setattr(quota, "SessionLocal", lambda: FakeSessionLocal())
     monkeypatch.setattr(
@@ -206,6 +207,65 @@ def test_quota_check_falls_back_to_db_when_redis_is_unavailable(monkeypatch) -> 
         asyncio.run(quota.check(user_id))
 
     assert exc_info.value.status_code == 402
+
+
+def test_quota_uses_copy_subscription_credit_limit(monkeypatch) -> None:
+    from app.domains.ai import quota
+    from app.domains.billing.models import BillingPlan
+
+    user_id = uuid.uuid4()
+    usage = SimpleNamespace(credits_used=750, message_count=3)
+    subscription = SimpleNamespace(plan=BillingPlan.copy)
+    monkeypatch.setattr(quota.settings, "AI_ENABLED", True)
+    monkeypatch.setitem(quota.PLAN_CREDITS, "copy", 1000)
+    monkeypatch.setattr(quota, "SessionLocal", lambda: FakeSessionLocal())
+    monkeypatch.setattr(
+        quota.billing_service,
+        "get_subscription",
+        lambda db, *, user_id: subscription,
+    )
+    monkeypatch.setattr(
+        quota.billing_service,
+        "subscription_response",
+        lambda _subscription: SimpleNamespace(has_journal_access=True, has_copy_access=True),
+    )
+    monkeypatch.setattr(
+        quota.ai_repo,
+        "get_or_create_usage",
+        lambda db, *, user_id, period_month: usage,
+    )
+    monkeypatch.setattr(quota, "get_redis", lambda: (_ for _ in ()).throw(RuntimeError("redis down")))
+
+    response = asyncio.run(quota.get_usage_response(user_id))
+
+    assert response["credits_limit"] == 1000
+    assert response["credits_used"] == 750
+
+
+def test_quota_db_usage_wins_when_redis_counter_is_stale(monkeypatch) -> None:
+    from app.domains.ai import quota
+
+    user_id = uuid.uuid4()
+    usage = SimpleNamespace(credits_used=900, message_count=5)
+
+    class StaleRedis:
+        async def get(self, _key):
+            return "100"
+
+    monkeypatch.setattr(quota, "SessionLocal", lambda: FakeSessionLocal())
+    monkeypatch.setattr(quota, "get_redis", lambda: StaleRedis())
+    monkeypatch.setattr(quota, "_plan_for_user", lambda db, user_id: "copy")
+    monkeypatch.setitem(quota.PLAN_CREDITS, "copy", 1000)
+    monkeypatch.setattr(
+        quota.ai_repo,
+        "get_or_create_usage",
+        lambda db, *, user_id, period_month: usage,
+    )
+
+    response = asyncio.run(quota.get_usage_response(user_id))
+
+    assert response["credits_used"] == 900
+    assert response["credits_remaining"] == 100
 
 
 def test_app_models_imports_ai_models_for_alembic_metadata() -> None:

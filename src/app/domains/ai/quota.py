@@ -1,7 +1,5 @@
-"""
-Per-user monthly credit quota checked before every AI turn.
-Credits are mirrored to ai_usage for billing reconciliation.
-"""
+"""Per-user monthly AI credit quota and usage accounting."""
+
 import logging
 from datetime import datetime, timezone
 
@@ -11,15 +9,16 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.domains.ai import repository as ai_repo
+from app.domains.billing import service as billing_service
 
 logger = logging.getLogger("synctrades.ai.quota")
 
 _redis: aioredis.Redis | None = None
 
-PLAN_CREDITS: dict = {
+PLAN_CREDITS: dict[str, int] = {
     "free": settings.AI_CREDITS_FREE,
-    "essential": settings.AI_CREDITS_ESSENTIAL,
-    "pro": settings.AI_CREDITS_PRO,
+    "journal": settings.AI_CREDITS_ESSENTIAL,
+    "copy": settings.AI_CREDITS_PRO,
 }
 
 
@@ -40,6 +39,41 @@ def _credit_key(user_id: str) -> str:
     return f"ai:cred:{user_id}:{month}"
 
 
+def _plan_for_user(db, user_id) -> str:
+    subscription = billing_service.get_subscription(db, user_id=user_id)
+    access = billing_service.subscription_response(subscription)
+    if access.has_copy_access:
+        return "copy"
+    if access.has_journal_access:
+        return "journal"
+    return "free"
+
+
+def _db_snapshot(user_id) -> tuple[str, int, int]:
+    with SessionLocal() as db:
+        plan = _plan_for_user(db, user_id)
+        usage = ai_repo.get_or_create_usage(
+            db,
+            user_id=user_id,
+            period_month=_period_month(),
+        )
+        return (
+            plan,
+            int(usage.credits_used or 0),
+            int(getattr(usage, "message_count", 0) or 0),
+        )
+
+
+async def _authoritative_usage(user_id) -> tuple[str, int, int]:
+    plan, db_used, message_count = _db_snapshot(user_id)
+    try:
+        redis_used = int(await get_redis().get(_credit_key(str(user_id))) or 0)
+    except Exception:
+        logger.warning("Redis unavailable; using DB-backed quota for user %s", user_id)
+        redis_used = 0
+    return plan, max(db_used, redis_used), message_count
+
+
 async def check(user_id) -> None:
     """Raise HTTP 402 if the user has exhausted their monthly credit allowance."""
     if not settings.AI_ENABLED:
@@ -47,23 +81,8 @@ async def check(user_id) -> None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI features are currently disabled.",
         )
-    # TODO: replace with real plan lookup from users/subscriptions domain
-    plan = "free"
+    plan, used, _message_count = await _authoritative_usage(user_id)
     limit = PLAN_CREDITS.get(plan, PLAN_CREDITS["free"])
-
-    try:
-        r = get_redis()
-        used = int(await r.get(_credit_key(str(user_id))) or 0)
-    except Exception:
-        logger.warning("Redis unavailable — checking DB-backed quota for user %s", user_id)
-        with SessionLocal() as db:
-            usage = ai_repo.get_or_create_usage(
-                db,
-                user_id=user_id,
-                period_month=_period_month(),
-            )
-            used = int(usage.credits_used or 0)
-
     if used >= limit:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -71,19 +90,13 @@ async def check(user_id) -> None:
         )
 
 
-async def debit(user_id, credits: int, input_tokens: int = 0, output_tokens: int = 0) -> None:
-    """Debit credits from Redis counter and mirror to ai_usage table."""
-    key = _credit_key(str(user_id))
-    try:
-        r = get_redis()
-        new_val = await r.incrby(key, credits)
-        if new_val == credits:
-            # First debit this month — set a safety TTL past month end
-            await r.expire(key, 40 * 86400)
-    except Exception:
-        logger.warning("Redis unavailable — credit debit skipped for user %s", user_id)
-
-    # Mirror to DB for billing reconciliation (best-effort)
+async def debit(
+    user_id,
+    credits: int,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> None:
+    """Persist usage in the database, then refresh the Redis accelerator."""
     try:
         with SessionLocal() as db:
             ai_repo.increment_usage(
@@ -95,28 +108,35 @@ async def debit(user_id, credits: int, input_tokens: int = 0, output_tokens: int
                 output_tokens=output_tokens,
             )
             db.commit()
+            usage = ai_repo.get_or_create_usage(
+                db,
+                user_id=user_id,
+                period_month=_period_month(),
+            )
+            authoritative_total = int(usage.credits_used or 0)
+    except Exception as exc:
+        logger.exception("Failed to persist ai_usage for user %s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI usage accounting is temporarily unavailable.",
+        ) from exc
+
+    try:
+        await get_redis().set(
+            _credit_key(str(user_id)),
+            authoritative_total,
+            ex=40 * 86400,
+        )
     except Exception:
-        logger.warning("Failed to persist ai_usage for user %s", user_id, exc_info=True)
+        logger.warning(
+            "Redis unavailable; DB-backed credit debit retained for user %s",
+            user_id,
+        )
 
 
 async def get_usage_response(user_id) -> dict:
-    plan = "free"
+    plan, used, message_count = await _authoritative_usage(user_id)
     limit = PLAN_CREDITS.get(plan, PLAN_CREDITS["free"])
-    redis_available = True
-    try:
-        r = get_redis()
-        used = int(await r.get(_credit_key(str(user_id))) or 0)
-    except Exception:
-        redis_available = False
-
-    with SessionLocal() as db:
-        usage_row = ai_repo.get_or_create_usage(
-            db, user_id=user_id, period_month=_period_month()
-        )
-        if not redis_available:
-            used = int(usage_row.credits_used or 0)
-        message_count = usage_row.message_count
-
     return {
         "credits_used": used,
         "credits_limit": limit,
