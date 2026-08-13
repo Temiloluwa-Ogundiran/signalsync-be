@@ -35,6 +35,7 @@ from app.domains.auth.schemas import (
     VerifyEmailResponse,
 )
 from app.tasks.auth_tasks import send_verification_email_task, send_password_reset_email_task
+from app.domains.affiliates import service as affiliate_service
 
 # Module-level dummy hash — ensures bcrypt always runs on login even for unknown
 # emails, defeating timing-based email enumeration (P1-8).
@@ -73,6 +74,13 @@ def register(db: Session, payload: RegisterRequest) -> RegisterResponse:
         email=payload.email,
         hashed_password=get_password_hash(payload.password),
         display_name=payload.display_name,
+    )
+    affiliate_service.attribute_new_user(
+        db,
+        referred_user=user,
+        referral_code=payload.referral_code,
+        source=payload.referral_source_detail,
+        campaign=payload.referral_campaign,
     )
 
     # ── seed demo data so the app isn't empty on first login ─────────────────
@@ -232,7 +240,15 @@ def _verify_google_id_token(id_token: str) -> dict:
     return claims
 
 
-def google_auth(db: Session, id_token: str, response: Response) -> LoginResponse:
+def google_auth(
+    db: Session,
+    id_token: str,
+    response: Response,
+    *,
+    referral_code: str | None = None,
+    referral_source_detail: str | None = None,
+    referral_campaign: str | None = None,
+) -> LoginResponse:
     """Sign in (or sign up) with a Google ID token.
 
     Verifies the token, finds the user by email or creates one (auto-linking to
@@ -263,6 +279,13 @@ def google_auth(db: Session, id_token: str, response: Response) -> LoginResponse
         # Google has verified the email for us.
         user.is_email_verified = True
         db.flush()
+        affiliate_service.attribute_new_user(
+            db,
+            referred_user=user,
+            referral_code=referral_code,
+            source=referral_source_detail,
+            campaign=referral_campaign,
+        )
         _seed_demo_data(db, user)
         db.commit()
         db.refresh(user)

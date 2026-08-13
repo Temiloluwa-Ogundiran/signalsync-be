@@ -125,7 +125,14 @@ def google_auth(
     payload: GoogleAuthRequest,
     db: Session = Depends(get_db),
 ):
-    return auth_service.google_auth(db, payload.id_token, response)
+    return auth_service.google_auth(
+        db,
+        payload.id_token,
+        response,
+        referral_code=payload.referral_code,
+        referral_source_detail=payload.referral_source_detail,
+        referral_campaign=payload.referral_campaign,
+    )
 
 
 @router.post(

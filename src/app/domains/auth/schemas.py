@@ -19,6 +19,9 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     display_name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=8)
+    referral_code: str | None = Field(default=None, min_length=4, max_length=16)
+    referral_source_detail: str | None = Field(default=None, max_length=64)
+    referral_campaign: str | None = Field(default=None, max_length=100)
 
     @field_validator("password")
     @classmethod
@@ -35,6 +38,9 @@ class RegisterRequest(BaseModel):
 class GoogleAuthRequest(BaseModel):
     # The Google ID token (JWT) obtained client-side via Google Identity Services.
     id_token: str = Field(min_length=1)
+    referral_code: str | None = Field(default=None, min_length=4, max_length=16)
+    referral_source_detail: str | None = Field(default=None, max_length=64)
+    referral_campaign: str | None = Field(default=None, max_length=100)
 
 
 class ResendVerificationRequest(BaseModel):

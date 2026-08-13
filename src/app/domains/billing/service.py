@@ -20,6 +20,7 @@ from app.domains.billing.models import (
 from app.domains.billing.schemas import SubscriptionResponse
 from app.domains.users import repository as user_repo
 from app.domains.users.models import User
+from app.domains.affiliates import service as affiliate_service
 
 
 SUBSCRIPTION_EVENTS = {
@@ -355,11 +356,18 @@ def process_webhook_event(db: Session, *, event: dict[str, Any]) -> bool:
                     subscription.grace_ends_at = utcnow() + timedelta(days=settings.BILLING_GRACE_DAYS)
         elif event_type == "invoice.paid":
             nested = data.get("subscription") if isinstance(data.get("subscription"), dict) else {}
-            provider_id = nested.get("subscription_id")
+            provider_id = data.get("subscription_id") or nested.get("subscription_id") or nested.get("id")
             subscription = repo.get_subscription_by_provider_id(db, provider_subscription_id=str(provider_id))
-            if subscription is not None and subscription.status != BillingStatus.canceled:
+            if subscription is None:
+                raise ValueError("Bachs paid invoice arrived before its subscription was linked")
+            if subscription.status != BillingStatus.canceled:
                 subscription.status = BillingStatus.active
                 subscription.grace_ends_at = None
+                affiliate_service.create_commission_from_paid_invoice(db, data)
+        elif event_type == "refund.paid":
+            affiliate_service.reverse_commission(db, data, reason="refund")
+        elif event_type == "dispute.created":
+            affiliate_service.reverse_commission(db, data, reason="dispute")
         db.commit()
     except Exception as exc:
         db.rollback()

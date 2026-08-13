@@ -41,6 +41,12 @@ from app.domains.ai.models import (
 from app.domains.notifications.models import Notification, NotificationType
 from app.domains.admin.models import AdminAuditEvent, ProductEvent
 from app.domains.billing.models import BillingSubscription, BillingWebhookEvent
+from app.domains.affiliates.models import (
+    AffiliateCommission,
+    AffiliateProfile,
+    AffiliateSetting,
+    ReferralAttribution,
+)
 from app.domains.copy_trading.models import (
     CopyAccountPolicy,
     CopyActivityEvent,
@@ -109,6 +115,10 @@ __all__ = [
     "ProductEvent",
     "BillingSubscription",
     "BillingWebhookEvent",
+    "AffiliateCommission",
+    "AffiliateProfile",
+    "AffiliateSetting",
+    "ReferralAttribution",
     "CopyTradingUserSettings",
     "TelegramConnection",
     "TelegramConnectionState",
