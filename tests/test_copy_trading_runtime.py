@@ -173,6 +173,55 @@ def test_reauthentication_keeps_auth_status_when_temporary_connection_is_removed
     )
 
 
+@patch("telethon.sessions.StringSession.save", return_value="new-session")
+@patch("app.domains.copy_trading.worker_runtime.SessionLocal")
+def test_telegram_auth_rejects_identity_owned_by_another_tradepart_user(
+    session_local,
+    _save_session,
+    fernet_key,
+):
+    auth_id = uuid.uuid4()
+    temporary_user_id = uuid.uuid4()
+    owner_user_id = uuid.uuid4()
+    temporary = SimpleNamespace(id=auth_id, user_id=temporary_user_id)
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=owner_user_id,
+        telegram_user_id=123,
+    )
+    db = session_local.return_value.__enter__.return_value
+    db.get.return_value = temporary
+    db.execute.return_value.scalar_one_or_none.return_value = existing
+
+    runtime = object.__new__(TelegramSessionRuntime)
+    runtime.cipher = SessionCipher(fernet_key)
+    runtime.clients = {str(auth_id): (MagicMock(), None, None)}
+    runtime.qr_logins = {str(auth_id): MagicMock()}
+    runtime._auth_update = MagicMock()
+    client = MagicMock()
+    client.disconnect = AsyncMock()
+    client.get_me = AsyncMock(
+        return_value=SimpleNamespace(
+            id=123,
+            first_name="A user",
+            last_name=None,
+            username="another-user",
+        )
+    )
+
+    __import__("asyncio").run(runtime._finalize(str(auth_id), client))
+
+    runtime._auth_update.assert_called_once()
+    args, kwargs = runtime._auth_update.call_args
+    assert args == (str(auth_id),)
+    assert kwargs["state"] == "failed"
+    assert "already connected" in kwargs["message"]
+    client.disconnect.assert_awaited_once()
+    assert str(auth_id) not in runtime.clients
+    assert str(auth_id) not in runtime.qr_logins
+    db.commit.assert_not_called()
+
+
 def test_signal_validation_rejects_stale_market_signal():
     signal = ParsedSignal(
         action=SignalAction.open_market,

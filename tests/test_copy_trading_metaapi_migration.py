@@ -24,7 +24,7 @@ def test_latest_schema_revision_is_the_only_head() -> None:
     root = Path(__file__).resolve().parents[1]
     script = ScriptDirectory.from_config(Config(str(root / "alembic.ini")))
 
-    assert script.get_heads() == ["a2c4e6f8b0d2"]
+    assert script.get_heads() == ["c5e6f7a8b9c1"]
     bootstrap_revision = script.get_revision("a2c4e6f8b0d2")
     assert bootstrap_revision is not None
     assert bootstrap_revision.down_revision == "f1b2c3d4e5f6"

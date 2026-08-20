@@ -31,3 +31,14 @@ def test_copy_trading_migration_declares_all_control_plane_tables() -> None:
         "copy_activity_events",
     ):
         assert f'"{table}"' in text
+
+
+def test_global_telegram_ownership_migration_replaces_user_scoped_constraint() -> None:
+    root = Path(__file__).resolve().parents[1]
+    path = root / "alembic" / "versions" / "c5e6f7a8b9c1_enforce_global_telegram_ownership.py"
+    text = path.read_text(encoding="utf-8")
+
+    assert '"telegram_connections_user_id_telegram_user_id_key"' in text
+    assert '"uq_telegram_connections_telegram_user_id"' in text
+    assert "GROUP BY telegram_user_id" in text
+    assert "HAVING COUNT(*) > 1" in text

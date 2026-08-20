@@ -46,6 +46,16 @@ def test_copy_trading_tables_and_route_defaults_are_declared() -> None:
     assert CopyRouteState.draft.value == "draft"
     assert CopyRouteState.paused.value == "paused"
 
+    telegram_unique_constraints = {
+        (constraint.name, tuple(column.name for column in constraint.columns))
+        for constraint in TelegramConnection.__table__.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert (
+        "uq_telegram_connections_telegram_user_id",
+        ("telegram_user_id",),
+    ) in telegram_unique_constraints
+
 
 def test_activity_response_storage_keeps_raw_message_encrypted() -> None:
     columns = {column.name for column in inspect(CopyActivityEvent).columns}

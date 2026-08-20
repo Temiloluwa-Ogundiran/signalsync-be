@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import redis
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 import app.models  # noqa: F401 - register string-based ORM relationships for standalone workers
 from app.domains.copy_trading import live_updates as _live_updates  # noqa: F401
@@ -56,6 +57,10 @@ _TELEGRAM_REAUTHENTICATION_REASON = (
 )
 _TELEGRAM_RECONNECTING_REASON = (
     "Telegram connection was interrupted. TradePartna is reconnecting automatically."
+)
+_TELEGRAM_OWNERSHIP_CONFLICT_MESSAGE = (
+    "This Telegram account is already connected to another TradePartna account. "
+    "Disconnect it from that account before connecting it here."
 )
 
 
@@ -525,52 +530,73 @@ class TelegramSessionRuntime:
         now = datetime.now(timezone.utc)
 
         # The live connection id may differ from auth_id: if this user already
-        # has a connection for this Telegram account (UNIQUE(user_id,
-        # telegram_user_id)), re-auth must adopt the fresh session into that
-        # existing row — it is the one telegram_sources/copy_routes reference.
-        # Committing the new row's telegram_user_id would otherwise violate the
-        # unique constraint and leave the connection stuck.
+        # has a connection for this Telegram account, re-auth must adopt the
+        # fresh session into that existing row — it is the one
+        # telegram_sources/copy_routes reference.
         connection_id = auth_id
-        with SessionLocal() as db:
-            connection = db.get(TelegramConnection, uuid.UUID(auth_id))
-            if connection is None:
-                await client.disconnect()
-                return
+        ownership_conflict = False
+        try:
+            with SessionLocal() as db:
+                connection = db.get(TelegramConnection, uuid.UUID(auth_id))
+                if connection is None:
+                    await client.disconnect()
+                    return
 
-            existing = db.execute(
-                select(TelegramConnection).where(
-                    TelegramConnection.user_id == connection.user_id,
-                    TelegramConnection.telegram_user_id == telegram_user_id,
-                    TelegramConnection.id != connection.id,
-                )
-            ).scalar_one_or_none()
-
-            target = existing or connection
-            target.telegram_user_id = telegram_user_id
-            target.display_name = display_name
-            target.username = username
-            target.encrypted_session = encrypted_session
-            target.state = TelegramConnectionState.ready
-            target.reauthentication_reason = None
-            target.last_heartbeat_at = now
-
-            if existing is not None:
-                # Drop the throwaway row created for this auth attempt so we
-                # don't leak orphan pending connections. Move the auth attempt
-                # first so the temporary connection's ON DELETE CASCADE does
-                # not erase the completion state while the browser is polling.
-                attempt = db.execute(
-                    select(TelegramAuthAttempt).where(
-                        TelegramAuthAttempt.auth_id == auth_id
+                existing = db.execute(
+                    select(TelegramConnection).where(
+                        TelegramConnection.telegram_user_id == telegram_user_id,
+                        TelegramConnection.id != connection.id,
                     )
                 ).scalar_one_or_none()
-                if attempt is not None:
-                    attempt.connection_id = existing.id
-                    db.flush()
-                db.delete(connection)
 
-            db.commit()
-            connection_id = str(target.id)
+                if existing is not None and existing.user_id != connection.user_id:
+                    ownership_conflict = True
+                else:
+                    target = existing or connection
+                    target.telegram_user_id = telegram_user_id
+                    target.display_name = display_name
+                    target.username = username
+                    target.encrypted_session = encrypted_session
+                    target.state = TelegramConnectionState.ready
+                    target.reauthentication_reason = None
+                    target.last_heartbeat_at = now
+
+                    if existing is not None:
+                        # Drop the throwaway row created for this auth attempt
+                        # so we don't leak orphan pending connections. Move the
+                        # auth attempt first so the temporary connection's
+                        # ON DELETE CASCADE does not erase the completion state
+                        # while the browser is polling.
+                        attempt = db.execute(
+                            select(TelegramAuthAttempt).where(
+                                TelegramAuthAttempt.auth_id == auth_id
+                            )
+                        ).scalar_one_or_none()
+                        if attempt is not None:
+                            attempt.connection_id = existing.id
+                            db.flush()
+                        db.delete(connection)
+
+                    db.commit()
+                    connection_id = str(target.id)
+        except IntegrityError as exc:
+            # Two auth attempts can finish concurrently. The global database
+            # constraint is the final arbiter in that race; surface the same
+            # ownership conflict instead of leaking a database error.
+            if "uq_telegram_connections_telegram_user_id" not in str(exc):
+                raise
+            ownership_conflict = True
+
+        if ownership_conflict:
+            self._auth_update(
+                auth_id,
+                state="failed",
+                message=_TELEGRAM_OWNERSHIP_CONFLICT_MESSAGE,
+            )
+            self.clients.pop(auth_id, None)
+            self.qr_logins.pop(auth_id, None)
+            await client.disconnect()
+            return
 
         self._auth_update(auth_id, state="ready", message="Telegram connected", connection_id=connection_id)
         await self._attach_updates(connection_id, client)

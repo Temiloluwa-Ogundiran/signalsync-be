@@ -238,7 +238,12 @@ class CopyTradingConnection(Base):
 
 class TelegramConnection(Base):
     __tablename__ = "telegram_connections"
-    __table_args__ = (UniqueConstraint("user_id", "telegram_user_id"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "telegram_user_id",
+            name="uq_telegram_connections_telegram_user_id",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
