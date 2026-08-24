@@ -3,82 +3,129 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     depends_on:
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment: &api_env
-      APP_NAME: ${APP_NAME:-SyncTrades API}
+      APP_NAME: ${APP_NAME:-SignalSync API}
       DEBUG: ${DEBUG:-false}
+      LOG_JSON: ${LOG_JSON:-true}
       IS_PRODUCTION: ${IS_PRODUCTION:-true}
       PORT: ${PORT:-8000}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
+      GUNICORN_GRACEFUL_TIMEOUT: ${GUNICORN_GRACEFUL_TIMEOUT:-30}
+      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-2000}
+      GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:-200}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-*}
       AUTO_SEED_ON_STARTUP: ${AUTO_SEED_ON_STARTUP:-false}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?set CELERY_BROKER_URL}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?set CELERY_RESULT_BACKEND}
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-8}
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:?set DATABASE_URL_DIRECT}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-300}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-26214400}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
       ALGORITHM: ${ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
-      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-14}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+      PASSWORD_RESET_EXPIRY_MINUTES: ${PASSWORD_RESET_EXPIRY_MINUTES:-15}
       EMAIL_VERIFY_EXPIRY_HOURS: ${EMAIL_VERIFY_EXPIRY_HOURS:-24}
+      FRONTEND_URL: ${FRONTEND_URL:?set FRONTEND_URL}
+      BACKEND_URL: ${BACKEND_URL:?set BACKEND_URL}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?set CORS_ALLOWED_ORIGINS}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      DEEP_LINK_SCHEME: ${DEEP_LINK_SCHEME:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-SignalSync}
+      BILLING_ENFORCED: ${BILLING_ENFORCED:-false}
+      BACHS_API_KEY: ${BACHS_API_KEY:-}
+      BACHS_API_BASE_URL: ${BACHS_API_BASE_URL:-https://sandbox-api.bachs.io}
+      BACHS_WEBHOOK_SECRET: ${BACHS_WEBHOOK_SECRET:-}
+      BACHS_JOURNAL_PRODUCT_ID: ${BACHS_JOURNAL_PRODUCT_ID:-}
+      BACHS_COPY_PRODUCT_IDS: ${BACHS_COPY_PRODUCT_IDS:-{}}
+      BILLING_GRACE_DAYS: ${BILLING_GRACE_DAYS:-3}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-}
+      AWS_S3_REGION: ${AWS_S3_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_S3_ENDPOINT_URL: ${AWS_S3_ENDPOINT_URL:-}
+      S3_PREFIX_USER_AVATARS: ${S3_PREFIX_USER_AVATARS:-user-avatars}
+      S3_PREFIX_JOURNAL_VOICE: ${S3_PREFIX_JOURNAL_VOICE:-journal-voice-notes}
+      S3_PREFIX_JOURNAL_IMAGES: ${S3_PREFIX_JOURNAL_IMAGES:-journal-images}
+      MEDIA_SIGNED_URL_TTL_SECONDS: ${MEDIA_SIGNED_URL_TTL_SECONDS:-3600}
+      VOICE_SIGNED_URL_TTL_SECONDS: ${VOICE_SIGNED_URL_TTL_SECONDS:-3600}
+      IMAGE_SIGNED_URL_TTL_SECONDS: ${IMAGE_SIGNED_URL_TTL_SECONDS:-3600}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_DEFAULT: ${RATE_LIMIT_DEFAULT:-300/minute}
+      RATE_LIMIT_UPLOADS: ${RATE_LIMIT_UPLOADS:-20/minute}
+      RATE_LIMIT_SYNC: ${RATE_LIMIT_SYNC:-12/minute}
+      RATE_LIMIT_ANALYTICS: ${RATE_LIMIT_ANALYTICS:-120/minute}
+      RATE_LIMIT_AI: ${RATE_LIMIT_AI:-12/minute}
       RATE_LIMIT_REDIS_URL: ${RATE_LIMIT_REDIS_URL:?set RATE_LIMIT_REDIS_URL}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      TECHNICAL_ADMIN_EMAILS: ${TECHNICAL_ADMIN_EMAILS:-}
+      SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-}
+      GRAFANA_URL: ${GRAFANA_URL:-}
+      METRICS_BEARER_TOKEN: ${METRICS_BEARER_TOKEN:?set METRICS_BEARER_TOKEN}
+      INITIAL_SYNC_LOOKBACK_DAYS: ${INITIAL_SYNC_LOOKBACK_DAYS:-30}
+      USER_ACTIVITY_TOUCH_MIN_INTERVAL_SECONDS: ${USER_ACTIVITY_TOUCH_MIN_INTERVAL_SECONDS:-60}
+      MANUAL_SYNC_COOLDOWN_SECONDS: ${MANUAL_SYNC_COOLDOWN_SECONDS:-300}
+      MANUAL_SYNC_BURST_WINDOW_SECONDS: ${MANUAL_SYNC_BURST_WINDOW_SECONDS:-60}
+      MANUAL_SYNC_BURST_MAX_ATTEMPTS: ${MANUAL_SYNC_BURST_MAX_ATTEMPTS:-5}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?set CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?set CELERY_RESULT_BACKEND}
+      AI_REDIS_URL: ${AI_REDIS_URL:?set AI_REDIS_URL}
       AI_ENABLED: ${AI_ENABLED:-true}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      AI_MODEL: ${AI_MODEL:-gpt-4.1-mini}
+      AI_MODEL: ${AI_MODEL:-gpt-5.4-mini}
+      AI_TITLE_MODEL: ${AI_TITLE_MODEL:-gpt-4.1-mini}
       AI_TEMPERATURE: ${AI_TEMPERATURE:-0.0}
-      AI_REDIS_URL: ${AI_REDIS_URL:?set AI_REDIS_URL}
       AI_SERVICE_URL: ${AI_SERVICE_URL:-}
-      RATE_LIMIT_AI: ${RATE_LIMIT_AI:-12/minute}
-      AI_CREDITS_FREE: ${AI_CREDITS_FREE:-50}
+      AI_CREDITS_FREE: ${AI_CREDITS_FREE:-500}
       AI_CREDITS_ESSENTIAL: ${AI_CREDITS_ESSENTIAL:-500}
       AI_CREDITS_PRO: ${AI_CREDITS_PRO:-1000}
-      MT5_CORE_URL: ${MT5_CORE_URL:-}
-      MT5_CORE_INTERNAL_SHARED_SECRET: ${MT5_CORE_INTERNAL_SHARED_SECRET:-}
+      MT5_CORE_URL: ${MT5_CORE_URL:?set MT5_CORE_URL}
+      MT5_CORE_INTERNAL_SHARED_SECRET: ${MT5_CORE_INTERNAL_SHARED_SECRET:?set MT5_CORE_INTERNAL_SHARED_SECRET}
       MT5_CORE_POLL_TIMEOUT_SECONDS: ${MT5_CORE_POLL_TIMEOUT_SECONDS:-120}
       MT5_CORE_POLL_INTERVAL_SECONDS: ${MT5_CORE_POLL_INTERVAL_SECONDS:-2}
+      MT5_CORE_SYNC_POLL_INTERVAL_SECONDS: ${MT5_CORE_SYNC_POLL_INTERVAL_SECONDS:-0.1}
+      MT5_CORE_SYNC_WORKER_WAIT_TIMEOUT_SECONDS: ${MT5_CORE_SYNC_WORKER_WAIT_TIMEOUT_SECONDS:-240}
       MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS: ${MT5_CORE_FAST_VERIFY_TIMEOUT_SECONDS:-20}
       MT5_CORE_FAST_VERIFY_POLL_INTERVAL_SECONDS: ${MT5_CORE_FAST_VERIFY_POLL_INTERVAL_SECONDS:-0.1}
+      MT5_CORE_VERIFY_TIMEOUT_SECONDS: ${MT5_CORE_VERIFY_TIMEOUT_SECONDS:-150}
+      MT5_CORE_BOOTSTRAP_SYNC_TIMEOUT_SECONDS: ${MT5_CORE_BOOTSTRAP_SYNC_TIMEOUT_SECONDS:-20}
+      COPY_TRADING_ENABLED: ${COPY_TRADING_ENABLED:-false}
+      COPY_TRADING_GLOBAL_PAUSED: ${COPY_TRADING_GLOBAL_PAUSED:-false}
+      COPY_TRADING_REDIS_URL: ${COPY_TRADING_REDIS_URL:?set COPY_TRADING_REDIS_URL}
+      COPY_TRADING_AI_MODEL: ${COPY_TRADING_AI_MODEL:-gpt-5.4-nano}
+      COPY_TRADING_AI_TIMEOUT_SECONDS: ${COPY_TRADING_AI_TIMEOUT_SECONDS:-3.0}
+      COPY_TRADING_AI_MAX_RETRIES: ${COPY_TRADING_AI_MAX_RETRIES:-1}
+      COPY_TRADING_CONFIDENCE_THRESHOLD: ${COPY_TRADING_CONFIDENCE_THRESHOLD:-0.75}
+      COPY_TRADING_MARKET_FRESHNESS_SECONDS: ${COPY_TRADING_MARKET_FRESHNESS_SECONDS:-30}
+      COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS: ${COPY_TRADING_UNCERTAIN_MAX_AGE_SECONDS:-60}
+      COPY_TRADING_CONSUMER_BLOCK_MS: ${COPY_TRADING_CONSUMER_BLOCK_MS:-1000}
       COPY_TRADING_METAAPI_ENABLED: ${COPY_TRADING_METAAPI_ENABLED:-false}
       METAAPI_TOKEN: ${METAAPI_TOKEN:-}
       METAAPI_REGION: ${METAAPI_REGION:-london}
       METAAPI_ACCOUNT_TYPE: ${METAAPI_ACCOUNT_TYPE:-cloud-g2}
       METAAPI_CONNECTION_TIMEOUT_SECONDS: ${METAAPI_CONNECTION_TIMEOUT_SECONDS:-120}
-      METAAPI_RECONNECT_BACKOFF_SECONDS: ${METAAPI_RECONNECT_BACKOFF_SECONDS:-300}
+      METAAPI_PROVISIONING_POLL_SECONDS: ${METAAPI_PROVISIONING_POLL_SECONDS:-60}
+      METAAPI_PROVISIONING_MAX_ATTEMPTS: ${METAAPI_PROVISIONING_MAX_ATTEMPTS:-15}
       METAAPI_IDLE_CONNECTION_SECONDS: ${METAAPI_IDLE_CONNECTION_SECONDS:-300}
-      INITIAL_SYNC_LOOKBACK_DAYS: ${INITIAL_SYNC_LOOKBACK_DAYS:-30}
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      EMAIL_FROM: ${EMAIL_FROM:-}
-      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-SyncTrades}
-      SUPABASE_URL: ${SUPABASE_URL:-}
-      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:-}
-      SUPABASE_STREAM_AVATARS_BUCKET: ${SUPABASE_STREAM_AVATARS_BUCKET:-stream-avatars}
-      SUPABASE_STREAM_BANNERS_BUCKET: ${SUPABASE_STREAM_BANNERS_BUCKET:-stream-banners}
-      SUPABASE_POST_MEDIA_BUCKET: ${SUPABASE_POST_MEDIA_BUCKET:-post-media}
-      JOURNAL_VOICE_BUCKET: ${JOURNAL_VOICE_BUCKET:-journal-voice-notes}
-      JOURNAL_IMAGES_BUCKET: ${JOURNAL_IMAGES_BUCKET:-journal-images}
-      MEDIA_SIGNED_URL_TTL_SECONDS: ${MEDIA_SIGNED_URL_TTL_SECONDS:-3600}
-      VOICE_SIGNED_URL_TTL_SECONDS: ${VOICE_SIGNED_URL_TTL_SECONDS:-3600}
-      IMAGE_SIGNED_URL_TTL_SECONDS: ${IMAGE_SIGNED_URL_TTL_SECONDS:-3600}
-      STORAGE_SERVICE_BASE_URL: ${STORAGE_SERVICE_BASE_URL:-}
-      STORAGE_SERVICE_UPLOAD_PATH: ${STORAGE_SERVICE_UPLOAD_PATH:-/api/upload}
-      STORAGE_SERVICE_API_KEY: ${STORAGE_SERVICE_API_KEY:-}
-      STORAGE_SERVICE_PRESIGNED_TTL_SECONDS: ${STORAGE_SERVICE_PRESIGNED_TTL_SECONDS:-600}
+      METAAPI_RECONNECT_BACKOFF_SECONDS: ${METAAPI_RECONNECT_BACKOFF_SECONDS:-300}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-0}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)",
-        ]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -87,39 +134,111 @@ services:
       - "8000"
     restart: unless-stopped
 
-  # Celery worker: executes on-demand sync jobs enqueued by the API.
-  # Worker concurrency is the throttle that protects the mt5-core headless service —
-  # cap CELERY_CONCURRENCY at mt5-core's safe ceiling for concurrent jobs.
   worker:
     build:
       context: .
       dockerfile: Dockerfile
-    env_file:
-      - .env
     depends_on:
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       <<: *api_env
+      PROCESS_TYPE: worker
     command:
-      - celery
-      - -A
-      - app.worker.celery_app
-      - worker
-      - --loglevel=info
-      - --concurrency=${CELERY_CONCURRENCY:-8}
+      - python
+      - scripts/docker_start.py
+    restart: unless-stopped
+
+  copy-signal-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *api_env
+      PROCESS_TYPE: copy-signal
+    command: ["python", "scripts/docker_start.py"]
+    restart: unless-stopped
+
+  copy-execution-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *api_env
+      PROCESS_TYPE: copy-execution
+    command: ["python", "scripts/docker_start.py"]
+    restart: unless-stopped
+
+  telegram-session-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *api_env
+      PROCESS_TYPE: telegram-session
+    command: ["python", "scripts/docker_start.py"]
+    restart: unless-stopped
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-synctrades}
+      DB_USER: ${POSTGRES_USER:-synctrades}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      LISTEN_ADDR: 0.0.0.0
+      LISTEN_PORT: 6432
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-500}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-25}
+      ADMIN_USERS: ${POSTGRES_USER:-synctrades}
+      STATS_USERS: ${POSTGRES_USER:-synctrades}
+    healthcheck:
+      test: ["CMD-SHELL", "PGPASSWORD=\"$$DB_PASSWORD\" pg_isready -h 127.0.0.1 -p 6432 -U \"$$DB_USER\" -d \"$$DB_NAME\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: synctrades
-      POSTGRES_USER: synctrades
+      POSTGRES_DB: ${POSTGRES_DB:-synctrades}
+      POSTGRES_USER: ${POSTGRES_USER:-synctrades}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U synctrades -d synctrades"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 10
