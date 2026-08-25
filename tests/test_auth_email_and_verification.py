@@ -27,7 +27,7 @@ def test_send_verification_email_posts_resend_payload() -> None:
     ) as settings_mock:
         settings_mock.RESEND_API_KEY = "re_test"
         settings_mock.EMAIL_FROM = "hello@synctrades.com"
-        settings_mock.EMAIL_FROM_NAME = "SyncTrades"
+        settings_mock.EMAIL_FROM_NAME = "SignalSync"
         settings_mock.FRONTEND_URL = "https://app.synctrades.com"
         settings_mock.EMAIL_VERIFY_EXPIRY_HOURS = 24
         post_mock.return_value.status_code = 200
@@ -38,10 +38,10 @@ def test_send_verification_email_posts_resend_payload() -> None:
     post_mock.assert_called_once()
     payload = post_mock.call_args.kwargs["json"]
     assert payload["to"] == ["user@example.com"]
-    assert payload["from"] == "SyncTrades <hello@synctrades.com>"
+    assert payload["from"] == "SignalSync <hello@synctrades.com>"
     assert "verify-email?token=token-123" in payload["html"]
     # Branded redesign: logo image + CTA button present.
-    assert "tradepartna-logo-full.png" in payload["html"]
+    assert "signalsync-mark.png" in payload["html"]
     assert "Verify email" in payload["html"]
 
 

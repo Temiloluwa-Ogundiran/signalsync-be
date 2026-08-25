@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    APP_NAME: str = "SyncTrades API"
+    APP_NAME: str = "SignalSync API"
     DEBUG: bool = False
     # Emit structured JSON logs (recommended in production for log aggregation).
     LOG_JSON: bool = True
@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # Email
     RESEND_API_KEY: str = ""
     EMAIL_FROM: str = ""
-    EMAIL_FROM_NAME: str = "TradePartna"
+    EMAIL_FROM_NAME: str = "SignalSync"
 
     # Bachs subscription billing. Products are fixed monthly USD tiers because
     # Bachs quantity-based subscription pricing is not available yet.
@@ -132,7 +132,7 @@ class Settings(BaseSettings):
     DATABASE_URL_DIRECT: Optional[str] = None
 
     # -------------------------------------------------------------------
-    # AI copilot (Partna AI)
+    # AI copilot (SignalSync AI)
     # -------------------------------------------------------------------
     OPENAI_API_KEY: str = ""
     # Primary copilot model. gpt-5.4-mini produces markedly richer, better-

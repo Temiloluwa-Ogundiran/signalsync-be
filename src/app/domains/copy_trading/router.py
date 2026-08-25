@@ -613,7 +613,7 @@ def list_dead_letters(db: Session = Depends(get_db), current_user: User = Depend
         CopyDeadLetterResponse.model_validate(item).model_copy(
             update={
                 "error_code": "AUTOMATION_RECOVERY",
-                "error_message": "TradePartna is handling this issue automatically.",
+                "error_message": "SignalSync is handling this issue automatically.",
             }
         )
         for item in items
@@ -643,7 +643,7 @@ def replay_dead_letter(dead_letter_id: uuid.UUID, db: Session = Depends(get_db),
         action="dead_letter.replayed",
         title="Failed copy action retried",
         body=(
-            "TradePartna sent the failed action through the pipeline one more time. "
+                "SignalSync sent the failed action through the pipeline one more time. "
             "Its result will appear in Activity."
         ),
         level=CopyActivityLevel.info,
@@ -656,7 +656,7 @@ def replay_dead_letter(dead_letter_id: uuid.UUID, db: Session = Depends(get_db),
     return CopyDeadLetterResponse.model_validate(item).model_copy(
         update={
             "error_code": "AUTOMATION_RECOVERY",
-            "error_message": "TradePartna is handling this issue automatically.",
+                "error_message": "SignalSync is handling this issue automatically.",
         }
     )
 

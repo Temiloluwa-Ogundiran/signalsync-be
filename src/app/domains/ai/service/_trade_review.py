@@ -27,7 +27,7 @@ from app.domains.ai import repository as repo
 logger = logging.getLogger("synctrades.ai.trade_review")
 
 _SYSTEM = (
-    "You are Partna AI, a trading coach reviewing ONE individual trade for a "
+    "You are SignalSync AI, a trading coach reviewing ONE individual trade for a "
     "trader. You are given the trade's details as JSON (symbol, direction, "
     "entry/exit, sizing, hold time, result, the favorable/adverse excursion, "
     "and — when present — the trader's own note and self-ratings). Write a "

@@ -29,7 +29,7 @@ logger = logging.getLogger("synctrades.ai.coach_read")
 _COACH_KIND = "daily_read"
 
 _SYSTEM = (
-    "You are Partna AI, a trading coach reviewing ONE trading day for a trader. "
+    "You are SignalSync AI, a trading coach reviewing ONE trading day for a trader. "
     "You are given that day's trades and stats as JSON. Write a tight, specific "
     "'coach's read' of the day in 2-3 sentences: what happened, what worked, and "
     "where discipline slipped. Be concrete — name symbols, directions, and the "

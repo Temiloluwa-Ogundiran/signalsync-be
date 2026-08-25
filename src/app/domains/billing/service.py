@@ -310,7 +310,7 @@ def process_webhook_event(db: Session, *, event: dict[str, Any]) -> bool:
             if subscription is None and event_type == "customer.subscription.created":
                 user = _user_for_new_subscription(db, data)
                 if user is None:
-                    raise ValueError("Bachs subscription customer is not a TradePartna user")
+                    raise ValueError("Bachs subscription customer is not a SignalSync user")
                 subscription = repo.get_subscription_for_user(db, user_id=user.id)
                 if (
                     subscription is not None

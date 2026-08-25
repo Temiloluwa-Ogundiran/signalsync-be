@@ -9,7 +9,7 @@ from app.core.config import settings
 logger = logging.getLogger("synctrades.email")
 
 # Brand
-_BRAND = "#635BFF"  # TradePartna violet
+_BRAND = "#087F82"  # Signal Mint
 _BRAND_DARK = "#4f46e5"
 _INK = "#100A28"  # near-black wordmark ink
 _MUTED = "#64748b"
@@ -26,7 +26,7 @@ def _reset_password_link(raw_token: str) -> str:
 
 
 def _logo_url() -> str:
-    return f"{settings.FRONTEND_URL}/brand/tradepartna-logo-full.png"
+    return f"{settings.FRONTEND_URL}/brand/signalsync-mark.png"
 
 
 def _build_from_header() -> str:
@@ -69,7 +69,7 @@ def _render_email(
           <!-- Logo -->
           <tr>
             <td align="center" style="padding-bottom:24px;">
-              <img src="{_logo_url()}" alt="TradePartna" width="170"
+              <img src="{_logo_url()}" alt="SignalSync" width="170"
                    style="display:block;width:170px;max-width:60%;height:auto;border:0;">
             </td>
           </tr>
@@ -119,7 +119,7 @@ def _render_email(
             <td align="center" style="padding:24px 8px 0;">
               <p style="margin:0;font-family:'Segoe UI',Helvetica,Arial,sans-serif;
                         font-size:12px;line-height:1.6;color:#94a3b8;">
-                &copy; TradePartna &middot; Your trading journal &amp; analytics
+              &copy; SignalSync &middot; Your trading journal &amp; analytics
               </p>
             </td>
           </tr>
@@ -165,14 +165,14 @@ def send_verification_email(to_email: str, raw_token: str) -> None:
     link = _verification_link(raw_token)
     html_body = _render_email(
         heading="Verify your email",
-        intro="Welcome to TradePartna! Confirm your email address to activate your "
+        intro="Welcome to SignalSync! Confirm your email address to activate your "
         "account and start journaling your trades.",
         button_label="Verify email",
         button_url=link,
         expiry_note=f"This link expires in {settings.EMAIL_VERIFY_EXPIRY_HOURS} hours.",
         footnote="If you didn't create an account, you can safely ignore this email.",
     )
-    _send(to_email, "Verify your TradePartna email", html_body, context="verification")
+    _send(to_email, "Verify your SignalSync email", html_body, context="verification")
 
 
 def send_password_reset_email(to_email: str, raw_token: str) -> None:
@@ -180,7 +180,7 @@ def send_password_reset_email(to_email: str, raw_token: str) -> None:
     link = _reset_password_link(raw_token)
     html_body = _render_email(
         heading="Reset your password",
-        intro="We received a request to reset your TradePartna password. "
+        intro="We received a request to reset your SignalSync password. "
         "Click the button below to choose a new one.",
         button_label="Reset password",
         button_url=link,
@@ -188,7 +188,7 @@ def send_password_reset_email(to_email: str, raw_token: str) -> None:
         footnote="If you didn't request this, you can safely ignore this email — "
         "your password won't change.",
     )
-    _send(to_email, "Reset your TradePartna password", html_body, context="password-reset")
+    _send(to_email, "Reset your SignalSync password", html_body, context="password-reset")
 
 
 def send_copy_trading_email(to_email: str, *, subject: str, details: dict) -> None:

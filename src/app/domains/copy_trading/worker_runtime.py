@@ -56,10 +56,10 @@ _TELEGRAM_REAUTHENTICATION_REASON = (
     "Telegram disconnected this session. Reconnect Telegram to resume copying signals."
 )
 _TELEGRAM_RECONNECTING_REASON = (
-    "Telegram connection was interrupted. TradePartna is reconnecting automatically."
+    "Telegram connection was interrupted. SignalSync is reconnecting automatically."
 )
 _TELEGRAM_OWNERSHIP_CONFLICT_MESSAGE = (
-    "This Telegram account is already connected to another TradePartna account. "
+    "This Telegram account is already connected to another SignalSync account. "
     "Disconnect it from that account before connecting it here."
 )
 

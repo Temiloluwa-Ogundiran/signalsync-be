@@ -365,7 +365,7 @@ def _friendly_broker_error(exc: Exception) -> str:
     if "volume" in lowered:
         return "The broker rejected the trade size for this symbol."
     if "timeout" in lowered or "temporar" in lowered or "connection" in lowered:
-        return "The broker did not confirm the request yet. TradePartna is checking its status."
+        return "The broker did not confirm the request yet. SignalSync is checking its status."
     return message[:500] or "The broker rejected the instruction."
 
 
@@ -961,7 +961,7 @@ def reconcile_copied_trades() -> int:
                 }
                 if before["lifecycle_state"] != after["lifecycle_state"]:
                     title = (
-                        f"{trade.broker_symbol} position closed outside TradePartna"
+                        f"{trade.broker_symbol} position closed outside SignalSync"
                         if after["lifecycle_state"] == "closed"
                         else f"{trade.broker_symbol} broker status changed"
                     )
@@ -973,7 +973,7 @@ def reconcile_copied_trades() -> int:
                     title = f"{trade.broker_symbol} broker changes synchronized"
                     body = (
                         "Trade size, stop loss, or take profit changed directly at the broker. "
-                        "TradePartna updated its local record."
+                        "SignalSync updated its local record."
                     )
                     level = CopyActivityLevel.info
                 db.add(

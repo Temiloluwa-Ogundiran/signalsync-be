@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Sentinel that marks the seeded account as demo data, independent of name.
 DEMO_META_ACCOUNT_ID = "DEMO-SEED"
 DEMO_DISPLAY_NAME = "Demo Account"
-DEMO_BROKER_NAME = "TradePartna Demo"
+DEMO_BROKER_NAME = "SignalSync Demo"
 DEMO_BROKER_LOGIN = "34567890"  # the displayed account number
 DEMO_STARTING_BALANCE = 25_000.0  # used only for trade-risk sizing in the generator
 # The account balance shown in the UI — a realistic standalone figure, not
@@ -212,7 +212,7 @@ def seed_demo_account(
         meta_account_id=DEMO_META_ACCOUNT_ID,
         broker_name=DEMO_BROKER_NAME,
         broker_login=DEMO_BROKER_LOGIN,
-        broker_server="TradePartna-Demo",
+        broker_server="SignalSync-Demo",
         encrypted_investor_password="",  # no credentials — synthetic account
         account_type=TradingAccountType.demo,
         platform=TradingPlatform.mt5,
