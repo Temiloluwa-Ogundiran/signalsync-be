@@ -359,7 +359,17 @@ def process_webhook_event(db: Session, *, event: dict[str, Any]) -> bool:
             provider_id = data.get("subscription_id") or nested.get("subscription_id") or nested.get("id")
             subscription = repo.get_subscription_by_provider_id(db, provider_subscription_id=str(provider_id))
             if subscription is None:
-                raise ValueError("Bachs paid invoice arrived before its subscription was linked")
+                # Bachs does not guarantee delivery order. A paid invoice can
+                # arrive before customer.subscription.created has linked the
+                # provider subscription to a SignalSync user. Returning 500
+                # causes an endless retry loop and the later subscription event
+                # already contains the authoritative active status.
+                logger.warning(
+                    "Acknowledging unlinked Bachs paid invoice provider_subscription_id=%s",
+                    provider_id,
+                )
+                db.commit()
+                return True
             if subscription.status != BillingStatus.canceled:
                 subscription.status = BillingStatus.active
                 subscription.grace_ends_at = None

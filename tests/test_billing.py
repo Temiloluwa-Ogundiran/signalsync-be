@@ -346,3 +346,31 @@ def test_unlinked_subscription_events_are_acknowledged(monkeypatch, event_type):
 
     assert processed
     assert commits == [True]
+
+
+def test_unlinked_paid_invoice_is_acknowledged(monkeypatch):
+    from app.domains.billing import service
+
+    commits = []
+
+    class FakeDb:
+        def commit(self):
+            commits.append(True)
+
+        def rollback(self):
+            pass
+
+    monkeypatch.setattr(service.repo, "claim_webhook_event", lambda *args, **kwargs: True)
+    monkeypatch.setattr(service.repo, "get_subscription_by_provider_id", lambda *args, **kwargs: None)
+
+    processed = service.process_webhook_event(
+        FakeDb(),
+        event={
+            "id": "evt_invoice_before_subscription",
+            "type": "invoice.paid",
+            "data": {"subscription_id": "sub_not_linked_yet"},
+        },
+    )
+
+    assert processed
+    assert commits == [True]
